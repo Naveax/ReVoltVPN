@@ -1,0 +1,69 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+.java-version
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains configure files for the Visual Studio Code
+# editor. Although we may keep it, we often ignore it.
+.vscode/
+
+# Python cache & User files
+TECHNICAL_DEBT.md
+RUNNING.md
+__pycache__/
+*.pyc
+
+# App Config (Hide real IPs/IDs from GitHub)
+lib/logic/app_config.dart
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+build/
+**/build/
+local_packages/*/build/
+local_packages/*/.dart_tool/
+*.dart_tool/
+
+# Android related
+**/android/**/gradle-wrapper.jar
+**/android/.gradle
+**/android/captures/
+**/android/gradlew
+**/android/gradlew.bat
+**/android/local.properties
+**/android/**/GeneratedPluginRegistrant.java
+**/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
+**/android/.cxx/
+**/android/app/build/
+
+# Keystore files
+*.keystore
+*.jks
+
+# Crashlytics cache
+**/android/app/crashlytics-build.properties
+
+# Secrets
+android/key.properties
+lib/logic/backup/
+00-FULL-REPORT.md
+server_hivemind_4_0.py

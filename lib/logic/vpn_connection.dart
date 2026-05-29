@@ -1,0 +1,216 @@
+// =============================================================================
+//  vpn_connection.dart — WireGuard Tunnel Manager
+//  ─────────────────────────────────────────────────────────────────────────────
+//  This file manages the WireGuard tunnel on the Android device.
+//  It is the bridge between the UI (the big connect button) and the actual
+//  VPN tunnel running inside the Android operating system.
+//
+//  HOW IT WORKS:
+//  1. When connect() is called, it first asks WgApiService to fetch the config
+//     file for this device from the server (see wg_api_service.dart).
+//  2. It passes that config text to the wireguard_flutter plugin, which handles
+//     all the native Android VPN stuff automatically.
+//  3. It listens to the native tunnel state and updates the UI accordingly.
+//
+//  You never need to edit this file.
+//  Server settings → app_config.dart
+//  Server communication → wg_api_service.dart
+// =============================================================================
+
+import 'dart:async';
+import 'package:flutter/foundation.dart';
+import 'package:wireguard_flutter/wireguard_flutter.dart';
+import 'package:paladinvpn/logic/app_config.dart';
+import 'package:paladinvpn/logic/hivemind_service.dart';
+
+// ── VPN States ────────────────────────────────────────────────────────────────
+// These are the possible states the tunnel can be in.
+// The UI uses these to decide what to display (spinner, shield icon, etc.)
+enum VpnStatus {
+  disconnected,  // No tunnel active — idle state
+  connecting,    // Fetching config from server + starting tunnel
+  connected,     // Tunnel is up and routing traffic
+  disconnecting, // Tearing down the tunnel
+  error,         // Something went wrong (server unreachable, etc.)
+}
+
+// ── VpnConnection ─────────────────────────────────────────────────────────────
+// This is a "ChangeNotifier" — it works like a Python observable/event emitter.
+// Whenever the state changes, it automatically notifies all widgets that are
+// listening, and they re-render themselves. You never call setState() manually.
+class VpnConnection extends ChangeNotifier {
+  // Current tunnel state (starts disconnected)
+  VpnStatus _status = VpnStatus.disconnected;
+  VpnStatus get status => _status;
+
+  // Short message shown to the user under the connect button
+  String _statusMessage = 'Tap to connect';
+  String get statusMessage => _statusMessage;
+
+  // Optional error message shown if something goes wrong
+  String? _errorMessage;
+  String? get errorMessage => _errorMessage;
+
+  // The internal WireGuard IP assigned to this device (e.g. 10.8.0.2)
+  // Populated after a successful config fetch and used by SessionTimer.
+  String? internalIp;
+
+  // The wireguard_flutter plugin instance — this is what actually talks to Android
+  final _wireguard = WireGuardFlutter.instance;
+
+  // Subscription to the native tunnel state stream
+  StreamSubscription? _stageSub;
+
+  // ── Initialization ────────────────────────────────────────────────────────
+  // Called automatically when the app starts (via Provider in main.dart)
+  VpnConnection() {
+    _init();
+  }
+
+  Future<void> _init() async {
+    // WireGuard doesn't work in a web browser — skip on web
+    if (kIsWeb) return;
+
+    try {
+      // Register our tunnel interface with Android.
+      // 'Paladin0' is just the name of the network interface — like "eth0"
+      await _wireguard.initialize(interfaceName: 'Paladin0');
+    } catch (e) {
+      debugPrint('WireGuard init error (expected on emulator): $e');
+    }
+
+    // Start listening to native tunnel state changes from Android.
+    // When Android reports the tunnel went up/down, _mapStage() is called.
+    try {
+      _stageSub = _wireguard.vpnStageSnapshot.listen(_mapStage);
+    } catch (_) {}
+  }
+
+  // ── Native State Mapping ──────────────────────────────────────────────────
+  // Android sends back low-level states like "authenticating", "preparing", etc.
+  // This function translates those into our simpler 5-state enum above.
+  void _mapStage(VpnStage stage) {
+    switch (stage) {
+      case VpnStage.connected:
+        _setStatus(VpnStatus.connected, 'Secured');
+      case VpnStage.disconnected:
+        _setStatus(VpnStatus.disconnected, 'Tap to connect');
+      case VpnStage.connecting:
+      case VpnStage.waitingConnection:
+      case VpnStage.authenticating:
+      case VpnStage.preparing:
+      case VpnStage.reconnect:
+        _setStatus(VpnStatus.connecting, 'Establishing tunnel…');
+      case VpnStage.disconnecting:
+      case VpnStage.exiting:
+        _setStatus(VpnStatus.disconnecting, 'Tearing down…');
+      default:
+        _setStatus(VpnStatus.disconnected, 'Tap to connect');
+    }
+  }
+
+  // ── Connect ───────────────────────────────────────────────────────────────
+  // This is the main function — called after the user watches the rewarded ad.
+  //
+  // Step 1: Call the WG-Easy API to get the .conf for this device
+  // Step 2: Pass that .conf to the WireGuard plugin to start the tunnel
+  //
+  // Returns true if the connection was successful, false if it failed.
+  // The connect button uses this to decide whether to start the timer.
+  Future<bool> connect() async {
+    // Don't do anything if we're already connected or currently connecting
+    if (_status == VpnStatus.connected || _status == VpnStatus.connecting) return false;
+
+    _setStatus(VpnStatus.connecting, 'Fetching config…');
+    _errorMessage = null;
+
+    // ── Web / emulator fallback ────────────────────────────────────────────
+    if (kIsWeb) {
+      await Future.delayed(const Duration(seconds: 1));
+      _setStatus(VpnStatus.connected, 'Secured (dev mode)');
+      return true;
+    }
+
+
+
+    // ── Step 2: Fetch config from Hivemind ──
+    String configText;
+    try {
+      configText = await HivemindService.fetchConfigWithPolling();
+      
+      // Parse the internal IP (e.g. "Address = 10.8.0.2/24" or "/32")
+      final regex = RegExp(r'Address\s*=\s*([0-9\.]+)/');
+      final match = regex.firstMatch(configText);
+      if (match != null) {
+        internalIp = match.group(1);
+      }
+    } catch (e) {
+      debugPrint('Hivemind API error: $e');
+      // Set the exact error as the status message so the user can see it on screen
+      String errorMsg = e.toString().replaceAll('Exception: ', '');
+      if (errorMsg.length > 30) {
+        errorMsg = '${errorMsg.substring(0, 30)}...'; // keep it somewhat short for the UI
+      }
+      _errorMessage = e.toString();
+      _setStatus(VpnStatus.error, errorMsg);
+      return false;
+    }
+
+    // ── Step 2: Start the WireGuard tunnel with the fetched config ─────────
+    try {
+      // Re-initialize to ensure VPN permission is granted before starting
+      await _wireguard.initialize(interfaceName: 'Paladin0');
+      await _wireguard.startVpn(
+        serverAddress: AppConfig.serverEndpoint,
+        wgQuickConfig: configText,
+        providerBundleIdentifier: 'com.paladinvpn.app.WireGuardProvider',
+      );
+      _setStatus(VpnStatus.connected, 'Secured');
+      return true;
+    } catch (e) {
+      debugPrint('WireGuard tunnel error: $e');
+      _errorMessage = 'Tunnel failed to start.\nTry reconnecting.';
+      _setStatus(VpnStatus.error, 'Tunnel error');
+      return false;
+    }
+  }
+
+  // ── Disconnect ────────────────────────────────────────────────────────────
+  // Tears down the active tunnel and returns Android to normal networking.
+  Future<void> disconnect() async {
+    if (_status == VpnStatus.disconnected) return;
+
+    _setStatus(VpnStatus.disconnecting, 'Tearing down…');
+
+    if (kIsWeb) {
+      await Future.delayed(const Duration(milliseconds: 500));
+      _setStatus(VpnStatus.disconnected, 'Tap to connect');
+      return;
+    }
+
+    try {
+      await _wireguard.stopVpn();
+    } catch (e) {
+      debugPrint('WireGuard stop error: $e');
+    }
+
+    // Clean up the peer from the server so we don't leave dead connections lying around
+    await HivemindService.disconnectAndCleanup();
+
+    _setStatus(VpnStatus.disconnected, 'Tap to connect');
+  }
+
+  // ── Internal state updater ────────────────────────────────────────────────
+  // Updates state and triggers a UI re-render (like calling setState() in Python/Qt)
+  void _setStatus(VpnStatus s, String msg) {
+    _status = s;
+    _statusMessage = msg;
+    notifyListeners(); // tells all listening widgets to rebuild
+  }
+
+  @override
+  void dispose() {
+    _stageSub?.cancel();
+    super.dispose();
+  }
+}
