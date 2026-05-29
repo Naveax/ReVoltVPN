@@ -48,7 +48,7 @@ class HivemindService {
             final configText = '''
 [Interface]
 PrivateKey = $privKey
-Address = $clientIp/24
+Address = $clientIp/16
 DNS = ${AppConfig.dnsServers}
 MTU = ${AppConfig.mtu}
 Jc = ${AppConfig.awgJc}
