@@ -66,4 +66,3 @@ local_packages/*/.dart_tool/
 android/key.properties
 lib/logic/backup/
 00-FULL-REPORT.md
-server_hivemind_4_0.py
