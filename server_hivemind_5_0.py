@@ -21,6 +21,13 @@ import base64
 
 app = Flask(__name__)
 
+# Compiled once at startup for performance
+_WG_PUBKEY_RE = re.compile(r'^[A-Za-z0-9+/]{43}=$')
+
+def validate_wg_pubkey(pubkey: str) -> bool:
+    """Rejects any string that isn't a valid 44-char base64 WireGuard public key."""
+    return bool(pubkey and _WG_PUBKEY_RE.match(pubkey))
+
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
@@ -108,7 +115,10 @@ def init_wireguard():
 
 
 def _class_id(ip):
-    return ip.split('.')[-1]
+    # Combine 3rd and 4th octet for uniqueness across /16
+    # e.g. "10.8.3.5" -> "773" (3*256+5), avoids collisions
+    parts = ip.split('.')
+    return str(int(parts[2]) * 256 + int(parts[3]))
 
 
 def apply_throttle(ip):
@@ -263,6 +273,10 @@ def _start_or_extend_session(device_id, client_pubkey, ad_type):
         
         else:
             # Create a brand new session (Main Ad)
+            if not validate_wg_pubkey(client_pubkey):
+                print(f"[SESSION] Rejected invalid pubkey from {device_id[:8]}...")
+                return False, "Invalid public key format."
+
             existing = active_sessions.get(device_id)
             if existing:
                 if existing["is_throttled"]:
@@ -445,10 +459,7 @@ def session_status():
             print(f"[WG] Dynamic Server Public Key cached: {SERVER_PUBKEY}")
         else:
             # Absolute fallback if docker exec is broken on this host
-            #
-            #THIS IS WHERE FUCKING DOCKER KEY GOES DONT FUCKING FORGET
-            #
-            SERVER_PUBKEY = "YOUR_SERVER_PUBLIC_KEY_HERE"
+            SERVER_PUBKEY = SERVER_PUBKEY_FALLBACK or "YOUR_SERVER_PUBLIC_KEY_HERE"
 
     stats          = get_wireguard_stats()
     current_bytes  = stats.get(session["ip"], {}).get("total_bytes", 0)
