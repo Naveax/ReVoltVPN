@@ -25,14 +25,14 @@ class HivemindService {
       });
       final fakeAdmobPingUrl = Uri.parse(
           '${AppConfig.hivemindApiBase}/admob/callback?signature=test&key_id=test&custom_data=${Uri.encodeComponent(customData)}');
-      await http.get(fakeAdmobPingUrl).timeout(const Duration(seconds: 2));
+      await http.get(fakeAdmobPingUrl).timeout(const Duration(seconds: 8));
     } catch (_) {}
     // ──────────────────────────────────────────
 
     int attempts = 0;
     while (attempts < 15) {
       try {
-        final response = await http.get(url).timeout(const Duration(seconds: 3));
+        final response = await http.get(url).timeout(const Duration(seconds: 10));
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body);
           

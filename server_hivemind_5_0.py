@@ -106,12 +106,14 @@ def init_wireguard():
     print(f"[NAT] Applying masquerade for /16 subnet...")
     run_cmd(f"iptables -t nat -A POSTROUTING -s 10.8.0.0/16 -j MASQUERADE", ignore_errors=True)
 
-    pubkey = run_cmd(f"wg show {WG_INTERFACE} public-key")
+    # Key MUST be read from host awg0 directly (not from Docker's wg0).
+    # The phone connects to awg0 on port 4433 — Docker's wg0 has a different key.
+    pubkey = run_cmd("awg show awg0 public-key")
     if pubkey:
         SERVER_PUBKEY = pubkey
-        print(f"[WG] Server Public Key cached: {SERVER_PUBKEY}")
+        print(f"[WG] Server Public Key cached from awg0: {SERVER_PUBKEY}")
     else:
-        print("[WG] WARNING: Could not fetch Server Public Key!")
+        print("[WG] WARNING: Could not fetch awg0 public key! Check that awg is installed on host.")
 
 
 def _class_id(ip):
@@ -135,24 +137,37 @@ def remove_throttle(ip):
 
 
 def get_wireguard_stats():
-    """Returns { "10.8.0.2": {"pubkey": "...", "total_bytes": 1234}, ... }"""
-    output = run_cmd(f"wg show {WG_INTERFACE} dump")
-    if not output:
+    """Returns { "10.8.X.Y": {"pubkey": "...", "total_bytes": 1234}, ... }
+    Reads directly from the host's awg0 interface (not Docker's wg0).
+    Uses two separate commands to avoid AmneziaWG dump column-layout differences.
+    """
+    # Step 1: pubkey -> (rx_bytes, tx_bytes)
+    transfer_out = run_cmd("awg show awg0 transfer")
+    # Step 2: pubkey -> ip/32
+    allowed_out  = run_cmd("awg show awg0 allowed-ips")
+
+    if not transfer_out or not allowed_out:
         return {}
 
-    stats = {}
-    lines = output.splitlines()[1:]
-    for line in lines:
+    # Build pubkey -> IP map from allowed-ips
+    pubkey_to_ip = {}
+    for line in allowed_out.splitlines():
         parts = line.split('\t')
-        if len(parts) >= 8:
-            pubkey      = parts[0]
-            allowed_ips = parts[3].split('/')[0]
-            rx          = int(parts[5])
-            tx          = int(parts[6])
-            stats[allowed_ips] = {
-                "pubkey":      pubkey,
-                "total_bytes": rx + tx
-            }
+        if len(parts) >= 2:
+            pubkey_to_ip[parts[0]] = parts[1].split('/')[0]
+
+    # Build IP -> stats from transfer bytes
+    stats = {}
+    for line in transfer_out.splitlines():
+        parts = line.split('\t')
+        if len(parts) >= 3:
+            pubkey = parts[0]
+            ip     = pubkey_to_ip.get(pubkey)
+            if ip:
+                stats[ip] = {
+                    "pubkey":      pubkey,
+                    "total_bytes": int(parts[1]) + int(parts[2])
+                }
     return stats
 
 
@@ -394,23 +409,35 @@ def admob_callback():
       { "device_id": "...", "public_key": "...", "ad_type": "main_ad"|"bonus_ad" }
     """
     try:
-        signature       = request.args.get('signature')
-        key_id          = request.args.get('key_id')
+        # ======================================================================
+        # ⚠️ ADMOB BYPASS (TEMPORARY FOR APP REVIEW)
+        # DELETE THIS ENTIRE BLOCK WHEN YOU WANT TO ENABLE REAL ADS
+        # ======================================================================
         custom_data_str = request.args.get('custom_data')
-
-        # Google sends a verification ping with signature+key_id but no custom_data
         if not custom_data_str:
-            return "OK", 200  # Verification ping from Google dashboard
+            return "OK", 200
+        # ======================================================================
 
-        if not all([signature, key_id]):
-            return "Missing parameters", 400
-
-        # ⚠️ TEMP: Signature verification disabled for Play Store submission testing
-        # TODO: Uncomment before going live with real ad traffic
+        # ======================================================================
+        # ✅ REAL ADMOB CODE
+        # UNCOMMENT THIS ENTIRE BLOCK WHEN YOU WANT TO ENABLE REAL ADS
+        # ======================================================================
+        # signature       = request.args.get('signature')
+        # key_id          = request.args.get('key_id')
+        # custom_data_str = request.args.get('custom_data')
+        # 
+        # # Google sends a verification ping with signature+key_id but no custom_data
+        # if not custom_data_str:
+        #     return "OK", 200  # Verification ping from Google dashboard
+        # 
+        # if not all([signature, key_id]):
+        #     return "Missing parameters", 400
+        # 
         # raw_qs = request.query_string.decode("utf-8")
         # if not _verify_admob_signature(raw_qs, signature, key_id):
         #     print("[ADMOB] Rejected callback — invalid signature.")
         #     return "Forbidden", 403
+        # ======================================================================
 
         custom_data   = json.loads(custom_data_str)
         device_id     = custom_data.get('device_id')
@@ -453,13 +480,23 @@ def session_status():
     # Bulletproof fallback: If server public key is missing, try fetching it right now
     global SERVER_PUBKEY
     if not SERVER_PUBKEY:
-        pubkey = run_cmd(f"wg show {WG_INTERFACE} public-key")
+        # Same as init: must read from awg0 on the host, not Docker's wg0
+        pubkey = run_cmd("awg show awg0 public-key")
         if pubkey:
             SERVER_PUBKEY = pubkey
-            print(f"[WG] Dynamic Server Public Key cached: {SERVER_PUBKEY}")
+            print(f"[WG] Dynamic Server Public Key cached from awg0: {SERVER_PUBKEY}")
         else:
             # Absolute fallback if docker exec is broken on this host
-            SERVER_PUBKEY = SERVER_PUBKEY_FALLBACK or "YOUR_SERVER_PUBLIC_KEY_HERE"
+            ########
+            ######### 313131
+            #######
+            ########
+            SERVER_PUBKEY = SERVER_PUBKEY_FALLBACK or "server key="
+            ######
+            ########
+            #########
+            ##########
+            ##########
 
     stats          = get_wireguard_stats()
     current_bytes  = stats.get(session["ip"], {}).get("total_bytes", 0)
