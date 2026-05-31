@@ -200,6 +200,7 @@ def add_wg_peer(pubkey, ip):
     run_cmd(f"awg set awg0 peer {pubkey} remove", ignore_errors=True)
     res = run_cmd(f"wg set {WG_INTERFACE} peer {pubkey} allowed-ips {ip}/32")
     run_cmd(f"awg set awg0 peer {pubkey} allowed-ips {ip}/32")
+    time.sleep(0.2)  # Let WireGuard register the peer before baseline snapshot
     if res is not None:
         print(f"[WG] Ephemeral peer added: {pubkey[:8]}... -> {ip}")
 
@@ -443,13 +444,10 @@ def admob_callback():
         device_id     = custom_data.get('device_id')
         client_pubkey = custom_data.get('public_key')
         
-        with sessions_lock:
-            ad_type = 'bonus_ad' if device_id in active_sessions else 'main_ad'
-
         if not device_id or not client_pubkey:
             return "Invalid custom_data payload", 400
 
-        success, msg = _start_or_extend_session(device_id, client_pubkey, ad_type)
+        success, msg = _start_or_extend_session(device_id, client_pubkey, 'main_ad')
         return ("OK", 200) if success else (msg, 500)
 
     except Exception as e:
@@ -538,13 +536,9 @@ def session_stop():
 # ==============================================================================
 # ENTRY POINT
 # ==============================================================================
-# Start background thread before first request (for Gunicorn compatibility)
-@app.before_request
-def _start_daemon():
-    if not hasattr(app, '_daemon_started'):
-        app._daemon_started = True
-        daemon = threading.Thread(target=management_loop, daemon=True)
-        daemon.start()
+# Start management daemon at module load (gunicorn-safe, runs once per process)
+_daemon_thread = threading.Thread(target=management_loop, daemon=True)
+_daemon_thread.start()
 
 if __name__ == '__main__':
     # When running directly with Flask, the before_request hook handles it
