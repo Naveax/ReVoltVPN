@@ -52,14 +52,21 @@ class StatusText extends StatelessWidget {
                     ),
                   ),
                 ] else ...[
-                  // Dynamic status icon (spinning arrows for loading, outlined shield for idle)
-                  Icon(
-                    isConnecting ? Icons.autorenew : Icons.shield_outlined,
-                    size: 18,
-                    color: isConnecting
-                        ? const Color(0xFF00E5FF)
-                        : const Color(0xAA4A5568),
-                  ),
+                  if (isConnecting)
+                    const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.5,
+                        color: Color(0xFF00E5FF),
+                      ),
+                    )
+                  else
+                    const Icon(
+                      Icons.shield_outlined,
+                      size: 18,
+                      color: Color(0xAA4A5568),
+                    ),
                   const SizedBox(width: 8),
                   Text(
                     vpn.statusMessage.toUpperCase(),

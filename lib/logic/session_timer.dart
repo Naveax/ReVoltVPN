@@ -182,6 +182,7 @@ class SessionTimer extends ChangeNotifier {
   @override
   void dispose() {
     _timer?.cancel();
+    VpnNotificationManager.cancel();
     super.dispose();
   }
 }

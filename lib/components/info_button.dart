@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class InfoButton extends StatelessWidget {
-  const InfoButton({Key? key}) : super(key: key);
+  const InfoButton({super.key});
 
   Future<void> _launchGitHub() async {
     final Uri url = Uri.parse('https://github.com/esefxdz/PaladinVPN');

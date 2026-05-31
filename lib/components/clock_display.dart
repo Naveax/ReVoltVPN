@@ -3,110 +3,98 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:paladinvpn/logic/session_timer.dart';
 
-/// ClockDisplay shows a large circular progress ring and the session countdown timer.
-/// 
-/// The timer text glows electric cyan when a session is active and dims to slate gray when idle.
+/// ClockDisplay renders inside the ConnectButton circle when the VPN is active.
+///
+/// Shows a circular quota-progress arc, a glowing countdown timer, and the
+/// current transfer speed — all sized to fit within the 260px button.
 class ClockDisplay extends StatelessWidget {
   const ClockDisplay({super.key});
 
   static const Color _cyanGlow = Color(0xFF00E5FF);
-  static const Color _dimSlate = Color(0xFF4A5568);
 
   @override
   Widget build(BuildContext context) {
     return Consumer<SessionTimer>(
       builder: (context, timer, _) {
-        final isLive = timer.isRunning;
-        final color = isLive ? _cyanGlow : _dimSlate;
+        return SizedBox(
+          width: 200,
+          height: 200,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              // Background quota track ring
+              const CustomPaint(
+                size: Size(200, 200),
+                painter: _ArcPainter(
+                  progress: 1.0,
+                  color: Color.fromRGBO(74, 85, 104, 0.2),
+                  strokeWidth: 4,
+                ),
+              ),
 
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(
-              width: 220,
-              height: 220,
-              child: Stack(
-                alignment: Alignment.center,
+              // Live quota progress ring
+              TweenAnimationBuilder<double>(
+                tween: Tween(begin: 0, end: timer.progress),
+                duration: const Duration(milliseconds: 400),
+                builder: (context, value, _) => CustomPaint(
+                  size: const Size(200, 200),
+                  painter: _ArcPainter(
+                    progress: value,
+                    color: _cyanGlow,
+                    strokeWidth: 4,
+                    glow: true,
+                  ),
+                ),
+              ),
+
+              // Center content: countdown + speed
+              Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Background track ring representing the maximum capacity of the countdown
-                  const CustomPaint(
-                    size: Size(220, 220),
-                    painter: _ArcPainter(
-                      progress: 1.0,
-                      color: Color.fromRGBO(74, 85, 104, 0.2),
-                      strokeWidth: 4,
+                  // Glowing countdown timer
+                  Text(
+                    timer.formatted,
+                    style: const TextStyle(
+                      fontSize: 40,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.white,
+                      letterSpacing: 2,
+                      shadows: [
+                        Shadow(
+                          color: Color.fromRGBO(0, 229, 255, 0.5),
+                          blurRadius: 16,
+                        ),
+                      ],
                     ),
                   ),
-                  
-                  // Live progress ring showing current remaining time relative to the session limit
-                  if (isLive)
-                    TweenAnimationBuilder<double>(
-                      tween: Tween(begin: 0, end: timer.progress),
-                      duration: const Duration(milliseconds: 400),
-                      builder: (context, value, _) => CustomPaint(
-                        size: const Size(220, 220),
-                        painter: _ArcPainter(
-                          progress: value,
-                          color: _cyanGlow,
-                          strokeWidth: 4,
-                          glow: true,
+                  const SizedBox(height: 6),
+
+                  // Speed indicator
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.speed, color: Colors.white54, size: 14),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${timer.currentSpeedKbps.toStringAsFixed(1)} KB/s',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.white54,
+                          fontWeight: FontWeight.w500,
                         ),
                       ),
-                    ),
-                    
-                  // Monospaced digital clock display for session countdown
-                  AnimatedDefaultTextStyle(
-                    duration: const Duration(milliseconds: 300),
-                    style: TextStyle(
-                      fontFamily: 'RobotoMono',
-                      fontSize: 48,
-                      fontWeight: FontWeight.w300,
-                      letterSpacing: 4,
-                      color: color,
-                      shadows: isLive
-                          ? const [
-                              Shadow(
-                                color: Color.fromRGBO(0, 229, 255, 0.6),
-                                blurRadius: 20,
-                              ),
-                              Shadow(
-                                color: Color.fromRGBO(0, 229, 255, 0.3),
-                                blurRadius: 40,
-                              ),
-                            ]
-                          : const [],
-                    ),
-                    child: Text(timer.formatted),
+                    ],
                   ),
                 ],
               ),
-            ),
-            const SizedBox(height: 12),
-            
-            // Subtitle state label below the timer
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 200),
-              child: Text(
-                isLive ? 'SESSION ACTIVE' : 'STANDBY',
-                key: ValueKey(isLive),
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 3,
-                  color: isLive
-                      ? const Color.fromRGBO(0, 229, 255, 0.7)
-                      : const Color.fromRGBO(74, 85, 104, 0.7),
-                ),
-              ),
-            ),
-          ],
+            ],
+          ),
         );
       },
     );
   }
 }
 
-/// A custom painter to render a circular progress arc or background track ring.
 class _ArcPainter extends CustomPainter {
   final double progress;
   final Color color;
@@ -125,7 +113,6 @@ class _ArcPainter extends CustomPainter {
     final rect = Rect.fromLTWH(0, 0, size.width, size.height)
         .deflate(strokeWidth / 2);
 
-    // Optional blurred background paint to create an electric neon glow effect
     if (glow) {
       final glowPaint = Paint()
         ..color = const Color.fromRGBO(0, 229, 255, 0.15)
@@ -136,7 +123,6 @@ class _ArcPainter extends CustomPainter {
       canvas.drawArc(rect, -pi / 2, 2 * pi * progress, false, glowPaint);
     }
 
-    // Core progress stroke paint
     final paint = Paint()
       ..color = color
       ..style = PaintingStyle.stroke

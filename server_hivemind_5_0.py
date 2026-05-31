@@ -447,7 +447,9 @@ def admob_callback():
         if not device_id or not client_pubkey:
             return "Invalid custom_data payload", 400
 
-        success, msg = _start_or_extend_session(device_id, client_pubkey, 'main_ad')
+        ad_type       = custom_data.get('ad_type', 'main_ad')
+
+        success, msg = _start_or_extend_session(device_id, client_pubkey, ad_type)
         return ("OK", 200) if success else (msg, 500)
 
     except Exception as e:

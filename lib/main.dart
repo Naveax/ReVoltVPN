@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import 'package:paladinvpn/logic/vpn_connection.dart';
 import 'package:paladinvpn/logic/session_timer.dart';
+import 'package:paladinvpn/logic/ad_manager.dart';
 import 'package:paladinvpn/screens/main_screen.dart';
 import 'package:paladinvpn/screens/intro.dart';
 
@@ -53,6 +54,9 @@ class PaladinApp extends StatelessWidget {
           update: (_, vpn, prev) =>
               prev ?? SessionTimer(vpnConnection: vpn),
         ),
+
+        // Manages rewarded ad lifecycle — preloads on startup.
+        ChangeNotifierProvider(create: (_) => AdManager()),
       ],
       child: MaterialApp(
         title: 'Paladin VPN',

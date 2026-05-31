@@ -2,13 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:paladinvpn/logic/vpn_connection.dart';
 import 'package:paladinvpn/components/online_dot.dart';
+import 'package:paladinvpn/components/watch_ad_button.dart';
 
 /// BottomBar is the bottom utility panel that surfaces server connectivity status
 /// and offers the user an option to support the server when the VPN tunnel is active.
 class BottomBar extends StatelessWidget {
   const BottomBar({super.key});
 
-  // Dark card background color for high contrast overlay
   static const Color _cardBg = Color(0xFF1E2533);
 
   @override
@@ -29,8 +29,11 @@ class BottomBar extends StatelessWidget {
           ),
           child: Row(
             children: [
-              // Displays the server online/offline chip
+              // Server online/offline chip
               OnlineDot(isOnline: isOnline),
+              const Spacer(),
+              // Support button — only visible while connected
+              if (isOnline) const WatchAdButton(),
             ],
           ),
         );

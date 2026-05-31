@@ -156,7 +156,7 @@ class VpnConnection extends ChangeNotifier {
       return false;
     }
 
-    // ── Step 2: Start the WireGuard tunnel with the fetched config ─────────
+    // ── Step 3: Start the WireGuard tunnel with the fetched config ─────────
     try {
       // Re-initialize to ensure VPN permission is granted before starting
       await _wireguard.initialize(interfaceName: 'Paladin0');

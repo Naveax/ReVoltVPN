@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:paladinvpn/logic/vpn_connection.dart';
 import 'package:paladinvpn/logic/session_timer.dart';
+import 'package:paladinvpn/components/clock_display.dart';
 
 class ConnectButton extends StatefulWidget {
   const ConnectButton({super.key});
@@ -30,26 +31,38 @@ class _ConnectButtonState extends State<ConnectButton>
     _pulseAnim = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
+
+    // Listen to VpnConnection changes to drive the pulse animation
+    // from outside build(), keeping build() pure.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      context.read<VpnConnection>().addListener(_onVpnStateChanged);
+    });
   }
 
   @override
   void dispose() {
+    context.read<VpnConnection>().removeListener(_onVpnStateChanged);
     _pulseController.dispose();
     super.dispose();
+  }
+
+  void _onVpnStateChanged() {
+    if (!mounted) return;
+    final isConnected = context.read<VpnConnection>().status == VpnStatus.connected;
+    if (isConnected && !_pulseController.isAnimating) {
+      _pulseController.repeat(reverse: true);
+    } else if (!isConnected && _pulseController.isAnimating) {
+      _pulseController.stop();
+      _pulseController.reset();
+    }
   }
 
   void _handleTap() async {
     if (_inCooldown) return;
 
-    setState(() {
-      _inCooldown = true;
-    });
+    setState(() => _inCooldown = true);
     Future.delayed(const Duration(seconds: 5), () {
-      if (mounted) {
-        setState(() {
-          _inCooldown = false;
-        });
-      }
+      if (mounted) setState(() => _inCooldown = false);
     });
 
     final vpn = context.read<VpnConnection>();
@@ -58,14 +71,11 @@ class _ConnectButtonState extends State<ConnectButton>
     if (vpn.status == VpnStatus.connected) {
       vpn.disconnect();
       timer.stop();
-      _pulseController.stop();
-      _pulseController.reset();
     } else if (vpn.status == VpnStatus.disconnected ||
                vpn.status == VpnStatus.error) {
       final success = await vpn.connect();
       if (success) {
         timer.start('main_ad');
-        _pulseController.repeat(reverse: true);
       }
     }
   }
@@ -76,13 +86,6 @@ class _ConnectButtonState extends State<ConnectButton>
       builder: (context, vpn, timer, _) {
         final isConnected = vpn.status == VpnStatus.connected;
         final isConnecting = vpn.status == VpnStatus.connecting;
-
-        if (isConnected && !_pulseController.isAnimating) {
-          _pulseController.repeat(reverse: true);
-        } else if (!isConnected && !isConnecting && _pulseController.isAnimating) {
-          _pulseController.stop();
-          _pulseController.reset();
-        }
 
         return GestureDetector(
           onTap: (isConnecting || _inCooldown) ? null : _handleTap,
@@ -121,8 +124,8 @@ class _ConnectButtonState extends State<ConnectButton>
                       : const [],
                 ),
                 child: Center(
-                  child: isConnected 
-                    ? _buildConnectedStats(timer)
+                  child: isConnected
+                    ? const ClockDisplay()
                     : _buildDisconnectedIcon(vpn.status, _inCooldown),
                 ),
               );
@@ -161,46 +164,6 @@ class _ConnectButtonState extends State<ConnectButton>
             letterSpacing: 1.5,
           ),
         ),
-      ],
-    );
-  }
-
-  Widget _buildConnectedStats(SessionTimer timer) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        // Countdown Timer
-        Text(
-          timer.formatted,
-          style: const TextStyle(
-            fontSize: 48,
-            fontWeight: FontWeight.w800,
-            color: Colors.white,
-            letterSpacing: 2,
-          ),
-        ),
-        const SizedBox(height: 8),
-        
-
-
-        // Speed indicator
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.speed, color: Colors.white70, size: 16),
-            const SizedBox(width: 4),
-            Text(
-              '${timer.currentSpeedKbps.toStringAsFixed(1)} KB/s',
-              style: const TextStyle(
-                fontSize: 14,
-                color: Colors.white70,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ],
-        ),
-
-
       ],
     );
   }

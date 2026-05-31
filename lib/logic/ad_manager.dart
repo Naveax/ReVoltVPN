@@ -94,8 +94,8 @@ class AdManager extends ChangeNotifier {
     final keys = await CryptoService.getOrCreateKeys();
     final pubKey = keys['publicKey']!;
 
-    // 3. Attach custom data to the ad so Google sends it back to our Hivemind server
-    _rewardedAd!.serverSideVerificationOptions = ServerSideVerificationOptions(
+    // 3. Build SSV options to send to our Hivemind server via Google's callback
+    final ssvOptions = ServerSideVerificationOptions(
       customData: jsonEncode({
         'device_id': deviceId,
         'public_key': pubKey,
@@ -130,7 +130,8 @@ class AdManager extends ChangeNotifier {
       },
     );
 
-    // 5. Show the ad
+    // 5. Show the ad with SSV options
+    _rewardedAd!.setServerSideOptions(ssvOptions);
     await _rewardedAd!.show(
       onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {
         debugPrint('[AdManager] Reward earned: ${reward.amount} ${reward.type}');
