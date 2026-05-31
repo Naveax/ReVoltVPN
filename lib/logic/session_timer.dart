@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:paladinvpn/logic/app_config.dart';
 import 'package:paladinvpn/logic/vpn_connection.dart';
 import 'package:paladinvpn/logic/crypto_service.dart';
+import 'package:paladinvpn/components/notification.dart';
 
 /// SessionTimer acts as the client-side session authority for the VPN tunnel.
 /// 
@@ -49,6 +50,16 @@ class SessionTimer extends ChangeNotifier {
     if (_quotaBytes == 0) return '0.00 GB';
     final gb = remainingBytes / (1024 * 1024 * 1024);
     return '${gb.toStringAsFixed(2)} GB';
+  }
+
+  String get formattedDataUsed {
+    if (_usedBytes == 0) return '0.00 MB';
+    if (_usedBytes > 1024 * 1024 * 1024) {
+      final gb = _usedBytes / (1024 * 1024 * 1024);
+      return '${gb.toStringAsFixed(2)} GB';
+    }
+    final mb = _usedBytes / (1024 * 1024);
+    return '${mb.toStringAsFixed(2)} MB';
   }
 
   double get progress {
@@ -119,6 +130,11 @@ class SessionTimer extends ChangeNotifier {
         }
         _lastUsedBytes = _usedBytes;
 
+        VpnNotificationManager.showOrUpdateStatus(
+          timeLeft: formatted,
+          speedKbps: '${_currentSpeedKbps.toStringAsFixed(2)} KB/s',
+        );
+
         notifyListeners();
       } else if (response.statusCode == 404) {
         // Peer not found on server (expired/deleted natively)
@@ -159,6 +175,7 @@ class SessionTimer extends ChangeNotifier {
     _timer = null;
     _remainingSeconds = 0;
     _currentSpeedKbps = 0.0;
+    VpnNotificationManager.cancel();
     notifyListeners();
   }
 
