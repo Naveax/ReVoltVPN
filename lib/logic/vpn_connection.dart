@@ -43,6 +43,11 @@ class VpnConnection extends ChangeNotifier {
   VpnStatus _status = VpnStatus.disconnected;
   VpnStatus get status => _status;
 
+  // True only during the brief window after startup where we detected an
+  // already-running tunnel — lets SessionTimer know to auto-resume.
+  bool _isStartupRestoration = false;
+  bool get isStartupRestoration => _isStartupRestoration;
+
   // Short message shown to the user under the connect button
   String _statusMessage = 'Tap to connect';
   String get statusMessage => _statusMessage;
@@ -83,6 +88,20 @@ class VpnConnection extends ChangeNotifier {
     // When Android reports the tunnel went up/down, _mapStage() is called.
     try {
       _stageSub = _wireguard.vpnStageSnapshot.listen(_mapStage);
+    } catch (_) {}
+
+    // Check if the VPN was already running before the app started.
+    // This handles the case where the user swiped the app away and reopened it.
+    try {
+      final currentStage = await _wireguard.stage();
+      if (currentStage == VpnStage.connected) {
+        _isStartupRestoration = true;
+        _mapStage(currentStage);
+        // Clear the flag after a few seconds — only needed during app startup
+        Future.delayed(const Duration(seconds: 5), () {
+          _isStartupRestoration = false;
+        });
+      }
     } catch (_) {}
   }
 

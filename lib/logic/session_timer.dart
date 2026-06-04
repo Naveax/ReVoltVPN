@@ -27,7 +27,19 @@ class SessionTimer extends ChangeNotifier {
   int _lastUsedBytes = 0;
   double _currentSpeedKbps = 0.0; // Total speed (RX+TX)
 
-  SessionTimer({required this.vpnConnection});
+  SessionTimer({required this.vpnConnection}) {
+    vpnConnection.addListener(_onVpnConnectionChanged);
+  }
+
+  /// Fires whenever VpnConnection state changes.
+  /// Only acts during startup restoration — normal connects go through ConnectButton.
+  void _onVpnConnectionChanged() {
+    if (vpnConnection.status == VpnStatus.connected &&
+        !isRunning &&
+        vpnConnection.isStartupRestoration) {
+      start('resume');
+    }
+  }
 
   int get remaining => _remainingSeconds;
   bool get isRunning => _timer != null && _timer!.isActive;
@@ -181,6 +193,7 @@ class SessionTimer extends ChangeNotifier {
 
   @override
   void dispose() {
+    vpnConnection.removeListener(_onVpnConnectionChanged);
     _timer?.cancel();
     VpnNotificationManager.cancel();
     super.dispose();
