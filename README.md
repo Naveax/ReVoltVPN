@@ -1,7 +1,17 @@
 ---
 
+<p align="center">
+  <img src="screenshots/feature_graphic.png" alt="PaladinVPN banner" width="100%"/>
+</p>
+
 # PaladinVPN
 A free VPN app I built in my spare time as a student with basically no prior experience.
+
+<p align="center">
+  <img src="screenshots/hero_screenshot.png" alt="PaladinVPN splash screen" width="32%"/>
+  &nbsp;&nbsp;&nbsp;
+  <img src="screenshots/styled_idle.png" alt="PaladinVPN connected — 60 min session active" width="32%"/>
+</p>
 
 There are hundreds of free VPN apps on the Play Store. Most of them are fine honestly — some are genuinely good. But a lot of them are vague about how they work, who runs them, and what happens to your traffic. I wanted to build something where the answer to all of those questions is just... public.
 
