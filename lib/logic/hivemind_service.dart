@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:paladinvpn/logic/app_config.dart';
 import 'package:paladinvpn/logic/crypto_service.dart';
@@ -14,20 +15,8 @@ class HivemindService {
     
     final url = Uri.parse('${AppConfig.hivemindApiBase}/session/status?device_id=$deviceId');
 
-    // ── TEMPORARY AD BYPASS HACK FOR TESTING ──
-    // Since you disabled the crypto signature check on the Python server,
-    // we can just send a fake "Ad Watched" ping from the app directly.
-    try {
-      final customData = jsonEncode({
-        'device_id': deviceId,
-        'public_key': keys['publicKey']!,
-        'ad_type': 'main_ad',
-      });
-      final fakeAdmobPingUrl = Uri.parse(
-          '${AppConfig.hivemindApiBase}/admob/callback?signature=test&key_id=test&custom_data=${Uri.encodeComponent(customData)}');
-      await http.get(fakeAdmobPingUrl).timeout(const Duration(seconds: 8));
-    } catch (_) {}
-    // ──────────────────────────────────────────
+    // AdMob SSV is handled server-to-server by Google.
+    // The app waits for the server to activate the session via the real callback.
 
     int attempts = 0;
     while (attempts < 15) {
@@ -36,8 +25,7 @@ class HivemindService {
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body);
           
-          // Debugging log to see exactly what the server returned
-          print('[HivemindService] Polling response: ${response.body}');
+          debugPrint('[HivemindService] Session active, constructing config…');
           
           if (data['active'] == true && data['client_ip'] != null && data['server_pubkey'] != null) {
             final clientIp = data['client_ip'];
@@ -70,10 +58,10 @@ PersistentKeepalive = ${AppConfig.persistentKeepalive}
             return configText;
           }
         } else {
-          print('[HivemindService] Non-200 status: ${response.statusCode}');
+          debugPrint('[HivemindService] Non-200 status: ${response.statusCode}');
         }
       } catch (e) {
-        print('[HivemindService] Polling exception: $e');
+        debugPrint('[HivemindService] Polling exception: $e');
         // Ignore network errors and keep polling
       }
       

@@ -15,9 +15,15 @@ class WatchAdButton extends StatelessWidget {
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
         onTap: () async {
-          final success = await context.read<AdManager>().showAd('bonus_ad');
-          if (success && context.mounted) {
-            context.read<SessionTimer>().addBonusTime(); // Calls Hivemind API for 30m + 1GB
+          final adWatched = await context.read<AdManager>().showAd('bonus_ad');
+          if (!adWatched || !context.mounted) return;
+
+          // The actual session extension happens server-side via AdMob SSV.
+          // addBonusTime() syncs the new limits from the server.
+          final synced = await context.read<SessionTimer>().addBonusTime();
+          if (!context.mounted) return;
+
+          if (synced) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: const Text(
@@ -30,6 +36,18 @@ class WatchAdButton extends StatelessWidget {
                   borderRadius: BorderRadius.circular(10),
                 ),
                 duration: const Duration(seconds: 2),
+              ),
+            );
+          } else {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                  'Could not confirm bonus. Please check your connection.',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+                backgroundColor: Color(0xFF5D4037),
+                behavior: SnackBarBehavior.floating,
+                duration: Duration(seconds: 3),
               ),
             );
           }

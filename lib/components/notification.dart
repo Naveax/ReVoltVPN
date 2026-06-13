@@ -26,10 +26,19 @@ class VpnNotificationManager {
     _initialized = true;
   }
 
+  static String? _lastTimeLeft;
+  static String? _lastSpeedKbps;
+
   static Future<void> showOrUpdateStatus({
     required String timeLeft,
     required String speedKbps,
   }) async {
+    // Skip update if nothing changed — prevents notification flicker
+    // on Android skins that animate every notification update.
+    if (timeLeft == _lastTimeLeft && speedKbps == _lastSpeedKbps) return;
+    _lastTimeLeft  = timeLeft;
+    _lastSpeedKbps = speedKbps;
+
     if (!_initialized) await init();
 
     const androidDetails = AndroidNotificationDetails(

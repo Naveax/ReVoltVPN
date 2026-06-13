@@ -29,7 +29,8 @@ class AdManager extends ChangeNotifier {
     _preloadAd();
   }
 
-  /// Internal helper to load an ad and return a Future when it's ready
+  /// Loads a rewarded ad in the background and returns a Future when ready.
+  /// Safe to call multiple times — re-entrant calls wait on the same load.
   Future<bool> _preloadAd() async {
     // If already loaded, return instantly
     if (_isAdLoaded) return true;

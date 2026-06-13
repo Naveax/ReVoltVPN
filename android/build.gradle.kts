@@ -1,50 +1,28 @@
+// Root build.gradle.kts — project-level configuration only.
+// Application-specific configuration belongs in android/app/build.gradle.kts.
+
 plugins {
-    id("com.android.application")
-    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
-    id("dev.flutter.flutter-gradle-plugin")
+    // The Flutter Gradle Plugin is applied at the app-module level, not here.
+    id("dev.flutter.flutter-gradle-plugin") apply false
 }
 
-android {
-    namespace = "com.esefcloud.vpn"
-    compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
-
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    defaultConfig {
-        applicationId = "com.esefcloud.vpn"
-        minSdk = 21
-        targetSdk = flutter.targetSdkVersion
-        versionCode = flutter.versionCode
-        versionName = flutter.versionName
-    }
-
-    packaging {
-        resources {
-            excludes += setOf(
-                "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
-            )
-        }
-    }
-
-    buildTypes {
-        release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
-        }
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
     }
 }
 
-kotlin {
-    compilerOptions {
-        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
-    }
+rootProject.buildDir = "../build"
+
+subprojects {
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
 }
 
-flutter {
-    source = "../.."
+subprojects {
+    project.evaluationDependsOn(":app")
+}
+
+tasks.register("clean", Delete::class) {
+    delete(rootProject.buildDir)
 }

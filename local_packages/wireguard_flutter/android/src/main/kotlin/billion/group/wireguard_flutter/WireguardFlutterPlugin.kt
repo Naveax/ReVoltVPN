@@ -237,8 +237,13 @@ class WireguardFlutterPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         scope.launch(Dispatchers.IO) {
             try {
                 if (!havePermission) {
+                    // The permission dialog was already shown by setupTunnel /
+                    // checkPermission.  Tell Flutter to wait and retry rather
+                    // than throwing a confusing error while the system dialog
+                    // is still on screen.
                     checkPermission()
-                    throw Exception("Permissions are not given")
+                    flutterError(result, "VPN_PERMISSION_REQUESTED")
+                    return@launch
                 }
                 updateStage("prepare")
                 val inputStream = ByteArrayInputStream(wgQuickConfig.toByteArray())

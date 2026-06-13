@@ -138,7 +138,17 @@ class VpnConnection extends ChangeNotifier {
   // The connect button uses this to decide whether to start the timer.
   Future<bool> connect() async {
     // Don't do anything if we're already connected or currently connecting
-    if (_status == VpnStatus.connected || _status == VpnStatus.connecting) return false;
+    if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
+      return false;
+    }
+
+    // Guard: native plugin never loaded (wrong arch, missing .so)
+    if (!kIsWeb && !_pluginAvailable) {
+      _errorMessage = 'VPN service unavailable. The native tunnel library '
+          'could not be loaded on this device.';
+      _setStatus(VpnStatus.error, 'Service unavailable');
+      return false;
+    }
 
     _setStatus(VpnStatus.connecting, 'Fetching config…');
     _errorMessage = null;
@@ -150,32 +160,39 @@ class VpnConnection extends ChangeNotifier {
       return true;
     }
 
-
-
-    // ── Step 2: Fetch config from Hivemind ──
+    // ── Step 1: Fetch WireGuard config from Hivemind ────────────────────
     String configText;
     try {
       configText = await HivemindService.fetchConfigWithPolling();
-      
-      // Parse the internal IP (e.g. "Address = 10.8.0.2/24" or "/32")
+
+      // Parse the internal IP (e.g. "Address = 10.8.0.2/16" or "/32")
       final regex = RegExp(r'Address\s*=\s*([0-9\.]+)/');
       final match = regex.firstMatch(configText);
       if (match != null) {
         internalIp = match.group(1);
       }
     } catch (e) {
-      debugPrint('Hivemind API error: $e');
-      // Set the exact error as the status message so the user can see it on screen
-      String errorMsg = e.toString().replaceAll('Exception: ', '');
-      if (errorMsg.length > 30) {
-        errorMsg = '${errorMsg.substring(0, 30)}...'; // keep it somewhat short for the UI
+      debugPrint('Hivemind config error: $e');
+      final raw = e.toString().replaceAll('Exception: ', '');
+      // Map the known failures to something the user can act on
+      if (raw.contains('timed out') || raw.contains('Session not activated')) {
+        _errorMessage = 'The server did not respond in time.\n'
+            'Check your internet connection and try again.';
+        _setStatus(VpnStatus.error, 'Server unreachable');
+      } else if (raw.contains('SocketException') ||
+                 raw.contains('Failed host lookup')) {
+        _errorMessage = 'Cannot reach the VPN server.\n'
+            'Make sure you have an active internet connection.';
+        _setStatus(VpnStatus.error, 'No internet');
+      } else {
+        _errorMessage = raw;
+        final short = raw.length > 35 ? '${raw.substring(0, 35)}…' : raw;
+        _setStatus(VpnStatus.error, short);
       }
-      _errorMessage = e.toString();
-      _setStatus(VpnStatus.error, errorMsg);
       return false;
     }
 
-    // ── Step 3: Start the WireGuard tunnel with the fetched config ─────────
+    // ── Step 2: Start the WireGuard tunnel with the fetched config ──────
     try {
       // Re-initialize to ensure VPN permission is granted before starting
       await _wireguard.initialize(interfaceName: 'Paladin0');
@@ -188,8 +205,39 @@ class VpnConnection extends ChangeNotifier {
       return true;
     } catch (e) {
       debugPrint('WireGuard tunnel error: $e');
-      _errorMessage = 'Tunnel failed to start.\nTry reconnecting.';
-      _setStatus(VpnStatus.error, 'Tunnel error');
+      final raw = e.toString();
+      if (raw.contains('VPN_PERMISSION_REQUESTED')) {
+        // Native plugin showed the VPN permission dialog — wait and retry
+        _setStatus(VpnStatus.connecting, 'Waiting for permission…');
+        await Future.delayed(const Duration(seconds: 2));
+        // Retry the tunnel start once the user has had time to grant permission
+        try {
+          await _wireguard.startVpn(
+            serverAddress: AppConfig.serverEndpoint,
+            wgQuickConfig: configText,
+            providerBundleIdentifier: 'com.paladinvpn.app.WireGuardProvider',
+          );
+          _setStatus(VpnStatus.connected, 'Secured');
+          return true;
+        } catch (retryError) {
+          debugPrint('WireGuard retry error: $retryError');
+          _errorMessage = 'VPN permission was denied.\n'
+              'Please grant the VPN permission and try again.';
+          _setStatus(VpnStatus.error, 'Permission denied');
+          return false;
+        }
+      } else if (raw.contains('Permission') || raw.contains('permissions')) {
+        _errorMessage = 'VPN permission was denied.\n'
+            'Please grant the VPN permission and try again.';
+        _setStatus(VpnStatus.error, 'Permission denied');
+      } else if (raw.contains('NameInvalid') || raw.contains('invalid')) {
+        _errorMessage = 'The WireGuard configuration is invalid.\n'
+            'Please contact support.';
+        _setStatus(VpnStatus.error, 'Bad config');
+      } else {
+        _errorMessage = 'Tunnel failed to start.\nTry reconnecting.';
+        _setStatus(VpnStatus.error, 'Tunnel error');
+      }
       return false;
     }
   }

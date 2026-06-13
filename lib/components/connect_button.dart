@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:paladinvpn/logic/vpn_connection.dart';
 import 'package:paladinvpn/logic/session_timer.dart';
+import 'package:paladinvpn/logic/ad_manager.dart';
 import 'package:paladinvpn/components/clock_display.dart';
 
 class ConnectButton extends StatefulWidget {
@@ -60,30 +62,51 @@ class _ConnectButtonState extends State<ConnectButton>
   void _handleTap() async {
     if (_inCooldown) return;
 
-    setState(() => _inCooldown = true);
-    Future.delayed(const Duration(seconds: 5), () {
-      if (mounted) setState(() => _inCooldown = false);
-    });
-
     final vpn = context.read<VpnConnection>();
     final timer = context.read<SessionTimer>();
+    final ad = context.read<AdManager>();
 
     if (vpn.status == VpnStatus.connected) {
+      // Disconnect — apply a short cooldown to prevent rapid toggle spam
+      HapticFeedback.lightImpact();
       vpn.disconnect();
       timer.stop();
+      setState(() => _inCooldown = true);
+      Future.delayed(const Duration(seconds: 2), () {
+        if (mounted) setState(() => _inCooldown = false);
+      });
     } else if (vpn.status == VpnStatus.disconnected ||
                vpn.status == VpnStatus.error) {
+      // Only attempt connect if an ad is loaded (or we're in dev/web mode)
+      if (!ad.isAdLoaded && !ad.isAdLoading) {
+        ad.preloadAd(); // trigger a reload in background
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Ad is not ready yet. Please wait a moment.'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+        return;
+      }
+      HapticFeedback.lightImpact();
       final success = await vpn.connect();
       if (success) {
         timer.start('main_ad');
+        // Only apply cooldown on success — failures clear immediately
+        setState(() => _inCooldown = true);
+        Future.delayed(const Duration(seconds: 5), () {
+          if (mounted) setState(() => _inCooldown = false);
+        });
       }
+      // On failure the button stays active — the error message in
+      // StatusText tells the user what went wrong.
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Consumer2<VpnConnection, SessionTimer>(
-      builder: (context, vpn, timer, _) {
+    return Consumer3<VpnConnection, SessionTimer, AdManager>(
+      builder: (context, vpn, timer, ad, _) {
         final isConnected = vpn.status == VpnStatus.connected;
         final isConnecting = vpn.status == VpnStatus.connecting;
 
@@ -126,7 +149,7 @@ class _ConnectButtonState extends State<ConnectButton>
                 child: Center(
                   child: isConnected
                     ? const ClockDisplay()
-                    : _buildDisconnectedIcon(vpn.status, _inCooldown),
+                    : _buildDisconnectedIcon(vpn.status, _inCooldown, ad),
                 ),
               );
             },
@@ -136,7 +159,7 @@ class _ConnectButtonState extends State<ConnectButton>
     );
   }
 
-  Widget _buildDisconnectedIcon(VpnStatus status, bool inCooldown) {
+  Widget _buildDisconnectedIcon(VpnStatus status, bool inCooldown, AdManager ad) {
     if (status == VpnStatus.connecting || status == VpnStatus.disconnecting) {
       return const SizedBox(
         width: 48,
@@ -147,19 +170,38 @@ class _ConnectButtonState extends State<ConnectButton>
         ),
       );
     }
+    // Determine the right label for the disconnected state
+    String label;
+    IconData icon;
+    Color tint;
+
+    if (inCooldown) {
+      label = 'PLEASE WAIT';
+      icon  = Icons.hourglass_bottom;
+      tint  = Colors.grey;
+    } else if (status == VpnStatus.error) {
+      label = 'TRY AGAIN';
+      icon  = Icons.refresh;
+      tint  = const Color(0xFFEF5350); // soft red — something went wrong
+    } else if (!ad.isAdLoaded && !ad.isAdLoading) {
+      label = 'LOADING AD…';
+      icon  = Icons.hourglass_empty;
+      tint  = const Color.fromRGBO(74, 85, 104, 0.7);
+    } else {
+      label = 'TAP TO CONNECT';
+      icon  = Icons.power_settings_new;
+      tint  = const Color.fromRGBO(74, 85, 104, 0.7);
+    }
+
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(
-          inCooldown ? Icons.hourglass_bottom : Icons.power_settings_new,
-          size: 64,
-          color: inCooldown ? Colors.grey : const Color.fromRGBO(74, 85, 104, 0.7),
-        ),
+        Icon(icon, size: 64, color: tint),
         const SizedBox(height: 12),
         Text(
-          inCooldown ? 'PLEASE WAIT' : 'TAP TO CONNECT',
+          label,
           style: TextStyle(
-            color: inCooldown ? Colors.grey : const Color.fromRGBO(74, 85, 104, 0.9),
+            color: tint,
             fontWeight: FontWeight.bold,
             letterSpacing: 1.5,
           ),

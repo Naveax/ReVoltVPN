@@ -1,2 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The AmneziaWG GoBackend internally creates a VpnService.
+         FOREGROUND_SERVICE permission must be present so the
+         VPN notification and lifecycle work correctly. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
 </manifest>

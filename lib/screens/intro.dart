@@ -13,12 +13,14 @@ class _IntroScreenState extends State<IntroScreen> {
   @override
   void initState() {
     super.initState();
-    // Wait for 2.5 seconds then smoothly transition to the main screen
-    Timer(const Duration(milliseconds: 2500), () {
+    // Transition to the main screen after a brief natural pause.
+    // The delay is just long enough for the logo to be perceived (≈1.2 s)
+    // but not so long that it feels like the app is frozen.
+    Timer(const Duration(milliseconds: 1200), () {
       if (mounted) {
         Navigator.of(context).pushReplacement(
           PageRouteBuilder(
-            transitionDuration: const Duration(milliseconds: 800),
+            transitionDuration: const Duration(milliseconds: 600),
             pageBuilder: (_, __, ___) => const MainScreen(),
             transitionsBuilder: (_, animation, __, child) {
               return FadeTransition(opacity: animation, child: child);
