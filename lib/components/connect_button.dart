@@ -3,7 +3,6 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:paladinvpn/logic/vpn_connection.dart';
 import 'package:paladinvpn/logic/session_timer.dart';
-import 'package:paladinvpn/logic/ad_manager.dart';
 import 'package:paladinvpn/components/clock_display.dart';
 
 class ConnectButton extends StatefulWidget {
@@ -64,7 +63,6 @@ class _ConnectButtonState extends State<ConnectButton>
 
     final vpn = context.read<VpnConnection>();
     final timer = context.read<SessionTimer>();
-    final ad = context.read<AdManager>();
 
     if (vpn.status == VpnStatus.connected) {
       // Disconnect — apply a short cooldown to prevent rapid toggle spam
@@ -77,17 +75,6 @@ class _ConnectButtonState extends State<ConnectButton>
       });
     } else if (vpn.status == VpnStatus.disconnected ||
                vpn.status == VpnStatus.error) {
-      // Only attempt connect if an ad is loaded (or we're in dev/web mode)
-      if (!ad.isAdLoaded && !ad.isAdLoading) {
-        ad.preloadAd(); // trigger a reload in background
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Ad is not ready yet. Please wait a moment.'),
-            duration: Duration(seconds: 2),
-          ),
-        );
-        return;
-      }
       HapticFeedback.lightImpact();
       final success = await vpn.connect();
       if (success) {
@@ -105,8 +92,8 @@ class _ConnectButtonState extends State<ConnectButton>
 
   @override
   Widget build(BuildContext context) {
-    return Consumer3<VpnConnection, SessionTimer, AdManager>(
-      builder: (context, vpn, timer, ad, _) {
+    return Consumer2<VpnConnection, SessionTimer>(
+      builder: (context, vpn, timer, _) {
         final isConnected = vpn.status == VpnStatus.connected;
         final isConnecting = vpn.status == VpnStatus.connecting;
 
@@ -149,7 +136,7 @@ class _ConnectButtonState extends State<ConnectButton>
                 child: Center(
                   child: isConnected
                     ? const ClockDisplay()
-                    : _buildDisconnectedIcon(vpn.status, _inCooldown, ad),
+                    : _buildDisconnectedIcon(vpn.status, _inCooldown),
                 ),
               );
             },
@@ -159,7 +146,7 @@ class _ConnectButtonState extends State<ConnectButton>
     );
   }
 
-  Widget _buildDisconnectedIcon(VpnStatus status, bool inCooldown, AdManager ad) {
+  Widget _buildDisconnectedIcon(VpnStatus status, bool inCooldown) {
     if (status == VpnStatus.connecting || status == VpnStatus.disconnecting) {
       return const SizedBox(
         width: 48,
@@ -183,10 +170,6 @@ class _ConnectButtonState extends State<ConnectButton>
       label = 'TRY AGAIN';
       icon  = Icons.refresh;
       tint  = const Color(0xFFEF5350); // soft red — something went wrong
-    } else if (!ad.isAdLoaded && !ad.isAdLoading) {
-      label = 'LOADING AD…';
-      icon  = Icons.hourglass_empty;
-      tint  = const Color.fromRGBO(74, 85, 104, 0.7);
     } else {
       label = 'TAP TO CONNECT';
       icon  = Icons.power_settings_new;

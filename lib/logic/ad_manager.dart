@@ -7,18 +7,20 @@ import 'package:paladinvpn/logic/hivemind_service.dart';
 import 'package:paladinvpn/logic/app_config.dart';
 
 /// AdManager manages the lifecycle of rewarded video ads.
-/// 
-/// It acts as a strict gatekeeper: users MUST watch an ad to connect.
-/// If an ad is not ready when they click connect, it forces them to wait
-/// while it loads. If they dismiss the ad early, they do not get the connection.
+///
+/// When [adsEnabled] is false (pre-launch mode) all ad operations are
+/// silently skipped — the app connects without any ad requirement.
 class AdManager extends ChangeNotifier {
+  /// Flip to `true` after Google Play launch when real ads are wired up.
+  static const bool adsEnabled = false;
+
   RewardedAd? _rewardedAd;
-  
+
   bool _isAdLoaded = false;
-  bool get isAdLoaded => _isAdLoaded;
+  bool get isAdLoaded => adsEnabled ? _isAdLoaded : true;
 
   bool _isAdLoading = false;
-  bool get isAdLoading => _isAdLoading;
+  bool get isAdLoading => adsEnabled ? _isAdLoading : false;
 
   Completer<bool>? _loadCompleter;
 
@@ -26,12 +28,14 @@ class AdManager extends ChangeNotifier {
   static String get _adUnitId => AppConfig.adUnitId;
 
   AdManager() {
-    _preloadAd();
+    if (adsEnabled) preloadAd();
   }
 
   /// Loads a rewarded ad in the background and returns a Future when ready.
   /// Safe to call multiple times — re-entrant calls wait on the same load.
-  Future<bool> _preloadAd() async {
+  /// No-op when [adsEnabled] is false.
+  Future<bool> preloadAd() async {
+    if (!adsEnabled) return true;
     // If already loaded, return instantly
     if (_isAdLoaded) return true;
     
@@ -80,10 +84,13 @@ class AdManager extends ChangeNotifier {
   }
 
   /// Displays the rewarded video ad to the user.
+  /// Returns false immediately when [adsEnabled] is false.
   Future<bool> showAd(String adType) async {
+    if (!adsEnabled) return false;
+
     // 1. Ensure the ad is fully loaded before trying to show it
     if (!_isAdLoaded || _rewardedAd == null) {
-      final loaded = await _preloadAd();
+      final loaded = await preloadAd();
       if (!loaded || _rewardedAd == null) {
         debugPrint('[AdManager] Cannot show ad, failed to load.');
         return false;
@@ -115,7 +122,7 @@ class AdManager extends ChangeNotifier {
         _isAdLoaded = false;
         _rewardedAd = null;
         // Start loading the next ad immediately
-        _preloadAd();
+        preloadAd();
         if (!rewardCompleter.isCompleted) {
           rewardCompleter.complete(false); // User closed before earning reward
         }

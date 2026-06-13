@@ -43,6 +43,8 @@ class VpnConnection extends ChangeNotifier {
   VpnStatus _status = VpnStatus.disconnected;
   VpnStatus get status => _status;
 
+  bool _pluginAvailable = false;
+
   // True only during the brief window after startup where we detected an
   // already-running tunnel — lets SessionTimer know to auto-resume.
   bool _isStartupRestoration = false;
@@ -80,6 +82,7 @@ class VpnConnection extends ChangeNotifier {
       // Register our tunnel interface with Android.
       // 'Paladin0' is just the name of the network interface — like "eth0"
       await _wireguard.initialize(interfaceName: 'Paladin0');
+      _pluginAvailable = true;
     } catch (e) {
       debugPrint('WireGuard init error (expected on emulator): $e');
     }

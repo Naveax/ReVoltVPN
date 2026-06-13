@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:paladinvpn/logic/vpn_connection.dart';
+import 'package:paladinvpn/logic/ad_manager.dart';
 import 'package:paladinvpn/components/online_dot.dart';
 import 'package:paladinvpn/components/watch_ad_button.dart';
 
@@ -32,8 +33,8 @@ class BottomBar extends StatelessWidget {
               // Server online/offline chip
               OnlineDot(isOnline: isOnline),
               const Spacer(),
-              // Support button — only visible while connected
-              if (isOnline) const WatchAdButton(),
+              // Support button — only visible while connected AND ads are enabled
+              if (isOnline && AdManager.adsEnabled) const WatchAdButton(),
             ],
           ),
         );

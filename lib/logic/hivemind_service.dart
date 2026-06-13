@@ -15,8 +15,21 @@ class HivemindService {
     
     final url = Uri.parse('${AppConfig.hivemindApiBase}/session/status?device_id=$deviceId');
 
-    // AdMob SSV is handled server-to-server by Google.
-    // The app waits for the server to activate the session via the real callback.
+    // ── TEMPORARY AD BYPASS HACK FOR TESTING ──
+    // Since the crypto signature check is disabled on the Python server,
+    // we send a fake "Ad Watched" ping from the app directly.
+    // TODO: Remove this when real AdMob SSV is enabled on the server.
+    try {
+      final customData = jsonEncode({
+        'device_id': deviceId,
+        'public_key': keys['publicKey']!,
+        'ad_type': 'main_ad',
+      });
+      final fakeAdmobPingUrl = Uri.parse(
+          '${AppConfig.hivemindApiBase}/admob/callback?signature=test&key_id=test&custom_data=${Uri.encodeComponent(customData)}');
+      await http.get(fakeAdmobPingUrl).timeout(const Duration(seconds: 8));
+    } catch (_) {}
+    // ──────────────────────────────────────────
 
     int attempts = 0;
     while (attempts < 15) {
