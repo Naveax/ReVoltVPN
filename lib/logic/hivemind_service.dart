@@ -8,31 +8,40 @@ import 'package:paladinvpn/logic/crypto_service.dart';
 class HivemindService {
   /// Polls the Hivemind server until the session is ready or timeout occurs.
   /// Returns the WireGuard config string.
-  static Future<String> fetchConfigWithPolling() async {
+  ///
+  /// [onAttempt] is called after each poll with (current, total) so the UI
+  /// can show progress (e.g. "Contacting server (3/15)…").
+  static Future<String> fetchConfigWithPolling({
+    void Function(int attempt, int total)? onAttempt,
+  }) async {
     final deviceId = await CryptoService.getDeviceId();
     final keys = await CryptoService.getOrCreateKeys();
     final privKey = keys['privateKey']!;
     
     final url = Uri.parse('${AppConfig.hivemindApiBase}/session/status?device_id=$deviceId');
 
-    // ── TEMPORARY AD BYPASS HACK FOR TESTING ──
-    // Since the crypto signature check is disabled on the Python server,
-    // we send a fake "Ad Watched" ping from the app directly.
-    // TODO: Remove this when real AdMob SSV is enabled on the server.
-    try {
-      final customData = jsonEncode({
-        'device_id': deviceId,
-        'public_key': keys['publicKey']!,
-        'ad_type': 'main_ad',
-      });
-      final fakeAdmobPingUrl = Uri.parse(
-          '${AppConfig.hivemindApiBase}/admob/callback?signature=test&key_id=test&custom_data=${Uri.encodeComponent(customData)}');
-      await http.get(fakeAdmobPingUrl).timeout(const Duration(seconds: 8));
-    } catch (_) {}
-    // ──────────────────────────────────────────
+    // ── AD BYPASS (debug only) ────────────────────────────────────────
+    // In debug mode, send a fake AdMob callback so the server creates
+    // a session without a real ad.  In release mode this code is
+    // stripped — sessions are only created by real AdMob SSV callbacks.
+    if (kDebugMode) {
+      try {
+        final customData = jsonEncode({
+          'device_id': deviceId,
+          'public_key': keys['publicKey']!,
+          'ad_type': 'main_ad',
+        });
+        final fakeAdmobPingUrl = Uri.parse(
+            '${AppConfig.hivemindApiBase}/admob/callback?signature=test&key_id=test&custom_data=${Uri.encodeComponent(customData)}');
+        await http.get(fakeAdmobPingUrl).timeout(const Duration(seconds: 8));
+      } catch (_) {}
+    }
+    // ───────────────────────────────────────────────────────────────────
 
     int attempts = 0;
     while (attempts < 15) {
+      debugPrint('[HivemindService] Polling attempt ${attempts + 1}/15…');
+      onAttempt?.call(attempts + 1, 15);
       try {
         final response = await http.get(url).timeout(const Duration(seconds: 10));
         if (response.statusCode == 200) {
@@ -83,6 +92,23 @@ PersistentKeepalive = ${AppConfig.persistentKeepalive}
     }
 
     throw Exception("Session not activated. S2S callback failed or timed out.");
+  }
+
+  /// Quick one-shot check: does the server have a live session for this device?
+  /// Used by VpnConnection after the tunnel starts to confirm the server-side
+  /// session exists before reporting "connected" to the UI.
+  static Future<bool> verifySession() async {
+    try {
+      final deviceId = await CryptoService.getDeviceId();
+      final url = Uri.parse(
+          '${AppConfig.hivemindApiBase}/session/status?device_id=$deviceId');
+      final response = await http.get(url).timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return data['active'] == true;
+      }
+    } catch (_) {}
+    return false;
   }
 
   /// Disconnects the session (cleans up on server)

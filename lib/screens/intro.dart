@@ -9,43 +9,65 @@ class IntroScreen extends StatefulWidget {
   State<IntroScreen> createState() => _IntroScreenState();
 }
 
-class _IntroScreenState extends State<IntroScreen> {
+class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
-    // Transition to the main screen after a brief natural pause.
-    // The delay is just long enough for the logo to be perceived (≈1.2 s)
-    // but not so long that it feels like the app is frozen.
+    WidgetsBinding.instance.addObserver(this);
+    _scheduleNavigation();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _navigateToMain();
+    }
+  }
+
+  void _scheduleNavigation() {
+    // Brief natural pause — just long enough to perceive the logo.
     Timer(const Duration(milliseconds: 1200), () {
-      if (mounted) {
-        Navigator.of(context).pushReplacement(
-          PageRouteBuilder(
-            transitionDuration: const Duration(milliseconds: 600),
-            pageBuilder: (_, __, ___) => const MainScreen(),
-            transitionsBuilder: (_, animation, __, child) {
-              return FadeTransition(opacity: animation, child: child);
-            },
-          ),
-        );
+      if (!mounted) return;
+      if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused) {
+        // App is backgrounded — defer navigation until resumed.
+        return;
       }
+      _navigateToMain();
     });
+  }
+
+  void _navigateToMain() {
+    if (!mounted) return;
+    Navigator.of(context).pushReplacement(
+      PageRouteBuilder(
+        transitionDuration: const Duration(milliseconds: 600),
+        pageBuilder: (_, __, ___) => const MainScreen(),
+        transitionsBuilder: (_, animation, __, child) {
+          return FadeTransition(opacity: animation, child: child);
+        },
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0D1117), // Deep space black background
+      backgroundColor: const Color(0xFF0D1117),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // App Logo
             Image.asset(
               'assets/logo.png',
               width: 140,
               height: 140,
               errorBuilder: (context, error, stackTrace) {
-                // Fallback icon if logo.png is missing or misconfigured
                 return const Icon(
                   Icons.shield,
                   size: 140,
@@ -54,8 +76,6 @@ class _IntroScreenState extends State<IntroScreen> {
               },
             ),
             const SizedBox(height: 30),
-            
-            // PaladinVPN Text
             const Text(
               'PALADIN VPN',
               style: TextStyle(
@@ -66,8 +86,6 @@ class _IntroScreenState extends State<IntroScreen> {
               ),
             ),
             const SizedBox(height: 60),
-            
-            // Loading Circle
             const SizedBox(
               width: 40,
               height: 40,

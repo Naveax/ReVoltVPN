@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:paladinvpn/logic/vpn_connection.dart';
+import 'package:paladinvpn/logic/session_timer.dart';
 import 'package:paladinvpn/logic/ad_manager.dart';
 import 'package:paladinvpn/components/online_dot.dart';
 import 'package:paladinvpn/components/watch_ad_button.dart';
@@ -14,9 +15,12 @@ class BottomBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<VpnConnection>(
-      builder: (context, vpn, _) {
-        final isOnline = vpn.status == VpnStatus.connected;
+    return Consumer2<VpnConnection, SessionTimer>(
+      builder: (context, vpn, timer, _) {
+        final isConnected = vpn.status == VpnStatus.connected;
+        // Health is based on whether we've successfully talked to the
+        // server recently — not just whether the VPN tunnel is up.
+        final serverHealthy = isConnected && timer.hasSyncedOnce;
 
         return Container(
           margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
@@ -31,10 +35,17 @@ class BottomBar extends StatelessWidget {
           child: Row(
             children: [
               // Server online/offline chip
-              OnlineDot(isOnline: isOnline),
+              OnlineDot(
+                isOnline: serverHealthy,
+                label: isConnected && !timer.hasSyncedOnce
+                    ? 'Syncing…'
+                    : serverHealthy
+                        ? 'Server Online'
+                        : 'Disconnected',
+              ),
               const Spacer(),
               // Support button — only visible while connected AND ads are enabled
-              if (isOnline && AdManager.adsEnabled) const WatchAdButton(),
+              if (isConnected && AdManager.adsEnabled) const WatchAdButton(),
             ],
           ),
         );

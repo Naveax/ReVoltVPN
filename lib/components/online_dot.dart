@@ -1,22 +1,29 @@
 import 'package:flutter/material.dart';
 
-/// OnlineDot displays a glowing green dot when the server is online/connected,
-/// and a muted gray dot when disconnected.
+/// OnlineDot displays a glowing green dot when the server is healthy,
+/// and a muted gray dot when disconnected or still syncing.
 class OnlineDot extends StatelessWidget {
-  /// Represents if the VPN tunnel session is active (online).
+  /// Whether the server has been confirmed reachable.
   final bool isOnline;
+
+  /// Optional custom label. Falls back to "Server Online" / "Disconnected".
+  final String? label;
 
   const OnlineDot({
     super.key,
     required this.isOnline,
+    this.label,
   });
 
   @override
   Widget build(BuildContext context) {
+    final displayLabel = label ??
+        (isOnline ? 'Server Online' : 'Disconnected');
+
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // Glowing status dot: Green when active, muted gray when inactive.
+        // Glowing status dot: Green when healthy, muted gray when not.
         AnimatedContainer(
           duration: const Duration(milliseconds: 400),
           width: 8,
@@ -35,10 +42,8 @@ class OnlineDot extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 10),
-        
-        // Dynamic status text label
         Text(
-          isOnline ? 'Server Online' : 'Disconnected',
+          displayLabel,
           style: TextStyle(
             fontSize: 13,
             fontWeight: FontWeight.w500,

@@ -1,15 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 
 import 'package:paladinvpn/logic/vpn_connection.dart';
 import 'package:paladinvpn/logic/session_timer.dart';
 import 'package:paladinvpn/logic/ad_manager.dart';
+import 'package:paladinvpn/logic/consent_manager.dart';
 import 'package:paladinvpn/screens/main_screen.dart';
 import 'package:paladinvpn/screens/intro.dart';
 
 /// The entry point for the Paladin VPN application.
-void main() {
+void main() async {
   // Ensure that the Flutter engine is fully initialized before using platform channels
   // (e.g., for SystemChrome or MobileAds).
   WidgetsFlutterBinding.ensureInitialized();
@@ -27,6 +29,15 @@ void main() {
     systemNavigationBarColor: Color(0xFF0D1117), // Deep space black
     systemNavigationBarIconBrightness: Brightness.light,
   ));
+
+  // ── GDPR Consent (Google UMP) ──────────────────────────────────────────
+  // Must run BEFORE MobileAds initialization. Shows consent dialog to
+  // EEA/UK users; no-op for everyone else.
+  await ConsentManager.requestConsentIfNeeded();
+
+  // ── Initialize AdMob ───────────────────────────────────────────────────
+  // Only after consent is resolved so AdMob respects user preferences.
+  await MobileAds.instance.initialize();
 
   // Inflate the root widget
   runApp(const PaladinApp());

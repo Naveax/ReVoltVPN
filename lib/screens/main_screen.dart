@@ -5,6 +5,7 @@ import 'package:paladinvpn/components/connect_button.dart';
 import 'package:paladinvpn/components/bottom_bar.dart';
 import 'package:paladinvpn/components/info_button.dart';
 import 'package:paladinvpn/components/privacy_policy_button.dart';
+import 'package:paladinvpn/components/gdpr_button.dart';
 
 /// MainScreen serves as the primary home screen for Paladin VPN.
 /// 
@@ -74,6 +75,7 @@ class MainScreen extends StatelessWidget {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    GdprButton(),
                     PrivacyPolicyButton(),
                     InfoButton(),
                   ],

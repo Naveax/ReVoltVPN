@@ -64,6 +64,7 @@ local_packages/*/.dart_tool/
 
 # Secrets
 android/key.properties
+SERVER_NOTES.md
 lib/logic/backup/
 00-FULL-REPORT.md
 server full picture.txt

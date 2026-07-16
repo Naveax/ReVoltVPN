@@ -115,19 +115,24 @@ class VpnConnection extends ChangeNotifier {
     switch (stage) {
       case VpnStage.connected:
         _setStatus(VpnStatus.connected, 'Secured');
+        break;
       case VpnStage.disconnected:
         _setStatus(VpnStatus.disconnected, 'Tap to connect');
+        break;
       case VpnStage.connecting:
       case VpnStage.waitingConnection:
       case VpnStage.authenticating:
       case VpnStage.preparing:
       case VpnStage.reconnect:
         _setStatus(VpnStatus.connecting, 'Establishing tunnel…');
+        break;
       case VpnStage.disconnecting:
       case VpnStage.exiting:
         _setStatus(VpnStatus.disconnecting, 'Tearing down…');
+        break;
       default:
         _setStatus(VpnStatus.disconnected, 'Tap to connect');
+        break;
     }
   }
 
@@ -166,7 +171,11 @@ class VpnConnection extends ChangeNotifier {
     // ── Step 1: Fetch WireGuard config from Hivemind ────────────────────
     String configText;
     try {
-      configText = await HivemindService.fetchConfigWithPolling();
+      configText = await HivemindService.fetchConfigWithPolling(
+        onAttempt: (attempt, total) {
+          _setStatus(VpnStatus.connecting, 'Contacting server ($attempt/$total)…');
+        },
+      );
 
       // Parse the internal IP (e.g. "Address = 10.8.0.2/16" or "/32")
       final regex = RegExp(r'Address\s*=\s*([0-9\.]+)/');
@@ -204,6 +213,24 @@ class VpnConnection extends ChangeNotifier {
         wgQuickConfig: configText,
         providerBundleIdentifier: 'com.paladinvpn.app.WireGuardProvider',
       );
+
+      // ── Step 3: Verify the server session is alive ──────────────────
+      // The tunnel is up but the server might not have a session yet.
+      // Do a quick one-shot status check before telling the UI we're
+      // connected — if the session doesn't exist, tear down and fail.
+      _setStatus(VpnStatus.connecting, 'Verifying session…');
+      final sessionOk = await HivemindService.verifySession();
+      if (!sessionOk) {
+        debugPrint('[VPN] Tunnel started but no server session — tearing down.');
+        try {
+          await _wireguard.stopVpn().timeout(const Duration(seconds: 3));
+        } catch (_) {}
+        _errorMessage = 'Session not confirmed by server.\n'
+            'Please try again.';
+        _setStatus(VpnStatus.error, 'Session rejected');
+        return false;
+      }
+
       _setStatus(VpnStatus.connected, 'Secured');
       return true;
     } catch (e) {
@@ -248,7 +275,9 @@ class VpnConnection extends ChangeNotifier {
   // ── Disconnect ────────────────────────────────────────────────────────────
   // Tears down the active tunnel and returns Android to normal networking.
   Future<void> disconnect() async {
-    if (_status == VpnStatus.disconnected) return;
+    if (_status == VpnStatus.disconnected || _status == VpnStatus.disconnecting) {
+      return; // Already disconnecting or disconnected — don't double-fire
+    }
 
     _setStatus(VpnStatus.disconnecting, 'Tearing down…');
 
@@ -258,14 +287,24 @@ class VpnConnection extends ChangeNotifier {
       return;
     }
 
+    // Stop the VPN tunnel with a hard timeout.
+    // stopVpn() can hang indefinitely if the native Go backend is stuck —
+    // we give it 5 seconds max, then force through.
     try {
-      await _wireguard.stopVpn();
+      await _wireguard.stopVpn().timeout(
+        const Duration(seconds: 5),
+        onTimeout: () {
+          debugPrint('[VPN] stopVpn() timed out — forcing disconnect state.');
+        },
+      );
     } catch (e) {
       debugPrint('WireGuard stop error: $e');
     }
 
-    // Clean up the peer from the server so we don't leave dead connections lying around
-    await HivemindService.disconnectAndCleanup();
+    // Clean up the peer from the server so we don't leave dead connections lying around.
+    // Fire-and-forget with a short timeout — server cleanup failing should never
+    // block the local disconnect from completing.
+    HivemindService.disconnectAndCleanup();
 
     _setStatus(VpnStatus.disconnected, 'Tap to connect');
   }

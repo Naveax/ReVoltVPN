@@ -41,10 +41,14 @@ class VpnNotificationManager {
 
     if (!_initialized) await init();
 
+    // NOTE: The channel ID includes 'v2' to force Android to create a fresh
+    // notification channel. Android channels are immutable once created — if
+    // the old channel was created without 'ongoing: true', users would be
+    // stuck with a swipeable notification forever.
     const androidDetails = AndroidNotificationDetails(
-      'paladin_vpn_status',
+      'paladin_vpn_status_v2',
       'VPN Status',
-      channelDescription: 'Persistent notification shown while VPN is active',
+      channelDescription: 'Shown while VPN is active — non-dismissable',
       importance: Importance.low,
       priority: Priority.low,
       // Non-dismissable while VPN is running
@@ -58,16 +62,36 @@ class VpnNotificationManager {
       showWhen: false,
       // Show on lock screen
       visibility: NotificationVisibility.public,
+      // Extra insurance against swipe-to-dismiss on aggressive Android skins
+      usesChronometer: false,
+      category: AndroidNotificationCategory.service,
     );
 
     const notificationDetails = NotificationDetails(android: androidDetails);
 
-    await _plugin.show(
-      888, // Fixed ID — always updates the same notification
-      'Paladin VPN Active',
-      'Time: $timeLeft  •  $speedKbps',
-      notificationDetails,
-    );
+    try {
+      await _plugin.show(
+        888, // Fixed ID — always updates the same notification
+        'Paladin VPN Active',
+        'Time: $timeLeft  •  $speedKbps',
+        notificationDetails,
+      );
+    } catch (e) {
+      // If showing fails (e.g. permission revoked), try to recover by
+      // re-initializing and retrying once.
+      _initialized = false;
+      try {
+        await init();
+        await _plugin.show(
+          888,
+          'Paladin VPN Active',
+          'Time: $timeLeft  •  $speedKbps',
+          notificationDetails,
+        );
+      } catch (_) {
+        // Give up — the VPN still works, just without the notification.
+      }
+    }
   }
 
   static Future<void> cancel() async {

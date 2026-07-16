@@ -28,17 +28,24 @@ class SessionTimer extends ChangeNotifier {
   bool _hasSyncedOnce       = false;
   int  _consecutiveFailures = 0;
   bool _isDisconnecting     = false;
+  bool _userInitiatedStop   = false;  // true when user tapped disconnect
 
   /// Maximum consecutive sync failures before the local countdown is paused
   /// to avoid showing a false "expired" state while the network is down.
   static const int _maxConsecutiveFailures = 3;
 
+  /// How long we tolerate total silence from the server before forcibly
+  /// killing the VPN.  Prevents the "orphaned tunnel" scenario where the
+  /// server is gone but the VPN stays up forever.
+  static const int _maxOfflineSeconds = 120;
+  int _offlineSeconds = 0;
+
   /// Seconds between server polls (reduced from 3 to ease server load).
   static const int _pollIntervalSeconds = 5;
 
   // ── Speed State ────────────────────────────────────────────────────────────
-  int    _lastUsedBytes    = 0;
-  double _currentSpeedKbps = 0.0;
+  int    _lastUsedBytes     = 0;
+  double _currentSpeedKBps  = 0.0;  // kilobytes per second
 
   // ── Notification dedup ─────────────────────────────────────────────────────
   String _lastNotifTime  = '';
@@ -59,7 +66,7 @@ class SessionTimer extends ChangeNotifier {
   int    get usedBytes      => _usedBytes;
   int    get remainingBytes => _quotaBytes > _usedBytes ? _quotaBytes - _usedBytes : 0;
   bool   get isThrottled    => _isThrottled;
-  double get currentSpeedKbps => _currentSpeedKbps;
+  double get currentSpeedKBps => _currentSpeedKBps;
 
   String get formatted {
     final h = (_remainingSeconds ~/ 3600).toString().padLeft(2, '0');
@@ -92,13 +99,30 @@ class SessionTimer extends ChangeNotifier {
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
   /// Fires whenever VpnConnection state changes.
-  /// Only auto-restarts the timer during startup restoration —
-  /// normal connects are driven by [ConnectButton].
   void _onVpnConnectionChanged() {
+    // ── Startup restoration: app killed while VPN was running ──────────
     if (vpnConnection.status == VpnStatus.connected &&
         !isRunning &&
         vpnConnection.isStartupRestoration) {
       start('resume');
+      return;
+    }
+
+    // ── Network-blip reconnect: VPN dropped and came back on its own ──
+    // The underlying AmneziaWG tunnel may briefly flap.  If we weren't
+    // explicitly stopped by the user, resume where we left off.
+    if (vpnConnection.status == VpnStatus.connected &&
+        !isRunning &&
+        !_userInitiatedStop &&
+        _hasSyncedOnce) {
+      debugPrint('[Timer] VPN reconnected after blip — resuming.');
+      _resumeTicking();
+      return;
+    }
+
+    // ── Auto-cleanup when the VPN actually goes down ──────────────────
+    if (vpnConnection.status == VpnStatus.disconnected && isRunning) {
+      _stopInternal();
     }
   }
 
@@ -111,12 +135,14 @@ class SessionTimer extends ChangeNotifier {
     _quotaBytes          = 0;
     _usedBytes           = 0;
     _lastUsedBytes       = 0;
-    _currentSpeedKbps    = 0.0;
+    _currentSpeedKBps    = 0.0;
     _isThrottled         = false;
     _tickCount           = 0;
     _hasSyncedOnce       = false;
     _consecutiveFailures = 0;
+    _offlineSeconds      = 0;
     _isDisconnecting     = false;
+    _userInitiatedStop   = false;
 
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), _tick);
@@ -128,12 +154,34 @@ class SessionTimer extends ChangeNotifier {
   }
 
   void _tick(Timer t) {
-    // Only decrement the local clock after the first successful sync
-    // and while we are not in a network-blackout window.
+    // ── Local countdown ──────────────────────────────────────────────────
+    // Decrement the local clock as long as we're not in a network blackout.
     if (_hasSyncedOnce && _consecutiveFailures < _maxConsecutiveFailures) {
       if (_remainingSeconds > 0) {
         _remainingSeconds--;
       }
+    }
+
+    // ── Offline watchdog ─────────────────────────────────────────────────
+    // If the server has been unreachable for too long, kill the VPN.
+    // Don't let an orphaned tunnel keep running forever.
+    if (_consecutiveFailures >= _maxConsecutiveFailures) {
+      _offlineSeconds++;
+      if (_offlineSeconds >= _maxOfflineSeconds) {
+        debugPrint('[Timer] Offline for $_maxOfflineSeconds s — forcing disconnect.');
+        _forceDisconnect('Session lost — server unreachable');
+        return;
+      }
+    }
+
+    // ── Local expiry ─────────────────────────────────────────────────────
+    // When our clock hits zero, disconnect immediately.  Don't wait for the
+    // next server poll — the session is over and the user expects the VPN
+    // to drop right now.
+    if (_hasSyncedOnce && _remainingSeconds <= 0) {
+      debugPrint('[Timer] Local countdown expired — disconnecting.');
+      _forceDisconnect('Session expired');
+      return;
     }
 
     _tickCount++;
@@ -142,6 +190,22 @@ class SessionTimer extends ChangeNotifier {
     }
 
     notifyListeners();
+  }
+
+  /// Force-disconnects the VPN and stops the timer with a status message.
+  /// Used as a local fallback when the server can't be reached.
+  void _forceDisconnect(String reason) {
+    if (_isDisconnecting) return; // Already tearing down
+    debugPrint('[Timer] $reason — forcing disconnect.');
+    _timer?.cancel();
+    _timer = null;
+    _currentSpeedKBps = 0.0;
+    _isDisconnecting = true;
+    VpnNotificationManager.cancel();
+    notifyListeners();
+    // Await the disconnect so the tunnel is confirmed down before we
+    // consider the session fully cleaned up.
+    vpnConnection.disconnect();
   }
 
   // ── Server Sync ────────────────────────────────────────────────────────────
@@ -161,9 +225,9 @@ class SessionTimer extends ChangeNotifier {
 
         final bool active = data['active'] ?? false;
         if (!active) {
-          // Server killed the session!
+          // Server killed the session — tear down and wait for it.
           stop();
-          vpnConnection.disconnect();
+          await vpnConnection.disconnect();
           return;
         }
 
@@ -175,19 +239,20 @@ class SessionTimer extends ChangeNotifier {
         // ── Speed calculation over the polling interval ────────────────────
         final int deltaBytes = _usedBytes - _lastUsedBytes;
         if (_hasSyncedOnce && deltaBytes > 0) {
-          _currentSpeedKbps = (deltaBytes / _pollIntervalSeconds) / 1024;
+          _currentSpeedKBps = (deltaBytes / _pollIntervalSeconds) / 1000;
         } else if (!_hasSyncedOnce) {
-          _currentSpeedKbps = 0.0;
+          _currentSpeedKBps = 0.0;
         }
         _lastUsedBytes = _usedBytes;
 
-        // ── Network is healthy — reset failure counter ─────────────────────
+        // ── Network is healthy — reset failure counters ────────────────────
         _consecutiveFailures = 0;
+        _offlineSeconds = 0;
         _hasSyncedOnce = true;
 
         // ── Update notification (only when values actually change) ─────────
-        final speedText = _currentSpeedKbps > 0.5
-            ? '${_currentSpeedKbps.toStringAsFixed(1)} KB/s'
+        final speedText = _currentSpeedKBps > 0.5
+            ? '${_currentSpeedKBps.toStringAsFixed(1)} KB/s'
             : 'Idle';
         if (formatted != _lastNotifTime || speedText != _lastNotifSpeed) {
           _lastNotifTime  = formatted;
@@ -202,7 +267,7 @@ class SessionTimer extends ChangeNotifier {
       } else if (response.statusCode == 404) {
         // Peer not found on server (expired / deleted natively)
         stop();
-        vpnConnection.disconnect();
+        await vpnConnection.disconnect();
       } else {
         _markSyncFailure();
       }
@@ -243,14 +308,37 @@ class SessionTimer extends ChangeNotifier {
 
   // ── Stop ───────────────────────────────────────────────────────────────────
 
+  /// Called externally (e.g. from ConnectButton) to begin tearing down.
+  /// Cancels the timer but keeps the notification alive —
+  /// [_onVpnConnectionChanged] will do final cleanup when the VPN actually
+  /// confirms it's disconnected.
   void stop() {
+    _userInitiatedStop = true;
     _isDisconnecting = true;
     _timer?.cancel();
     _timer = null;
-    // Keep _remainingSeconds visible so the UI doesn't flash 00:00:00
-    // while the tunnel is tearing down.  The VpnConnection will drive the
-    // UI transition, and dispose() will do final cleanup.
-    _currentSpeedKbps = 0.0;
+    _currentSpeedKBps = 0.0;
+    notifyListeners();
+  }
+
+  /// Restarts the periodic timer without resetting session state.
+  /// Used when the VPN reconnects after a brief network blip so we don't
+  /// lose track of remaining time / data.
+  void _resumeTicking() {
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(seconds: 1), _tick);
+    _isDisconnecting = false;
+    _syncWithHivemind();
+    notifyListeners();
+  }
+
+  /// Internal cleanup — called when VpnConnection confirms disconnected.
+  /// Cancels the persistent notification since the tunnel is truly down.
+  void _stopInternal() {
+    _isDisconnecting = true;
+    _timer?.cancel();
+    _timer = null;
+    _currentSpeedKBps = 0.0;
     VpnNotificationManager.cancel();
     notifyListeners();
   }

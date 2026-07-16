@@ -1,4 +1,3 @@
-import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:paladinvpn/logic/session_timer.dart';
@@ -13,7 +12,6 @@ import 'package:paladinvpn/logic/session_timer.dart';
 class ClockDisplay extends StatelessWidget {
   const ClockDisplay({super.key});
 
-  static const Color _cyanGlow = Color(0xFF00E5FF);
 
   @override
   Widget build(BuildContext context) {
@@ -77,8 +75,8 @@ class ClockDisplay extends StatelessWidget {
                         const Icon(Icons.speed, color: Colors.white54, size: 14),
                         const SizedBox(width: 4),
                         Text(
-                          timer.currentSpeedKbps > 0.5
-                              ? '${timer.currentSpeedKbps.toStringAsFixed(1)} KB/s'
+                          timer.currentSpeedKBps > 0.5
+                              ? '${timer.currentSpeedKBps.toStringAsFixed(1)} KB/s'
                               : 'Idle',
                           style: const TextStyle(
                             fontSize: 12,

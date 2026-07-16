@@ -65,10 +65,12 @@ class _ConnectButtonState extends State<ConnectButton>
     final timer = context.read<SessionTimer>();
 
     if (vpn.status == VpnStatus.connected) {
-      // Disconnect — apply a short cooldown to prevent rapid toggle spam
+      // Disconnect — await the full teardown so the notification and UI
+      // stay in sync with the actual tunnel state.
       HapticFeedback.lightImpact();
-      vpn.disconnect();
       timer.stop();
+      await vpn.disconnect();
+      // Short cooldown to prevent accidental immediate reconnect
       setState(() => _inCooldown = true);
       Future.delayed(const Duration(seconds: 2), () {
         if (mounted) setState(() => _inCooldown = false);
@@ -85,9 +87,48 @@ class _ConnectButtonState extends State<ConnectButton>
           if (mounted) setState(() => _inCooldown = false);
         });
       }
-      // On failure the button stays active — the error message in
-      // StatusText tells the user what went wrong.
+      // On failure, check if it's a permission issue and offer recovery.
+      if (!success && mounted) {
+        final msg = vpn.errorMessage ?? '';
+        if (msg.contains('permission') || msg.contains('Permission')) {
+          _showPermissionDialog();
+        }
+      }
     }
+  }
+
+  /// Shows a dialog guiding the user to grant the VPN permission in
+  /// Android system settings, since there's no way to re-prompt the
+  /// native VpnService dialog after the first denial.
+  void _showPermissionDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A202C),
+        title: const Text('VPN Permission Required',
+            style: TextStyle(color: Colors.white)),
+        content: const Text(
+          'PaladinVPN needs permission to set up a VPN connection.\n\n'
+          'Since the permission was denied once, Android won\'t ask again. '
+          'To grant it manually:\n\n'
+          '1. Open your device Settings\n'
+          '2. Go to Apps → PaladinVPN\n'
+          '3. Tap "VPN" and enable it\n'
+          '4. Return to PaladinVPN and tap connect',
+          style: TextStyle(color: Color(0xFFA0AEC0)),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF00E5FF),
+            ),
+            child: const Text('Got it',
+                style: TextStyle(color: Color(0xFF0D1117))),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
