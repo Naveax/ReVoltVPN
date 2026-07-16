@@ -51,14 +51,19 @@ class HivemindService {
           
           if (data['active'] == true && data['client_ip'] != null && data['server_pubkey'] != null) {
             final clientIp = data['client_ip'];
+            final clientIpv6 = data['client_ipv6'] ?? '';
             final serverPubkey = data['server_pubkey'];
 
+            // Build dual-stack Address: IPv4/16 + optional IPv6/80
+            final addresses = clientIpv6.isNotEmpty
+                ? '$clientIp/16, $clientIpv6/80'
+                : '$clientIp/16';
+
             // Construct the WireGuard config locally
-            // I CHANGED IPS MAY BREAK STUFF
             final configText = '''
 [Interface]
 PrivateKey = $privKey
-Address = $clientIp/16
+Address = $addresses
 DNS = ${AppConfig.dnsServers}
 MTU = ${AppConfig.mtu}
 Jc = ${AppConfig.awgJc}

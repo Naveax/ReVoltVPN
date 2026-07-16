@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Hivemind VPN Session Manager
-Manages time + data quotas for WireGuard peers via ad rewards.
+Manages time + data quotas for AmneziaWG peers via ad rewards.
 Designed for Android-only clients.
 """
 
@@ -32,7 +32,7 @@ def validate_wg_pubkey(pubkey: str) -> bool:
 # CONFIGURATION
 # ==============================================================================
 CHECK_INTERVAL_SECONDS = 60      # Checking every 1 minute is extremely safe and uses 0% CPU.
-WG_INTERFACE = "wg0"
+WG_INTERFACE = "awg0"
 
 # Main Ad Rewards
 MAIN_AD_MINUTES = 60
@@ -48,7 +48,7 @@ THROTTLE_RATE = "1.5mbit"
 # STATE & CACHE
 # ==============================================================================
 sessions_lock = threading.Lock()
-# Paste your Server Public Key here if Docker dynamic fetching keeps failing
+# Paste your Server Public Key here if dynamic fetching keeps failing
 # Example: SERVER_PUBKEY_FALLBACK = "abc123xyz..."
 SERVER_PUBKEY_FALLBACK = None
 SERVER_PUBKEY = None
@@ -75,9 +75,10 @@ IP_POOL_END = 250
 # SYSTEM COMMAND HELPERS
 # ==============================================================================
 def run_cmd(cmd, ignore_errors=False):
-    """Executes a shell command safely without shell=True."""
-    if cmd.startswith("wg ") or cmd.startswith("tc ") or cmd.startswith("ip ") or cmd.startswith("iptables "):
-        cmd = f"sudo docker exec wg-easy {cmd}"
+    """Executes a shell command directly on the host (no Docker middleman)."""
+    # All commands run directly on the host against awg0.
+    # The only sudo requirement is for awg/tc/iptables — already handled via
+    # the hivemind systemd unit running as root or via sudoers rules.
 
     args = shlex.split(cmd)
     try:
@@ -106,14 +107,19 @@ def init_wireguard():
     print(f"[NAT] Applying masquerade for /16 subnet...")
     run_cmd(f"iptables -t nat -A POSTROUTING -s 10.8.0.0/16 -j MASQUERADE", ignore_errors=True)
 
-    # Key MUST be read from host awg0 directly (not from Docker's wg0).
-    # The phone connects to awg0 on port 4433 — Docker's wg0 has a different key.
+    print(f"[IP] Adding IPv6 route for fd42::/80...")
+    run_cmd(f"ip -6 route add fd42::/80 dev {WG_INTERFACE}", ignore_errors=True)
+
+    print(f"[NAT] Applying IPv6 masquerade for fd42::/80...")
+    run_cmd(f"ip6tables -t nat -A POSTROUTING -s fd42::/80 -j MASQUERADE", ignore_errors=True)
+
+    # The phone connects to awg0 on port 4433.
     pubkey = run_cmd("awg show awg0 public-key")
     if pubkey:
         SERVER_PUBKEY = pubkey
-        print(f"[WG] Server Public Key cached from awg0: {SERVER_PUBKEY}")
+        print(f"[AWG] Server Public Key cached from awg0: {SERVER_PUBKEY}")
     else:
-        print("[WG] WARNING: Could not fetch awg0 public key! Check that awg is installed on host.")
+        print("[AWG] WARNING: Could not fetch awg0 public key! Check that awg is installed on host.")
 
 
 def _class_id(ip):
@@ -138,7 +144,7 @@ def remove_throttle(ip):
 
 def get_wireguard_stats():
     """Returns { "10.8.X.Y": {"pubkey": "...", "total_bytes": 1234}, ... }
-    Reads directly from the host's awg0 interface (not Docker's wg0).
+    Reads directly from the host's awg0 interface.
     Uses two separate commands to avoid AmneziaWG dump column-layout differences.
     """
     # Step 1: pubkey -> (rx_bytes, tx_bytes)
@@ -174,6 +180,14 @@ def get_wireguard_stats():
 import ipaddress
 
 # ==============================================================================
+# IPv6 HELPERS
+# ==============================================================================
+def ipv4_to_ipv6(ipv4):
+    """Map 10.8.X.Y → fd42::X:Y (ULA for internal VPN routing, no NAT64 needed)."""
+    parts = ipv4.split('.')
+    return f"fd42::{parts[2]}:{parts[3]}"
+
+# ==============================================================================
 # IP POOL MANAGEMENT
 # ==============================================================================
 # The server subnet is 10.8.0.0/16, giving ~65,530 IPs for public use.
@@ -193,24 +207,21 @@ def release_ip(ip):
     if ip:
         AVAILABLE_IPS.add(ip)
 
-def add_wg_peer(pubkey, ip):
-    """Dynamically adds an ephemeral peer to WireGuard."""
+def add_wg_peer(pubkey, ipv4, ipv6):
+    """Dynamically adds an ephemeral dual-stack peer to AmneziaWG."""
     # Remove it first just in case it exists to avoid conflicts
-    run_cmd(f"wg set {WG_INTERFACE} peer {pubkey} remove", ignore_errors=True)
     run_cmd(f"awg set awg0 peer {pubkey} remove", ignore_errors=True)
-    res = run_cmd(f"wg set {WG_INTERFACE} peer {pubkey} allowed-ips {ip}/32")
-    run_cmd(f"awg set awg0 peer {pubkey} allowed-ips {ip}/32")
-    time.sleep(0.2)  # Let WireGuard register the peer before baseline snapshot
+    res = run_cmd(f"awg set awg0 peer {pubkey} allowed-ips {ipv4}/32,{ipv6}/128")
+    time.sleep(0.2)  # Let AmneziaWG register the peer before baseline snapshot
     if res is not None:
-        print(f"[WG] Ephemeral peer added: {pubkey[:8]}... -> {ip}")
+        print(f"[AWG] Ephemeral peer added: {pubkey[:8]}... -> {ipv4} / {ipv6}")
 
 
 def remove_wg_peer(pubkey):
-    """Removes an ephemeral peer from WireGuard."""
+    """Removes an ephemeral peer from AmneziaWG."""
     if pubkey:
-        run_cmd(f"wg set {WG_INTERFACE} peer {pubkey} remove", ignore_errors=True)
         run_cmd(f"awg set awg0 peer {pubkey} remove", ignore_errors=True)
-        print(f"[WG] Ephemeral peer removed: {pubkey[:8]}...")
+        print(f"[AWG] Ephemeral peer removed: {pubkey[:8]}...")
 
 
 # ==============================================================================
@@ -300,26 +311,28 @@ def _start_or_extend_session(device_id, client_pubkey, ad_type):
                 remove_wg_peer(existing["pubkey"])
                 release_ip(existing["ip"])
             
-            ip = allocate_ip()
-            if not ip:
+            ipv4 = allocate_ip()
+            if not ipv4:
                 return False, "Server full! No available IP addresses."
             
-            add_wg_peer(client_pubkey, ip)
+            ipv6 = ipv4_to_ipv6(ipv4)
+            add_wg_peer(client_pubkey, ipv4, ipv6)
             
             # Fetch immediate stats to set baseline
             # (Though brand new peers usually start at 0)
             stats = get_wireguard_stats()
-            current_bytes = stats.get(ip, {}).get("total_bytes", 0)
+            current_bytes = stats.get(ipv4, {}).get("total_bytes", 0)
 
             active_sessions[device_id] = {
-                "ip":             ip,
+                "ip":             ipv4,
+                "ipv6":           ipv6,
                 "pubkey":         client_pubkey,
                 "expires_at":     now + (MAIN_AD_MINUTES * 60),
                 "quota_bytes":    MAIN_AD_BYTES,
                 "baseline_bytes": current_bytes,
                 "is_throttled":   False,
             }
-            print(f"[SESSION] Main session started for {device_id} (IP: {ip}).")
+            print(f"[SESSION] Main session started for {device_id} (IP: {ipv4} / {ipv6}).")
             return True, "Main session active."
 
 
@@ -465,7 +478,7 @@ def admob_callback():
 def session_status():
     """
     Query: ?device_id=esf-xxx
-    Returns current session state so the Android app can construct its WireGuard config.
+    Returns current session state so the Android app can construct its AmneziaWG config.
     """
     device_id = request.args.get('device_id')
     if not device_id:
@@ -480,23 +493,12 @@ def session_status():
     # Bulletproof fallback: If server public key is missing, try fetching it right now
     global SERVER_PUBKEY
     if not SERVER_PUBKEY:
-        # Same as init: must read from awg0 on the host, not Docker's wg0
         pubkey = run_cmd("awg show awg0 public-key")
         if pubkey:
             SERVER_PUBKEY = pubkey
-            print(f"[WG] Dynamic Server Public Key cached from awg0: {SERVER_PUBKEY}")
+            print(f"[AWG] Dynamic Server Public Key cached from awg0: {SERVER_PUBKEY}")
         else:
-            # Absolute fallback if docker exec is broken on this host
-            ########
-            ######### 313131
-            #######
-            ########
             SERVER_PUBKEY = SERVER_PUBKEY_FALLBACK or "server key="
-            ######
-            ########
-            #########
-            ##########
-            ##########
 
     stats          = get_wireguard_stats()
     current_bytes  = stats.get(session["ip"], {}).get("total_bytes", 0)
@@ -507,6 +509,7 @@ def session_status():
     return jsonify({
         "active":             remaining_secs > 0,
         "client_ip":          session["ip"],
+        "client_ipv6":        session.get("ipv6", ""),
         "server_pubkey":      SERVER_PUBKEY,
         "is_throttled":       session["is_throttled"],
         "expires_in_seconds": int(remaining_secs),

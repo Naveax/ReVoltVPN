@@ -10,25 +10,28 @@ class AppConfig {
   static const String serverIp = '127.0.0.1'; // REPLACE WITH REAL IP
 
   // ── STEP 2: WireGuard UDP traffic port (default: 51820) ───────────────────
-  static const String wgPort = '4433';
+  static const String wgPort = '51820'; // REPLACE WITH REAL PORT
 
   // ── STEP 3: AmneziaWG DPI Obfuscation Settings ───────────────────────────
-  // These parameters must match exactly what your amnezia-wg-easy server expects.
-  static const int awgJc = 4;
-  static const int awgJmin = 20;
-  static const int awgJmax = 100;
-  static const int awgS1 = 15;
-  static const int awgS2 = 23;
-  static const int awgH1 = 1;
-  static const int awgH2 = 2;
-  static const int awgH3 = 3;
-  static const int awgH4 = 4;
+  // Copy these from your real app_config.dart or your amnezia-wg-easy server.
+  // All zeros = AmneziaWG obfuscation disabled (no DPI protection).
+  static const int awgJc = 0;   // REPLACE
+  static const int awgJmin = 0; // REPLACE
+  static const int awgJmax = 0; // REPLACE
+  static const int awgS1 = 0;   // REPLACE
+  static const int awgS2 = 0;   // REPLACE
+  static const int awgH1 = 0;   // REPLACE
+  static const int awgH2 = 0;   // REPLACE
+  static const int awgH3 = 0;   // REPLACE
+  static const int awgH4 = 0;   // REPLACE
 
-  // ── STEP 4: AdMob Rewarded Video ID ──────────────────────────────────────
-  static const String adUnitId = 'ca-app-pub-0000000000000000/0000000000'; // REPLACE WITH REAL AD UNIT
+  // ── STEP 4: AdMob IDs ───────────────────────────────────────────────────
+  // Also create android/admob.properties from the template in that folder.
+  static const String admobAppId = 'ca-app-pub-0000000000000000~0000000000'; // REPLACE
+  static const String adUnitId = 'ca-app-pub-0000000000000000/0000000000'; // REPLACE
 
   // ── STEP 5: Network & Tunnel Settings ────────────────────────────────────
-  static const String dnsServers = '1.1.1.1, 1.0.0.1';
+  static const String dnsServers = '1.1.1.1, 1.0.0.1, 2606:4700:4700::1111, 2606:4700:4700::1001';
   static const String allowedIps = '0.0.0.0/0, ::/0';
   static const int mtu = 1280;
   static const int persistentKeepalive = 25;

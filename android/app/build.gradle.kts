@@ -27,12 +27,19 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        manifestPlaceholders["ADMOB_APP_ID"] = admobProperties.getProperty("ADMOB_APP_ID", "ca-app-pub-0000000000000000~0000000000")
     }
 
     val keystorePropertiesFile = rootProject.file("key.properties")
     val keystoreProperties = Properties()
     if (keystorePropertiesFile.exists()) {
         keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+    }
+
+    val admobPropertiesFile = rootProject.file("admob.properties")
+    val admobProperties = Properties()
+    if (admobPropertiesFile.exists()) {
+        admobProperties.load(FileInputStream(admobPropertiesFile))
     }
 
     signingConfigs {

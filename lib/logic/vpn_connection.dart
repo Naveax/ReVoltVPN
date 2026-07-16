@@ -215,11 +215,23 @@ class VpnConnection extends ChangeNotifier {
       );
 
       // ── Step 3: Verify the server session is alive ──────────────────
-      // The tunnel is up but the server might not have a session yet.
-      // Do a quick one-shot status check before telling the UI we're
-      // connected — if the session doesn't exist, tear down and fail.
+      // The tunnel just came up — give it a moment to stabilise before
+      // making an HTTP call through it, otherwise DNS/resolution can fail.
       _setStatus(VpnStatus.connecting, 'Verifying session…');
-      final sessionOk = await HivemindService.verifySession();
+      await Future.delayed(const Duration(seconds: 1));
+
+      // Retry once if the first attempt fails — the tunnel may need a
+      // moment to settle before outbound HTTP works reliably.
+      bool sessionOk = false;
+      for (int attempt = 0; attempt < 2; attempt++) {
+        sessionOk = await HivemindService.verifySession();
+        if (sessionOk) break;
+        if (attempt == 0) {
+          debugPrint('[VPN] verifySession attempt 1 failed, retrying…');
+          await Future.delayed(const Duration(seconds: 2));
+        }
+      }
+
       if (!sessionOk) {
         debugPrint('[VPN] Tunnel started but no server session — tearing down.');
         try {
