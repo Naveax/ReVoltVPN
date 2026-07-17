@@ -189,6 +189,23 @@ class SessionTimer extends ChangeNotifier {
       _syncWithHivemind();
     }
 
+    // ── Update notification every tick for smooth countdown ─────────────
+    // Uses the locally-decremented time so the notification stays in sync
+    // with the in-app display, not gated behind the 5 s server poll.
+    if (_hasSyncedOnce) {
+      final speedText = _currentSpeedKBps > 0.5
+          ? '${_currentSpeedKBps.toStringAsFixed(1)} KB/s'
+          : 'Idle';
+      if (formatted != _lastNotifTime || speedText != _lastNotifSpeed) {
+        _lastNotifTime  = formatted;
+        _lastNotifSpeed = speedText;
+        VpnNotificationManager.showOrUpdateStatus(
+          timeLeft: formatted,
+          speedKbps: speedText,
+        );
+      }
+    }
+
     notifyListeners();
   }
 
@@ -249,19 +266,6 @@ class SessionTimer extends ChangeNotifier {
         _consecutiveFailures = 0;
         _offlineSeconds = 0;
         _hasSyncedOnce = true;
-
-        // ── Update notification (only when values actually change) ─────────
-        final speedText = _currentSpeedKBps > 0.5
-            ? '${_currentSpeedKBps.toStringAsFixed(1)} KB/s'
-            : 'Idle';
-        if (formatted != _lastNotifTime || speedText != _lastNotifSpeed) {
-          _lastNotifTime  = formatted;
-          _lastNotifSpeed = speedText;
-          VpnNotificationManager.showOrUpdateStatus(
-            timeLeft: formatted,
-            speedKbps: speedText,
-          );
-        }
 
         notifyListeners();
       } else if (response.statusCode == 404) {
