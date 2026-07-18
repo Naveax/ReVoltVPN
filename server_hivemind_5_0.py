@@ -89,14 +89,11 @@ SERVER_PUBKEY = None
 # }
 active_sessions = {}
 
-# Simple IP pool allocation (100 to 250)
-IP_POOL_START = 100
-IP_POOL_END = 250
-
-# Pre-computed pool of all available IPv4 addresses in the 10.8.0.0/16 subnet.
+# Pre-computed pool of all available IPv4 addresses in the 10.8.0.0/16 subnet
+# (10.8.0.0 through 10.8.255.255 = 65,534 host addresses).
 # Initialised once at module load; allocate_ip() pops from it, release_ip() returns to it.
 AVAILABLE_IPS = {str(ip) for ip in ipaddress.IPv4Network('10.8.0.0/16').hosts()}
-AVAILABLE_IPS.discard('10.8.0.1')
+AVAILABLE_IPS.discard('10.8.0.1')  # reserved for gateway
 
 
 # ==============================================================================

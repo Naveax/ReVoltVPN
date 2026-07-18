@@ -322,6 +322,8 @@ class SessionTimer extends ChangeNotifier {
     _timer?.cancel();
     _timer = null;
     _currentSpeedKBps = 0.0;
+    _hasSyncedOnce = false;
+    _remainingSeconds = 0;
     notifyListeners();
   }
 
