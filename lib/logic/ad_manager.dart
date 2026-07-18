@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:paladinvpn/logic/crypto_service.dart';
@@ -102,12 +103,19 @@ class AdManager extends ChangeNotifier {
     final keys = await CryptoService.getOrCreateKeys();
     final pubKey = keys['publicKey']!;
 
-    // 3. Build SSV options to send to our Hivemind server via Google's callback
+    // 3. Generate a connect nonce so the subsequent poll can verify
+    //    it's talking to the session created by *this* ad.
+    final nonce = '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
+    HivemindService.setExpectedNonce(nonce);
+    debugPrint('[AdManager] Ad nonce: $nonce');
+
+    // 4. Build SSV options to send to our Hivemind server via Google's callback
     final ssvOptions = ServerSideVerificationOptions(
       customData: jsonEncode({
         'device_id': deviceId,
         'public_key': pubKey,
         'ad_type': adType,
+        'nonce': nonce,
       }),
     );
 

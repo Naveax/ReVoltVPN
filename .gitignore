@@ -65,6 +65,7 @@ local_packages/*/.dart_tool/
 # Secrets
 android/key.properties
 android/admob.properties
+AGENTS.md
 SERVER_NOTES.md
 lib/logic/backup/
 00-FULL-REPORT.md

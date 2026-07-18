@@ -1,22 +1,46 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:paladinvpn/logic/app_config.dart';
 import 'package:paladinvpn/logic/crypto_service.dart';
 
 class HivemindService {
+  /// Nonce generated at the start of a connect cycle.
+  /// Sent to the server during session creation and verified in every poll
+  /// response so we never accidentally resume a stale session.
+  static String? _expectedNonce;
+
+  /// Stores a nonce so that fetchConfigWithPolling can verify it.
+  /// Called by AdManager.showAd() before showing a rewarded ad so the
+  /// subsequent poll accepts only the session created by *this* ad.
+  static void setExpectedNonce(String nonce) {
+    _expectedNonce = nonce;
+  }
+
   /// Polls the Hivemind server until the session is ready or timeout occurs.
   /// Returns the WireGuard config string.
   ///
   /// [onAttempt] is called after each poll with (current, total) so the UI
   /// can show progress (e.g. "Contacting server (3/15)…").
+
   static Future<String> fetchConfigWithPolling({
     void Function(int attempt, int total)? onAttempt,
   }) async {
     final deviceId = await CryptoService.getDeviceId();
     final keys = await CryptoService.getOrCreateKeys();
     final privKey = keys['privateKey']!;
+
+    // ── Generate a connect nonce ──────────────────────────────────────
+    // Every fresh connect cycle gets a new random token.  The server
+    // stores it in the session and echoes it back in /session/status.
+    // If the poll returns a session whose nonce differs (e.g. a stale
+    // leftover from a failed disconnectAndCleanup), we skip it and keep
+    // polling until the right session appears or the timeout fires.
+    final nonce = '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
+    _expectedNonce = nonce;
+    debugPrint('[HivemindService] Connect nonce: $nonce');
     
     final url = Uri.parse('${AppConfig.hivemindApiBase}/session/status?device_id=$deviceId');
 
@@ -30,6 +54,7 @@ class HivemindService {
           'device_id': deviceId,
           'public_key': keys['publicKey']!,
           'ad_type': 'main_ad',
+          'nonce': nonce,
         });
         final fakeAdmobPingUrl = Uri.parse(
             '${AppConfig.hivemindApiBase}/admob/callback?signature=test&key_id=test&custom_data=${Uri.encodeComponent(customData)}');
@@ -47,9 +72,17 @@ class HivemindService {
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body);
           
-          debugPrint('[HivemindService] Session active, constructing config…');
-          
-          if (data['active'] == true && data['client_ip'] != null && data['server_pubkey'] != null) {
+          debugPrint('[HivemindService] Session found, checking nonce…');
+
+          // ── Nonce gate ──────────────────────────────────────────────
+          // Reject any session whose nonce doesn't match what we sent.
+          // If the server is old and doesn't return a nonce we still
+          // accept it (backwards-compat), but a mismatch is a hard skip.
+          final serverNonce = data['nonce'] as String?;
+          if (_expectedNonce != null && serverNonce != null && serverNonce != _expectedNonce) {
+            debugPrint('[HivemindService] Nonce mismatch (expected $_expectedNonce, got $serverNonce) — stale session, retrying…');
+            // Fall through to retry — do NOT accept this session.
+          } else if (data['active'] == true && data['client_ip'] != null && data['server_pubkey'] != null) {
             final clientIp = data['client_ip'];
             final clientIpv6 = data['client_ipv6'] ?? '';
             final serverPubkey = data['server_pubkey'];
@@ -82,6 +115,7 @@ AllowedIPs = ${AppConfig.allowedIps}
 Endpoint = ${AppConfig.serverEndpoint}
 PersistentKeepalive = ${AppConfig.persistentKeepalive}
 ''';
+            _expectedNonce = null; // consumed successfully
             return configText;
           }
         } else {
