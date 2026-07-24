@@ -64,6 +64,7 @@ local_packages/*/.dart_tool/
 
 # Shell scripts (dev only, not for public)
 server_picture.sh
+XRAY_CONFIG_REFERENCE.md
 
 # Secrets
 android/key.properties
