@@ -5,7 +5,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_vless/flutter_vless.dart';
-import 'package:paladinvpn/logic/hivemind_service.dart';
+import 'package:revoltvpn/logic/hivemind_service.dart';
 
 // ── VPN States ────────────────────────────────────────────────────────────────
 enum VpnStatus {
@@ -50,7 +50,7 @@ class VpnConnection extends ChangeNotifier {
 
     try {
       await _vless.initializeVless(
-        providerBundleIdentifier: 'com.paladinvpn.app',
+        providerBundleIdentifier: 'com.revoltvpn.app',
       );
       _initialized = true;
     } catch (e) {
@@ -148,7 +148,7 @@ class VpnConnection extends ChangeNotifier {
       final config = parsed.getFullConfiguration();
 
       await _vless.startVless(
-        remark: parsed.remark.isNotEmpty ? parsed.remark : 'PaladinVPN',
+        remark: parsed.remark.isNotEmpty ? parsed.remark : 'ReVoltVPN',
         config: config,
       );
 

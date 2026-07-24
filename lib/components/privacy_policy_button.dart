@@ -5,7 +5,7 @@ class PrivacyPolicyButton extends StatelessWidget {
   const PrivacyPolicyButton({super.key});
 
   Future<void> _launchPrivacyPolicy() async {
-    final Uri url = Uri.parse('https://github.com/esefxdz/PaladinVPN/blob/main/PRIVACY_POLICY.md');
+    final Uri url = Uri.parse('https://github.com/esefxdz/ReVoltVPN/blob/main/PRIVACY_POLICY.md');
     if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
       debugPrint('Could not launch $url');
     }

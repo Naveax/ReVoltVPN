@@ -72,7 +72,7 @@ class GdprButton extends StatelessWidget {
 
   void _fallbackToPrivacyPolicy() async {
     final Uri url = Uri.parse(
-      'https://github.com/esefxdz/PaladinVPN/blob/main/PRIVACY_POLICY.md',
+      'https://github.com/esefxdz/ReVoltVPN/blob/main/PRIVACY_POLICY.md',
     );
     if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
       debugPrint('Could not launch $url');

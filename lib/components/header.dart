@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 
-/// Header displays the Paladin brand logo, title, and subtitle.
+/// Header displays the ReVolt brand logo, title, and subtitle.
 /// 
 /// It represents the top branding portion of the main dashboard and is designed
 /// with clean proportions, consistent typography, and a modern cyberpunk-inspired color scheme.
 class Header extends StatelessWidget {
   const Header({super.key});
 
-  // Cyber-paladin cyan glow accent color used as a fallback for the shield icon
+  // cyber-revolt cyan glow accent color used as a fallback for the shield icon
   static const Color _cyanGlow = Color(0xFF00E5FF);
 
   @override
@@ -30,7 +30,7 @@ class Header extends StatelessWidget {
         
         // Brand primary name
         const Text(
-          'Paladin',
+          'ReVolt',
           style: TextStyle(
             fontSize: 22,
             fontWeight: FontWeight.w800,

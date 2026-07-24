@@ -46,7 +46,7 @@ class VpnNotificationManager {
     // the old channel was created without 'ongoing: true', users would be
     // stuck with a swipeable notification forever.
     const androidDetails = AndroidNotificationDetails(
-      'paladin_vpn_status_v2',
+      'revolt_vpn_status_v2',
       'VPN Status',
       channelDescription: 'Shown while VPN is active — non-dismissable',
       importance: Importance.low,
@@ -72,7 +72,7 @@ class VpnNotificationManager {
     try {
       await _plugin.show(
         888, // Fixed ID — always updates the same notification
-        'Paladin VPN Active',
+        'REVOLT VPN Active',
         'Time: $timeLeft  •  $speedKbps',
         notificationDetails,
       );
@@ -84,7 +84,7 @@ class VpnNotificationManager {
         await init();
         await _plugin.show(
           888,
-          'Paladin VPN Active',
+          'REVOLT VPN Active',
           'Time: $timeLeft  •  $speedKbps',
           notificationDetails,
         );

@@ -3,8 +3,8 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:paladinvpn/logic/app_config.dart';
-import 'package:paladinvpn/logic/crypto_service.dart';
+import 'package:revoltvpn/logic/app_config.dart';
+import 'package:revoltvpn/logic/crypto_service.dart';
 
 class HivemindService {
   /// Nonce generated at the start of a connect cycle.
@@ -76,7 +76,7 @@ class HivemindService {
                 '&security=${AppConfig.vlessSecurity}'
                 '&type=${AppConfig.vlessType}'
                 '&flow=${AppConfig.vlessFlow}'
-                '#PaladinVPN';
+                '#ReVoltVPN';
 
             _expectedNonce = null; // consumed successfully
             return vlessUrl;

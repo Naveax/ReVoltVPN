@@ -14,7 +14,7 @@
    </queries>
 
    <application
-        android:label="Paladin VPN"
+        android:label="REVOLT VPN"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="false"

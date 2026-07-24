@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:paladinvpn/logic/vpn_connection.dart';
+import 'package:revoltvpn/logic/vpn_connection.dart';
 
 /// StatusText displays the status of the VPN tunnel.
 /// 

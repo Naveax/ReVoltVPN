@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'package:paladinvpn/logic/vpn_connection.dart';
-import 'package:paladinvpn/logic/session_timer.dart';
-import 'package:paladinvpn/components/clock_display.dart';
+import 'package:revoltvpn/logic/vpn_connection.dart';
+import 'package:revoltvpn/logic/session_timer.dart';
+import 'package:revoltvpn/components/clock_display.dart';
 
 class ConnectButton extends StatefulWidget {
   const ConnectButton({super.key});
@@ -108,13 +108,13 @@ class _ConnectButtonState extends State<ConnectButton>
         title: const Text('VPN Permission Required',
             style: TextStyle(color: Colors.white)),
         content: const Text(
-          'PaladinVPN needs permission to set up a VPN connection.\n\n'
+          'ReVoltVPN needs permission to set up a VPN connection.\n\n'
           'Since the permission was denied once, Android won\'t ask again. '
           'To grant it manually:\n\n'
           '1. Open your device Settings\n'
-          '2. Go to Apps → PaladinVPN\n'
+          '2. Go to Apps → ReVoltVPN\n'
           '3. Tap "VPN" and enable it\n'
-          '4. Return to PaladinVPN and tap connect',
+          '4. Return to ReVoltVPN and tap connect',
           style: TextStyle(color: Color(0xFFA0AEC0)),
         ),
         actions: [

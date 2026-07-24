@@ -3,9 +3,9 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
-import 'package:paladinvpn/logic/crypto_service.dart';
-import 'package:paladinvpn/logic/hivemind_service.dart';
-import 'package:paladinvpn/logic/app_config.dart';
+import 'package:revoltvpn/logic/crypto_service.dart';
+import 'package:revoltvpn/logic/hivemind_service.dart';
+import 'package:revoltvpn/logic/app_config.dart';
 
 /// AdManager manages the lifecycle of rewarded video ads.
 ///

@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
-import 'package:paladinvpn/components/header.dart';
-import 'package:paladinvpn/components/status_text.dart';
-import 'package:paladinvpn/components/connect_button.dart';
-import 'package:paladinvpn/components/bottom_bar.dart';
-import 'package:paladinvpn/components/info_button.dart';
-import 'package:paladinvpn/components/privacy_policy_button.dart';
-import 'package:paladinvpn/components/gdpr_button.dart';
+import 'package:revoltvpn/components/header.dart';
+import 'package:revoltvpn/components/status_text.dart';
+import 'package:revoltvpn/components/connect_button.dart';
+import 'package:revoltvpn/components/bottom_bar.dart';
+import 'package:revoltvpn/components/info_button.dart';
+import 'package:revoltvpn/components/privacy_policy_button.dart';
+import 'package:revoltvpn/components/gdpr_button.dart';
 
-/// MainScreen serves as the primary home screen for Paladin VPN.
+/// MainScreen serves as the primary home screen for REVOLT VPN.
 /// 
 /// It provides a dark mode, cyberpunk-inspired visual layout displaying:
 /// - Logo and Branding at the top (`Header`)

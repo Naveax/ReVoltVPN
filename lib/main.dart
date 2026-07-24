@@ -3,13 +3,13 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 
-import 'package:paladinvpn/logic/vpn_connection.dart';
-import 'package:paladinvpn/logic/session_timer.dart';
-import 'package:paladinvpn/logic/ad_manager.dart';
-import 'package:paladinvpn/logic/consent_manager.dart';
-import 'package:paladinvpn/screens/intro.dart';
+import 'package:revoltvpn/logic/vpn_connection.dart';
+import 'package:revoltvpn/logic/session_timer.dart';
+import 'package:revoltvpn/logic/ad_manager.dart';
+import 'package:revoltvpn/logic/consent_manager.dart';
+import 'package:revoltvpn/screens/intro.dart';
 
-/// The entry point for the Paladin VPN application.
+/// The entry point for the REVOLT VPN application.
 void main() async {
   // Ensure that the Flutter engine is fully initialized before using platform channels
   // (e.g., for SystemChrome or MobileAds).
@@ -39,12 +39,12 @@ void main() async {
   await MobileAds.instance.initialize();
 
   // Inflate the root widget
-  runApp(const PaladinApp());
+  runApp(const ReVoltApp());
 }
 
 /// The root application widget wrapping the app in necessary state providers and themes.
-class PaladinApp extends StatelessWidget {
-  const PaladinApp({super.key});
+class ReVoltApp extends StatelessWidget {
+  const ReVoltApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -69,7 +69,7 @@ class PaladinApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => AdManager()),
       ],
       child: MaterialApp(
-        title: 'Paladin VPN',
+        title: 'ReVolt VPN',
         debugShowCheckedModeBanner: false,
         theme: _buildDarkTheme(),
         home: const IntroScreen(),

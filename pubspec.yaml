@@ -1,5 +1,5 @@
-name: paladinvpn
-description: Paladin VPN — Secure VLESS tunnel for Android
+name: revoltvpn
+description: ReVolt VPN — Secure VLESS tunnel for Android
 
 # The following line prevents the package from being accidentally published to
 # pub.dev using `pub publish`. This is preferred for private packages.

@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:paladinvpn/logic/vpn_connection.dart';
-import 'package:paladinvpn/logic/session_timer.dart';
-import 'package:paladinvpn/logic/ad_manager.dart';
-import 'package:paladinvpn/components/online_dot.dart';
-import 'package:paladinvpn/components/watch_ad_button.dart';
+import 'package:revoltvpn/logic/vpn_connection.dart';
+import 'package:revoltvpn/logic/session_timer.dart';
+import 'package:revoltvpn/logic/ad_manager.dart';
+import 'package:revoltvpn/components/online_dot.dart';
+import 'package:revoltvpn/components/watch_ad_button.dart';
 
 /// BottomBar is the bottom utility panel that surfaces server connectivity status
 /// and offers the user an option to support the server when the VPN tunnel is active.

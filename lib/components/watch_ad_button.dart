@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:paladinvpn/logic/session_timer.dart';
-import 'package:paladinvpn/logic/ad_manager.dart';
+import 'package:revoltvpn/logic/session_timer.dart';
+import 'package:revoltvpn/logic/ad_manager.dart';
 
 /// WatchAdButton is a voluntary option allowing the user to watch a rewarded video ad
 /// and extend their active VPN tunnel session by 30 minutes as a reward.

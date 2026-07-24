@@ -5,7 +5,7 @@ class InfoButton extends StatelessWidget {
   const InfoButton({super.key});
 
   Future<void> _launchGitHub() async {
-    final Uri url = Uri.parse('https://github.com/esefxdz/PaladinVPN');
+    final Uri url = Uri.parse('https://github.com/esefxdz/ReVoltVPN');
     if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
       debugPrint('Could not launch $url');
     }
@@ -16,7 +16,7 @@ class InfoButton extends StatelessWidget {
     return IconButton(
       icon: const Icon(Icons.help_outline, color: Colors.white, size: 28),
       onPressed: _launchGitHub,
-      tooltip: 'About PaladinVPN',
+      tooltip: 'About ReVoltVPN',
       splashRadius: 24,
     );
   }

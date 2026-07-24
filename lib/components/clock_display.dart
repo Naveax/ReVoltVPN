@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:paladinvpn/logic/session_timer.dart';
+import 'package:revoltvpn/logic/session_timer.dart';
 
 /// ClockDisplay renders inside the ConnectButton circle when the VPN is active.
 ///

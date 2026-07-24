@@ -1,4 +1,4 @@
-# Xray Configuration Reference — PaladinVPN
+# Xray Configuration Reference — ReVoltVPN
 
 > Minimal production config with annotated explanations and optional upgrades.
 > File lives at `/usr/local/etc/xray/config.json` on the Hetzner box.

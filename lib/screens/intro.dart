@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:paladinvpn/screens/main_screen.dart';
+import 'package:revoltvpn/screens/main_screen.dart';
 
 class IntroScreen extends StatefulWidget {
   const IntroScreen({super.key});
@@ -77,7 +77,7 @@ class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
             ),
             const SizedBox(height: 30),
             const Text(
-              'PALADIN VPN',
+              'REVOLT VPN',
               style: TextStyle(
                 color: Colors.white,
                 fontSize: 28,

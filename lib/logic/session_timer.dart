@@ -2,10 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:paladinvpn/logic/app_config.dart';
-import 'package:paladinvpn/logic/vpn_connection.dart';
-import 'package:paladinvpn/logic/crypto_service.dart';
-import 'package:paladinvpn/components/notification.dart';
+import 'package:revoltvpn/logic/app_config.dart';
+import 'package:revoltvpn/logic/vpn_connection.dart';
+import 'package:revoltvpn/logic/crypto_service.dart';
+import 'package:revoltvpn/components/notification.dart';
 
 /// SessionTimer is the client-side session authority for the VPN tunnel.
 ///
