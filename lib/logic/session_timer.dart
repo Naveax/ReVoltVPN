@@ -109,7 +109,7 @@ class SessionTimer extends ChangeNotifier {
     }
 
     // ── Network-blip reconnect: VPN dropped and came back on its own ──
-    // The underlying AmneziaWG tunnel may briefly flap.  If we weren't
+    // The underlying VLESS tunnel may briefly flap.  If we weren't
     // explicitly stopped by the user, resume where we left off.
     if (vpnConnection.status == VpnStatus.connected &&
         !isRunning &&

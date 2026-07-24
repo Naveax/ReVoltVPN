@@ -1,11 +1,11 @@
 Privacy Policy
 Last updated: July 2025
-ReVoltVPN is a free VPN service built and operated by a solo developer.
+ReVoltVPN is a free VPN service built and operated by ReVolt Team.
 What we collect
 We collect the minimum required to operate the service:
 
 A randomly generated device ID created on your phone. This is not linked to your identity in any way.
-Your active session status and data usage for the current session only. This is stored in memory and deleted when your session ends.
+Your active session status and data usage for the current session only. Sessions last up to 1 hour, then expire. All session data is stored in memory and deleted permanently when your session ends.
 
 What we do not collect
 

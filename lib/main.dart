@@ -51,7 +51,7 @@ class ReVoltApp extends StatelessWidget {
     // MultiProvider injects global state controllers down the widget tree.
     return MultiProvider(
       providers: [
-        // Manages the WireGuard tunnel lifecycle
+        // Manages the VLESS tunnel lifecycle
         ChangeNotifierProvider(create: (_) => VpnConnection()),
         
         // Manages the 1-hour session clock.

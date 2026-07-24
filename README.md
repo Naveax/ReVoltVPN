@@ -5,7 +5,7 @@
 </p>
 
 # ReVoltVPN
-A free VPN app I built in my spare time as a student with basically no prior experience.
+A free VPN app I built in my spare time as a student with basically no prior experience. Now backed by the ReVolt team handling server security and infrastructure.
 
 <p align="center">
   <img src="screenshots/hero_screenshot.png" alt="ReVoltVPN splash screen" width="32%"/>
@@ -29,23 +29,22 @@ When your data runs out you get throttled to 1.5 Mbps instead of getting cut off
 ## The stack
 - **App** — Flutter (Android only for now)
 - **Server** — A single Debian box rented from Hetzner, located in Finland
-- **VPN protocol** — AmneziaWG, which is WireGuard with obfuscation so it works on carriers that block standard WireGuard
+- **VPN protocol** — VLESS with Xray, which is great for bypassing DPI in countries that are aggressive with it
 - **Backend** — A Python script I wrote called Hivemind that manages sessions, data quotas, and throttling
 - **Ads** — Google AdMob rewarded ads, verified server-side so fake callbacks don't work
 
 ---
 
 ## Limitations (being honest)
-- One server, one location (Finland). That's all I can afford right now
+- One server, one location (Finland). That's all I can afford right now (planning to escalate further)
 - 2 cores and 4GB RAM. It will not handle thousands of concurrent users
 - iOS is not supported and probably won't be for a while
-- Countries with very aggressive DPI (China, Russia, etc.) may still have issues
-- I'm a student doing this in my free time. Expect rough edges
+- The app is built by me in my free time — expect rough edges
 
 ---
 
 ## Why I built this
-Free time project. Wanted to learn how VPNs actually work under the hood. Ended up building the whole thing from scratch — the Flutter app, the AmneziaWG setup, the session management backend, the AdMob integration. It took way longer than expected.
+Free time project. I wanted to learn how VPNs actually work under the hood. Ended up building the whole thing from scratch — the Flutter app, Hivemind backend, and AdMob integration are made by me, while server security and VLESS/Xray setup are handled by the ReVolt team. It took way longer than expected.
 
 ---
 
