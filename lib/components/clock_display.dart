@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/logic/session_timer.dart';
 
 /// ClockDisplay renders inside the ConnectButton circle when the VPN is active.
@@ -36,7 +37,7 @@ class ClockDisplay extends StatelessWidget {
                       height: 32,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        color: Color.fromRGBO(0, 229, 255, 0.5),
+                        color: AppColors.cyan50,
                       ),
                     ),
                     const SizedBox(height: 10),
@@ -45,7 +46,7 @@ class ClockDisplay extends StatelessWidget {
                       style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w600,
-                        color: Color.fromRGBO(0, 229, 255, 0.6),
+                        color: AppColors.cyan60,
                         letterSpacing: 1.5,
                       ),
                     ),
@@ -56,11 +57,11 @@ class ClockDisplay extends StatelessWidget {
                       style: const TextStyle(
                         fontSize: 40,
                         fontWeight: FontWeight.w800,
-                        color: Colors.white,
+                        color: AppColors.textWhite,
                         letterSpacing: 2,
                         shadows: [
                           Shadow(
-                            color: Color.fromRGBO(0, 229, 255, 0.5),
+                            color: AppColors.cyan50,
                             blurRadius: 16,
                           ),
                         ],
@@ -72,7 +73,7 @@ class ClockDisplay extends StatelessWidget {
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.speed, color: Colors.white54, size: 14),
+                        const Icon(Icons.speed, color: AppColors.textDim, size: 14),
                         const SizedBox(width: 4),
                         Text(
                           timer.currentSpeedKBps > 0.5
@@ -80,7 +81,7 @@ class ClockDisplay extends StatelessWidget {
                               : 'Idle',
                           style: const TextStyle(
                             fontSize: 12,
-                            color: Colors.white54,
+                            color: AppColors.textDim,
                             fontWeight: FontWeight.w500,
                           ),
                         ),

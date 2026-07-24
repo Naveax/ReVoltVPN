@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/components/header.dart';
 import 'package:revoltvpn/components/status_text.dart';
 import 'package:revoltvpn/components/connect_button.dart';
@@ -18,23 +19,20 @@ import 'package:revoltvpn/components/gdpr_button.dart';
 class MainScreen extends StatelessWidget {
   const MainScreen({super.key});
 
-  // Background base color
-  static const Color _bgTop = Color(0xFF0D1117);
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: _bgTop,
+      backgroundColor: AppColors.bgDeep,
       body: Container(
         width: double.infinity,
         height: double.infinity,
         decoration: const BoxDecoration(
-          color: _bgTop,
+          color: AppColors.bgDeep,
           image: DecorationImage(
             image: AssetImage('assets/background.png'),
             fit: BoxFit.cover,
             colorFilter: ColorFilter.mode(
-              Color(0xAA0D1117), // Deep dark tint overlay to guarantee readability of overlay elements
+              AppColors.bgOverlay, // Deep dark tint overlay to guarantee readability of overlay elements
               BlendMode.darken,
             ),
           ),

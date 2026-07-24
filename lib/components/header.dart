@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:revoltvpn/logic/app_colors.dart';
 
 /// Header displays the ReVolt brand logo, title, and subtitle.
 /// 
@@ -6,9 +7,6 @@ import 'package:flutter/material.dart';
 /// with clean proportions, consistent typography, and a modern cyberpunk-inspired color scheme.
 class Header extends StatelessWidget {
   const Header({super.key});
-
-  // cyber-revolt cyan glow accent color used as a fallback for the shield icon
-  static const Color _cyanGlow = Color(0xFF00E5FF);
 
   @override
   Widget build(BuildContext context) {
@@ -23,7 +21,7 @@ class Header extends StatelessWidget {
           errorBuilder: (context, error, stackTrace) => const Icon(
             Icons.shield,
             size: 120,
-            color: _cyanGlow,
+            color: AppColors.cyan,
           ),
         ),
         const SizedBox(height: 8), // Standard padding between the logo and the title
@@ -35,7 +33,7 @@ class Header extends StatelessWidget {
             fontSize: 22,
             fontWeight: FontWeight.w800,
             letterSpacing: 8,
-            color: Colors.white,
+            color: AppColors.textWhite,
           ),
         ),
         const SizedBox(height: 2), // Close spacing for secondary information
@@ -47,7 +45,7 @@ class Header extends StatelessWidget {
             fontSize: 12,
             fontWeight: FontWeight.w600,
             letterSpacing: 4,
-            color: Color(0xAA4A5568), // Semi-transparent slate gray
+            color: AppColors.slateAA, // Semi-transparent slate gray
           ),
         ),
       ],

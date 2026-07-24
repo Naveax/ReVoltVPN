@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 
 /// StatusText displays the status of the VPN tunnel.
@@ -22,12 +23,12 @@ class StatusText extends StatelessWidget {
             key: ValueKey(vpn.status),
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             decoration: BoxDecoration(
-              color: const Color(0x22FFFFFF), // Subtle glass effect background
+              color: AppColors.glassBg, // Subtle glass effect background
               borderRadius: BorderRadius.circular(24),
               border: Border.all(
                 color: isConnected
-                    ? const Color(0x8800E5FF) // Glowing cyan border when connected
-                    : const Color(0x33FFFFFF), // Muted translucent border when disconnected/connecting
+                    ? AppColors.cyanGlow // Glowing cyan border when connected
+                    : AppColors.glassBorder, // Muted translucent border when disconnected/connecting
                 width: 1,
               ),
             ),
@@ -45,7 +46,7 @@ class StatusText extends StatelessWidget {
                   const Text(
                     'Helsinki, Finland',
                     style: TextStyle(
-                      color: Color(0xFF00E5FF),
+                      color: AppColors.cyan,
                       fontWeight: FontWeight.w600,
                       fontSize: 13,
                       letterSpacing: 0.5,
@@ -58,22 +59,22 @@ class StatusText extends StatelessWidget {
                       height: 14,
                       child: CircularProgressIndicator(
                         strokeWidth: 1.5,
-                        color: Color(0xFF00E5FF),
+                        color: AppColors.cyan,
                       ),
                     )
                   else
                     const Icon(
                       Icons.shield_outlined,
                       size: 18,
-                      color: Color(0xAA4A5568),
+                      color: AppColors.slateAA,
                     ),
                   const SizedBox(width: 8),
                   Text(
                     vpn.statusMessage.toUpperCase(),
                     style: TextStyle(
                       color: isConnecting
-                          ? const Color(0xFF00E5FF)
-                          : const Color(0xAA4A5568),
+                          ? AppColors.cyan
+                          : AppColors.slateAA,
                       fontWeight: FontWeight.w600,
                       fontSize: 13,
                       letterSpacing: 1,

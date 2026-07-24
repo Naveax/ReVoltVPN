@@ -22,7 +22,7 @@ So here it is.
 ## How it works
 You watch a short ad. You get 60 minutes and 2GB of full-speed traffic. That's it. The ad pays for the server (actually not even enough). No accounts, no emails, no subscriptions.
 
-When your data runs out you get throttled to 1.5 Mbps instead of getting cut off. You can watch a bonus ad to top up anytime.
+When your data runs out you get throttled to 1.5 Mbps instead of getting cut off.
 
 ---
 

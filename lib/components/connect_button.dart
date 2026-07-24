@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/logic/session_timer.dart';
+import 'package:revoltvpn/logic/ad_manager.dart';
 import 'package:revoltvpn/components/clock_display.dart';
 
 class ConnectButton extends StatefulWidget {
@@ -16,9 +18,6 @@ class _ConnectButtonState extends State<ConnectButton>
     with SingleTickerProviderStateMixin {
   late AnimationController _pulseController;
   late Animation<double> _pulseAnim;
-
-  static const Color _cyanGlow = Color(0xFF00E5FF);
-  static const Color _bgDark = Color(0xFF1A202C);
 
   bool _inCooldown = false;
 
@@ -78,6 +77,18 @@ class _ConnectButtonState extends State<ConnectButton>
     } else if (vpn.status == VpnStatus.disconnected ||
                vpn.status == VpnStatus.error) {
       HapticFeedback.lightImpact();
+
+      // ── Show rewarded ad ──
+      // In production the server creates the session via AdMob SSV callback
+      // only after a real ad is watched.  The debug bypass in HivemindService
+      // handles session creation when adsEnabled is false.
+      final adMgr = context.read<AdManager>();
+      final adWatched = await adMgr.showAd('main_ad');
+      if (AdManager.adsEnabled && !adWatched) {
+        // User closed the ad before earning the reward — don't connect.
+        return;
+      }
+
       final success = await vpn.connect();
       if (success) {
         timer.start('main_ad');
@@ -104,9 +115,9 @@ class _ConnectButtonState extends State<ConnectButton>
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A202C),
+        backgroundColor: AppColors.bgDark,
         title: const Text('VPN Permission Required',
-            style: TextStyle(color: Colors.white)),
+            style: TextStyle(color: AppColors.textWhite)),
         content: const Text(
           'ReVoltVPN needs permission to set up a VPN connection.\n\n'
           'Since the permission was denied once, Android won\'t ask again. '
@@ -115,16 +126,16 @@ class _ConnectButtonState extends State<ConnectButton>
           '2. Go to Apps → ReVoltVPN\n'
           '3. Tap "VPN" and enable it\n'
           '4. Return to ReVoltVPN and tap connect',
-          style: TextStyle(color: Color(0xFFA0AEC0)),
+          style: TextStyle(color: AppColors.textMuted),
         ),
         actions: [
           FilledButton(
             onPressed: () => Navigator.of(ctx).pop(),
             style: FilledButton.styleFrom(
-              backgroundColor: const Color(0xFF00E5FF),
+              backgroundColor: AppColors.cyan,
             ),
             child: const Text('Got it',
-                style: TextStyle(color: Color(0xFF0D1117))),
+                style: TextStyle(color: AppColors.bgDeep)),
           ),
         ],
       ),
@@ -153,15 +164,15 @@ class _ConnectButtonState extends State<ConnectButton>
                 height: 260,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: _bgDark,
+                  color: AppColors.bgDark,
                   border: Border.all(
                     color: _inCooldown
-                        ? Colors.grey.withValues(alpha: 0.5)
+                        ? Colors.grey.withValues(alpha: 0.5)  // dynamic, OK inline
                         : isConnected
-                            ? _cyanGlow
+                            ? AppColors.cyan
                             : isConnecting
-                                ? const Color.fromRGBO(0, 229, 255, 0.5)
-                                : const Color.fromRGBO(74, 85, 104, 0.5),
+                                ? AppColors.cyan50
+                                : AppColors.slate50,
                     width: isConnected && !_inCooldown ? 3 : 2,
                   ),
                   boxShadow: isConnected
@@ -194,7 +205,7 @@ class _ConnectButtonState extends State<ConnectButton>
         height: 48,
         child: CircularProgressIndicator(
           strokeWidth: 2.5,
-          color: Color.fromRGBO(0, 229, 255, 0.7),
+          color: AppColors.cyan70,
         ),
       );
     }
@@ -206,15 +217,15 @@ class _ConnectButtonState extends State<ConnectButton>
     if (inCooldown) {
       label = 'PLEASE WAIT';
       icon  = Icons.hourglass_bottom;
-      tint  = Colors.grey;
+      tint  = Colors.grey; // dynamic, OK inline
     } else if (status == VpnStatus.error) {
       label = 'TRY AGAIN';
       icon  = Icons.refresh;
-      tint  = const Color(0xFFEF5350); // soft red — something went wrong
+      tint  = AppColors.red; // soft red — something went wrong
     } else {
       label = 'TAP TO CONNECT';
       icon  = Icons.power_settings_new;
-      tint  = const Color.fromRGBO(74, 85, 104, 0.7);
+      tint  = AppColors.slate70;
     }
 
     return Column(

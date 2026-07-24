@@ -7,6 +7,7 @@ import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/logic/session_timer.dart';
 import 'package:revoltvpn/logic/ad_manager.dart';
 import 'package:revoltvpn/logic/consent_manager.dart';
+import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/screens/intro.dart';
 
 /// The entry point for the REVOLT VPN application.
@@ -79,21 +80,18 @@ class ReVoltApp extends StatelessWidget {
 
   /// Constructs the global dark theme used across the application.
   ThemeData _buildDarkTheme() {
-    const cyanAccent = Color(0xFF00E5FF);
-    const bgDark = Color(0xFF0D1117);
-
     return ThemeData(
       brightness: Brightness.dark,
-      scaffoldBackgroundColor: bgDark,
+      scaffoldBackgroundColor: AppColors.bgDeep,
       colorScheme: const ColorScheme.dark(
-        primary: cyanAccent,
-        secondary: cyanAccent,
-        surface: Color(0xFF151C28),
+        primary: AppColors.cyan,
+        secondary: AppColors.cyan,
+        surface: AppColors.bgSurface,
       ),
       fontFamily: 'Roboto',
       snackBarTheme: SnackBarThemeData(
-        backgroundColor: const Color(0xFF1E2533),
-        contentTextStyle: const TextStyle(color: Colors.white),
+        backgroundColor: AppColors.bgCard,
+        contentTextStyle: const TextStyle(color: AppColors.textWhite),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         behavior: SnackBarBehavior.floating,
       ),

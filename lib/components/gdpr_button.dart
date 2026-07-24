@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 /// GdprButton lets the user review or change their ad consent choices.
@@ -83,7 +84,7 @@ class GdprButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return IconButton(
       icon: const Icon(Icons.admin_panel_settings_outlined,
-          color: Colors.white, size: 28),
+          color: AppColors.textWhite, size: 28),
       onPressed: _showConsentForm,
       tooltip: 'Ad consent & privacy choices',
       splashRadius: 24,

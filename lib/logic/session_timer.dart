@@ -22,7 +22,6 @@ class SessionTimer extends ChangeNotifier {
   int _remainingSeconds = 0;
   int _quotaBytes      = 0;
   int _usedBytes       = 0;
-  bool _isThrottled    = false;
 
   // ── Sync / Network Health ──────────────────────────────────────────────────
   bool _hasSyncedOnce       = false;
@@ -65,7 +64,6 @@ class SessionTimer extends ChangeNotifier {
   int    get quotaBytes     => _quotaBytes;
   int    get usedBytes      => _usedBytes;
   int    get remainingBytes => _quotaBytes > _usedBytes ? _quotaBytes - _usedBytes : 0;
-  bool   get isThrottled    => _isThrottled;
   double get currentSpeedKBps => _currentSpeedKBps;
 
   String get formatted {
@@ -136,7 +134,6 @@ class SessionTimer extends ChangeNotifier {
     _usedBytes           = 0;
     _lastUsedBytes       = 0;
     _currentSpeedKBps    = 0.0;
-    _isThrottled         = false;
     _tickCount           = 0;
     _hasSyncedOnce       = false;
     _consecutiveFailures = 0;
@@ -251,7 +248,6 @@ class SessionTimer extends ChangeNotifier {
         _remainingSeconds = data['expires_in_seconds'] ?? _remainingSeconds;
         _quotaBytes       = data['quota_bytes']       ?? _quotaBytes;
         _usedBytes        = data['used_bytes']        ?? _usedBytes;
-        _isThrottled      = data['is_throttled']      ?? false;
 
         // ── Speed calculation over the polling interval ────────────────────
         final int deltaBytes = _usedBytes - _lastUsedBytes;
@@ -287,26 +283,6 @@ class SessionTimer extends ChangeNotifier {
     _consecutiveFailures++;
     if (_consecutiveFailures >= _maxConsecutiveFailures) {
       notifyListeners(); // let the UI show "Reconnecting…"
-    }
-  }
-
-  // ── Bonus Time ─────────────────────────────────────────────────────────────
-
-  /// Called after the user watches a bonus rewarded ad.
-  ///
-  /// The actual session extension is handled server-side via the AdMob SSV
-  /// callback.  This method simply re-syncs so the UI picks up the new
-  /// limits and un-throttled status.
-  ///
-  /// Returns `true` if the sync succeeded, so the UI can decide whether to
-  /// show a success snackbar.
-  Future<bool> addBonusTime() async {
-    try {
-      await _syncWithHivemind();
-      return _hasSyncedOnce;
-    } catch (e) {
-      debugPrint('Bonus-time sync error: $e');
-      return false;
     }
   }
 

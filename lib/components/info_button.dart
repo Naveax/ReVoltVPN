@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:revoltvpn/logic/app_colors.dart';
 
 class InfoButton extends StatelessWidget {
   const InfoButton({super.key});
@@ -14,7 +15,7 @@ class InfoButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return IconButton(
-      icon: const Icon(Icons.help_outline, color: Colors.white, size: 28),
+      icon: const Icon(Icons.help_outline, color: AppColors.textWhite, size: 28),
       onPressed: _launchGitHub,
       tooltip: 'About ReVoltVPN',
       splashRadius: 24,

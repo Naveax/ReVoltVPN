@@ -2,16 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/logic/session_timer.dart';
-import 'package:revoltvpn/logic/ad_manager.dart';
+import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/components/online_dot.dart';
-import 'package:revoltvpn/components/watch_ad_button.dart';
 
-/// BottomBar is the bottom utility panel that surfaces server connectivity status
-/// and offers the user an option to support the server when the VPN tunnel is active.
+/// BottomBar is the bottom utility panel that surfaces server connectivity status.
 class BottomBar extends StatelessWidget {
   const BottomBar({super.key});
-
-  static const Color _cardBg = Color(0xFF1E2533);
 
   @override
   Widget build(BuildContext context) {
@@ -26,10 +22,10 @@ class BottomBar extends StatelessWidget {
           margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
           decoration: BoxDecoration(
-            color: _cardBg,
+            color: AppColors.bgCard,
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: const Color.fromRGBO(74, 85, 104, 0.15),
+              color: AppColors.slate15,
             ),
           ),
           child: Row(
@@ -43,9 +39,6 @@ class BottomBar extends StatelessWidget {
                         ? 'Server Online'
                         : 'Disconnected',
               ),
-              const Spacer(),
-              // Support button — only visible while connected AND ads are enabled
-              if (isConnected && AdManager.adsEnabled) const WatchAdButton(),
             ],
           ),
         );

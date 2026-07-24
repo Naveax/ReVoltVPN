@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:revoltvpn/logic/app_colors.dart';
 
 class PrivacyPolicyButton extends StatelessWidget {
   const PrivacyPolicyButton({super.key});
@@ -14,7 +15,7 @@ class PrivacyPolicyButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return IconButton(
-      icon: const Icon(Icons.privacy_tip_outlined, color: Colors.white, size: 28),
+      icon: const Icon(Icons.privacy_tip_outlined, color: AppColors.textWhite, size: 28),
       onPressed: _launchPrivacyPolicy,
       tooltip: 'Privacy Policy',
       splashRadius: 24,

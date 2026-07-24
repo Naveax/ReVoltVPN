@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/screens/main_screen.dart';
 
 class IntroScreen extends StatefulWidget {
@@ -58,7 +59,7 @@ class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0D1117),
+      backgroundColor: AppColors.bgDeep,
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -71,7 +72,7 @@ class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
                 return const Icon(
                   Icons.shield,
                   size: 140,
-                  color: Color(0xFF00E5FF),
+                  color: AppColors.cyan,
                 );
               },
             ),
@@ -79,7 +80,7 @@ class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
             const Text(
               'REVOLT VPN',
               style: TextStyle(
-                color: Colors.white,
+                color: AppColors.textWhite,
                 fontSize: 28,
                 fontWeight: FontWeight.bold,
                 letterSpacing: 2.0,
@@ -90,7 +91,7 @@ class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
               width: 40,
               height: 40,
               child: CircularProgressIndicator(
-                color: Color(0xFF00E5FF),
+                color: AppColors.cyan,
                 strokeWidth: 3.0,
               ),
             ),

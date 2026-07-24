@@ -42,7 +42,6 @@ class HivemindService {
       try {
         final customData = jsonEncode({
           'device_id': deviceId,
-          'ad_type': 'main_ad',
           'nonce': nonce,
         });
         final fakeAdmobPingUrl = Uri.parse(
@@ -75,7 +74,6 @@ class HivemindService {
                 '?path=${Uri.encodeComponent(AppConfig.vlessPath)}'
                 '&security=${AppConfig.vlessSecurity}'
                 '&type=${AppConfig.vlessType}'
-                '&flow=${AppConfig.vlessFlow}'
                 '#ReVoltVPN';
 
             _expectedNonce = null; // consumed successfully

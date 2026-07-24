@@ -77,12 +77,16 @@ class VpnConnection extends ChangeNotifier {
     switch (status.connectionState) {
       case VlessConnectionState.connected:
         _setStatus(VpnStatus.connected, 'Secured');
+        break;
       case VlessConnectionState.disconnected:
         _setStatus(VpnStatus.disconnected, 'Tap to connect');
+        break;
       case VlessConnectionState.connecting:
         _setStatus(VpnStatus.connecting, 'Establishing tunnel…');
+        break;
       case VlessConnectionState.disconnecting:
         _setStatus(VpnStatus.disconnecting, 'Tearing down…');
+        break;
       case VlessConnectionState.unknown:
         // Native backend emitted an unrecognized state — treat as error
         // only if we aren't already in a terminal state.
@@ -90,6 +94,7 @@ class VpnConnection extends ChangeNotifier {
             _status != VpnStatus.disconnected) {
           _setStatus(VpnStatus.error, 'Connection failed');
         }
+        break;
     }
   }
 
@@ -221,6 +226,13 @@ class VpnConnection extends ChangeNotifier {
 
   @override
   void dispose() {
+    if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
+      try {
+        _vless.stopVless();
+      } catch (_) {
+        // Best-effort — widget is being destroyed anyway
+      }
+    }
     super.dispose();
   }
 }

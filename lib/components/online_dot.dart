@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:revoltvpn/logic/app_colors.dart';
 
 /// OnlineDot displays a glowing green dot when the server is healthy,
 /// and a muted gray dot when disconnected or still syncing.
@@ -30,11 +31,11 @@ class OnlineDot extends StatelessWidget {
           height: 8,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: isOnline ? const Color(0xFF00E676) : const Color(0xFF4A5568),
+            color: isOnline ? AppColors.green : AppColors.slate,
             boxShadow: isOnline
                 ? const [
                     BoxShadow(
-                      color: Color.fromRGBO(0, 230, 118, 0.5),
+                      color: AppColors.green50,
                       blurRadius: 6,
                     ),
                   ]
@@ -48,8 +49,8 @@ class OnlineDot extends StatelessWidget {
             fontSize: 13,
             fontWeight: FontWeight.w500,
             color: isOnline
-                ? const Color.fromRGBO(255, 255, 255, 0.8)
-                : const Color(0xFF4A5568),
+                ? AppColors.textWhite80
+                : AppColors.slate,
             letterSpacing: 0.5,
           ),
         ),

@@ -17,7 +17,6 @@ abstract final class AppConfig {
 
   // ── VLESS ──────────────────────────────────────────────────────────────
   static const int serverPort = 443;
-  static const String vlessFlow = 'xtls-rprx-vision';
   static const String vlessSecurity = 'tls';
   static const String vlessType = 'ws';
 
