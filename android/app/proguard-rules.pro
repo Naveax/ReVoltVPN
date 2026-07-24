@@ -4,17 +4,11 @@
 # via JNI (Java Native Interface) or reflection, which would cause
 # UnsatisfiedLinkError / ClassNotFoundException at runtime.
 
-# ── AmneziaWG Native Backend (JNI) ────────────────────────────────────────────
-# The wireguard_flutter plugin uses org.amnezia.awg for all tunnel operations.
-# These classes are loaded via JNI — stripping them will crash the VPN.
--keep class org.amnezia.awg.backend.** { *; }
--keep class org.amnezia.awg.crypto.** { *; }
--keep class org.amnezia.awg.config.** { *; }
--keep class com.wireguard.** { *; }
-
-# ── Kotlin Coroutines (used by wireguard_flutter plugin) ──────────────────────
--keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}
--keepnames class kotlinx.coroutines.CoroutineExceptionHandler {}
+# ── VLESS / Xray Native Backend (flutter_vless) ───────────────────────────────
+# The flutter_vless plugin embeds Xray core via JNI. Keep all JNI entry points.
+-keep class com.github.tfox.flutter_vless.** { *; }
+-keep class libv2ray.** { *; }
+-keep class xray.** { *; }
 
 # ── Flutter / Platform Channels ───────────────────────────────────────────────
 -keep class io.flutter.** { *; }
@@ -24,9 +18,6 @@
 # ── Google Mobile Ads (AdMob) ─────────────────────────────────────────────────
 -keep class com.google.android.gms.ads.** { *; }
 -dontwarn com.google.android.gms.ads.**
-
-# ── Klaxon JSON parser (used by wireguard_flutter plugin) ─────────────────────
--keep class com.beust.klaxon.** { *; }
 
 # ── General Android / Kotlin ──────────────────────────────────────────────────
 -keepattributes *Annotation*

@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
 Hivemind VPN Session Manager
-Manages time + data quotas for AmneziaWG peers via ad rewards.
+Manages time + data quotas for VLESS clients via ad rewards.
 Designed for Android-only clients.
 
 === TABLE OF CONTENTS ===========================================================
   LINE     SECTION
-   44      Configuration — ad rewards, throttle rate, check interval
-   60      State & Cache — sessions dict, IP pool, server pubkey
-   93      Flask Routes — /admob/callback, /session/status, /session/stop
-  220      Session Logic — _start_or_extend_session (create / extend)
-  295      AdMob SSV Verification — Google ECDSA signature checks
-  380      Management Loop — expiry + data-quota watchdog (60 s tick)
-  426      Low-Level Plumbing — awg commands, tc throttling, IP pool, peers
-  567      Entry Point — daemon thread + gunicorn bootstrap
+   37      Configuration — ad rewards, Xray paths, throttle levels
+   75      State & Cache — sessions dict, stats failure counter
+   97      Flask Routes — /admob/callback, /session/status, /session/stop
+  202      Session Logic — _start_or_extend_session (create / extend / revive)
+  270      AdMob SSV Verification — Google ECDSA signature checks
+  355      Management Loop — expiry + data-quota watchdog (60 s tick)
+  403      Low-Level Plumbing — add/remove/set_level clients, Xray stats
+  551      Entry Point — daemon thread + gunicorn bootstrap
 ================================================================================
 """
 
@@ -23,9 +23,8 @@ import threading
 import json
 import requests
 import shlex
-import re
 import urllib.parse
-import ipaddress
+import uuid
 import base64
 from flask import Flask, request, jsonify
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -34,18 +33,10 @@ from cryptography.hazmat.primitives.serialization import load_der_public_key, lo
 
 app = Flask(__name__)
 
-# Compiled once at startup for performance
-_WG_PUBKEY_RE = re.compile(r'^[A-Za-z0-9+/]{43}=$')
-
-def validate_wg_pubkey(pubkey: str) -> bool:
-    """Rejects any string that isn't a valid 44-char base64 WireGuard public key."""
-    return bool(pubkey and _WG_PUBKEY_RE.match(pubkey))
-
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
 CHECK_INTERVAL_SECONDS = 60      # Checking every 1 minute is extremely safe and uses 0% CPU.
-WG_INTERFACE = "awg0"
 
 # Main Ad Rewards
 MAIN_AD_MINUTES = 60
@@ -55,7 +46,21 @@ MAIN_AD_BYTES = 2 * 1024 * 1024 * 1024     # 2 GB
 BONUS_AD_MINUTES = 30
 BONUS_AD_BYTES = 1 * 1024 * 1024 * 1024    # 1 GB
 
-THROTTLE_RATE = "1.5mbit"
+# VLESS server info — returned to app in /session/status
+VLESS_DOMAIN = "yourdomain.com"           # TODO: set your real domain
+VLESS_PATH   = "/tunnel"
+
+# Xray paths
+XRAY_CONFIG = "/usr/local/etc/xray/config.json"
+XRAY_API    = "http://127.0.0.1:10085"
+VLESS_INBOUND_TAG = "vless-in"
+
+# VLESS policy levels for bandwidth throttling
+#   Level 0 = unlimited (default for new sessions)
+#   Level 1 = 192 KB/s (~1.5 Mbps) — matches the old AWG THROTTLE_RATE
+# The Xray config.json must define matching policy.levels entries.
+THROTTLE_LEVEL = 1
+THROTTLE_RATE_KBPS = 192
 
 # AdMob SSV verification toggle
 #   True  = dev mode, accept any callback (no signature check)
@@ -70,30 +75,22 @@ ADMOB_BYPASS = True
 # STATE & CACHE
 # ==============================================================================
 sessions_lock = threading.Lock()
-# Paste your Server Public Key here if dynamic fetching keeps failing
-# Example: SERVER_PUBKEY_FALLBACK = "abc123xyz..."
-SERVER_PUBKEY_FALLBACK = None
-SERVER_PUBKEY = None
+
+# Consecutive Xray stats API failures — reset to 0 on first success.
+# Used to rate-limit log spam when the stats endpoint is unreachable.
+_xray_stats_failures = 0
 
 # Keyed by device_id (e.g. "esf-18fc2...")
 # {
 #   "device_id": {
-#       "ip":             "10.8.0.100",
-#       "pubkey":         "abc123xyz...",
-#       "expires_at":     1716480000,
-#       "quota_bytes":    2147483648,
-#       "baseline_bytes": 0,
-#       "is_throttled":   False,
-#       "nonce":          "a7f3b2-1716480000000",
+#       "vless_uuid":   "550e8400-...",
+#       "expires_at":   1716480000,
+#       "quota_bytes":  2147483648,
+#       "is_throttled": False,
+#       "nonce":        "a7f3b2-1716480000000",
 #   }
 # }
 active_sessions = {}
-
-# Pre-computed pool of all available IPv4 addresses in the 10.8.0.0/16 subnet
-# (10.8.0.0 through 10.8.255.255 = 65,534 host addresses).
-# Initialised once at module load; allocate_ip() pops from it, release_ip() returns to it.
-AVAILABLE_IPS = {str(ip) for ip in ipaddress.IPv4Network('10.8.0.0/16').hosts()}
-AVAILABLE_IPS.discard('10.8.0.1')  # reserved for gateway
 
 
 # ==============================================================================
@@ -107,7 +104,7 @@ def admob_callback():
     The Android client never touches this endpoint; Google calls it directly.
 
     custom_data (JSON, set by the app before showing the ad):
-      { "device_id": "...", "public_key": "...", "ad_type": "main_ad"|"bonus_ad", "nonce": "..." }
+      { "device_id": "...", "ad_type": "main_ad"|"bonus_ad", "nonce": "..." }
     """
     try:
         if ADMOB_BYPASS:
@@ -135,15 +132,14 @@ def admob_callback():
 
         custom_data   = json.loads(custom_data_str)
         device_id     = custom_data.get('device_id')
-        client_pubkey = custom_data.get('public_key')
         
-        if not device_id or not client_pubkey:
+        if not device_id:
             return "Invalid custom_data payload", 400
 
-        ad_type       = custom_data.get('ad_type', 'main_ad')
-        nonce         = custom_data.get('nonce', None)
+        ad_type = custom_data.get('ad_type', 'main_ad')
+        nonce   = custom_data.get('nonce', None)
 
-        success, msg = _start_or_extend_session(device_id, client_pubkey, ad_type, nonce)
+        success, msg = _start_or_extend_session(device_id, ad_type, nonce)
         return ("OK", 200) if success else (msg, 500)
 
     except Exception as e:
@@ -155,7 +151,7 @@ def admob_callback():
 def session_status():
     """
     Query: ?device_id=esf-xxx
-    Returns current session state so the Android app can construct its AmneziaWG config.
+    Returns current VLESS session state so the app can connect.
     """
     device_id = request.args.get('device_id')
     if not device_id:
@@ -167,27 +163,18 @@ def session_status():
     if not session:
         return jsonify({"active": False, "message": "No session found."}), 404
 
-    # Bulletproof fallback: If server public key is missing, try fetching it right now
-    global SERVER_PUBKEY
-    if not SERVER_PUBKEY:
-        pubkey = run_cmd("awg show awg0 public-key")
-        if pubkey:
-            SERVER_PUBKEY = pubkey
-            print(f"[AWG] Dynamic Server Public Key cached from awg0: {SERVER_PUBKEY}")
-        else:
-            SERVER_PUBKEY = SERVER_PUBKEY_FALLBACK or "server key="
-
-    stats          = get_wireguard_stats()
-    current_bytes  = stats.get(session["ip"], {}).get("total_bytes", 0)
-    used_bytes     = max(0, current_bytes - session["baseline_bytes"])
+    stats          = get_xray_stats()
+    used_bytes     = stats.get(device_id, {}).get("total_bytes", 0)
     remaining_data = max(0, session["quota_bytes"] - used_bytes)
     remaining_secs = max(0, session["expires_at"] - time.time())
 
     return jsonify({
         "active":             remaining_secs > 0,
-        "client_ip":          session["ip"],
-        "client_ipv6":        session.get("ipv6", ""),
-        "server_pubkey":      SERVER_PUBKEY,
+        "vless_uuid":         session["vless_uuid"],
+        "server_domain":      VLESS_DOMAIN,
+        "server_port":        443,
+        "vless_path":         VLESS_PATH,
+        "vless_flow":         "xtls-rprx-vision",
         "is_throttled":       session["is_throttled"],
         "expires_in_seconds": int(remaining_secs),
         "quota_bytes":        session["quota_bytes"],
@@ -206,86 +193,75 @@ def session_stop():
     if device_id:
         with sessions_lock:
             session = active_sessions.pop(device_id, None)
-            if session:
-                remove_wg_peer(session["pubkey"])
-                if session["is_throttled"]:
-                    remove_throttle(session["ip"])
-                release_ip(session["ip"])
-                print(f"[API] Explicit stop for {device_id}.")
-                
-    return jsonify({"success": True})
+        # Lock released — file I/O and subprocess happen outside.
+        if session:
+            remove_vless_client(device_id)
+            print(f"[API] Explicit stop for {device_id}.")
 
 
 # ==============================================================================
 # SESSION LOGIC
 # ==============================================================================
 
-def _start_or_extend_session(device_id, client_pubkey, ad_type, nonce=None):
+def _start_or_extend_session(device_id, ad_type, nonce=None):
     """Core logic to provision or extend a session.
-    
+
     nonce -- client-generated random token; stored in session and echoed
              back in /session/status so the client can reject stale sessions.
     """
-    if not re.match(r"^[A-Za-z0-9+/=]{43,44}$", client_pubkey):
-        return False, "Invalid WireGuard public key format"
-
     now = time.time()
-    
+
+    # ── Phase 1: update in-memory state under lock ────────────────────
+    xray_action = None  # ("add", uuid) | ("remove", None) | ("set_level", level) | None
+
     with sessions_lock:
         if device_id in active_sessions and ad_type == 'bonus_ad':
-            # Extend existing session
             session = active_sessions[device_id]
             session["expires_at"]  += (BONUS_AD_MINUTES * 60)
             session["quota_bytes"] += BONUS_AD_BYTES
-            
+
             if session["is_throttled"]:
-                remove_throttle(session["ip"])
                 session["is_throttled"] = False
-                
-                stats = get_wireguard_stats()
-                current_bytes = stats.get(session["ip"], {}).get("total_bytes", 0)
-                session["baseline_bytes"] = current_bytes
-            
-            print(f"[SESSION] Bonus time added for {device_id} (IP: {session['ip']}).")
-            return True, "Bonus time and data added."
-        
+                xray_action = ("set_level", 0)
+
+            print(f"[SESSION] Bonus time added for {device_id}.")
+            # Fall through to Phase 2 outside the lock
+
         else:
             # Create a brand new session (Main Ad)
-            if not validate_wg_pubkey(client_pubkey):
-                print(f"[SESSION] Rejected invalid pubkey from {device_id[:8]}...")
-                return False, "Invalid public key format."
-
             existing = active_sessions.get(device_id)
-            if existing:
-                if existing["is_throttled"]:
-                    remove_throttle(existing["ip"])
-                remove_wg_peer(existing["pubkey"])
-                release_ip(existing["ip"])
-            
-            ipv4 = allocate_ip()
-            if not ipv4:
-                return False, "Server full! No available IP addresses."
-            
-            ipv6 = ipv4_to_ipv6(ipv4)
-            add_wg_peer(client_pubkey, ipv4, ipv6)
-            
-            # Fetch immediate stats to set baseline
-            # (Though brand new peers usually start at 0)
-            stats = get_wireguard_stats()
-            current_bytes = stats.get(ipv4, {}).get("total_bytes", 0)
+            vless_uuid = str(uuid.uuid4())
 
             active_sessions[device_id] = {
-                "ip":             ipv4,
-                "ipv6":           ipv6,
-                "pubkey":         client_pubkey,
-                "expires_at":     now + (MAIN_AD_MINUTES * 60),
-                "quota_bytes":    MAIN_AD_BYTES,
-                "baseline_bytes": current_bytes,
-                "is_throttled":   False,
-                "nonce":          nonce,
+                "vless_uuid":   vless_uuid,
+                "expires_at":   now + (MAIN_AD_MINUTES * 60),
+                "quota_bytes":  MAIN_AD_BYTES,
+                "is_throttled": False,
+                "nonce":        nonce,
             }
-            print(f"[SESSION] Main session started for {device_id} (IP: {ipv4} / {ipv6}).")
-            return True, "Main session active."
+
+            if existing:
+                xray_action = ("replace", vless_uuid)
+            else:
+                xray_action = ("add", vless_uuid)
+
+            print(f"[SESSION] Main session started for {device_id} (UUID: {vless_uuid[:8]}...).")
+
+    # ── Phase 2: Xray file I/O + subprocess OUTSIDE the lock ──────────
+    if xray_action is None:
+        return True, "Bonus time and data added."
+
+    op, arg = xray_action[0], xray_action[1]
+    if op == "set_level":
+        set_vless_client_level(device_id, arg)
+        return True, "Bonus time and data added."
+    elif op == "replace":
+        remove_vless_client(device_id)
+        add_vless_client(arg, device_id)
+        return True, "Main session active."
+    elif op == "add":
+        add_vless_client(arg, device_id)
+        return True, "Main session active."
 
 
 
@@ -381,40 +357,42 @@ def _verify_admob_signature(raw_query_string: str, signature_b64url: str, key_id
 # ==============================================================================
 def management_loop():
     print(f"[HIVEMIND] Started. Tick every {CHECK_INTERVAL_SECONDS}s.")
-    init_wireguard()
 
     while True:
         try:
-            stats = get_wireguard_stats()
+            stats = get_xray_stats()
             now   = time.time()
 
+            # ── Phase 1: decide what to do under the lock ────────────────
             with sessions_lock:
-                expired_devices = []
+                to_remove = []     # (device_id,) — expired, remove from Xray
+                to_throttle = []   # (device_id,) — over quota, set level 1
 
                 for device_id, session in list(active_sessions.items()):
-                    ip = session["ip"]
 
                     # ── 1. Check expiry ───────────────────────────────────────
                     if now > session["expires_at"]:
-                        print(f"[HIVEMIND] Session expired for {device_id} ({ip}). Removing peer.")
-                        if session["is_throttled"]:
-                            remove_throttle(ip)
-                        remove_wg_peer(session["pubkey"])
-                        release_ip(ip)
-                        expired_devices.append(device_id)
+                        print(f"[HIVEMIND] Session expired for {device_id}.")
+                        to_remove.append(device_id)
                         continue
 
-                    # ── 2. Check data quota ───────────────────────────────────
-                    if ip in stats:
-                        used_bytes = stats[ip]["total_bytes"] - session["baseline_bytes"]
+                    # ── 2. Check data quota — throttle when exceeded ──────────
+                    used_bytes = stats.get(device_id, {}).get("total_bytes", 0)
 
-                        if used_bytes > session["quota_bytes"] and not session["is_throttled"]:
-                            print(f"[HIVEMIND] Data cap reached for {ip} ({used_bytes/1e9:.2f} GB used). Throttling.")
-                            apply_throttle(ip)
-                            session["is_throttled"] = True
+                    if used_bytes > session["quota_bytes"] and not session["is_throttled"]:
+                        print(f"[HIVEMIND] Data cap reached for {device_id} ({used_bytes/1e9:.2f} GB used). Throttling to ~1.5 Mbps.")
+                        session["is_throttled"] = True
+                        to_throttle.append(device_id)
 
-                for device_id in expired_devices:
+                for device_id in to_remove:
                     del active_sessions[device_id]
+
+            # ── Phase 2: file I/O + subprocess OUTSIDE the lock ───────
+            for device_id in to_remove:
+                remove_vless_client(device_id)
+
+            for device_id in to_throttle:
+                set_vless_client_level(device_id, THROTTLE_LEVEL)
 
         except Exception as e:
             print(f"[HIVEMIND] Unhandled error: {e}")
@@ -423,15 +401,11 @@ def management_loop():
 
 
 # ==============================================================================
-# LOW-LEVEL PLUMBING  (awg, tc, IP pool, peer management)
+# LOW-LEVEL PLUMBING  (Xray client management + stats)
 # ==============================================================================
 
 def run_cmd(cmd, ignore_errors=False):
-    """Executes a shell command directly on the host (no Docker middleman)."""
-    # All commands run directly on the host against awg0.
-    # The only sudo requirement is for awg/tc/iptables — already handled via
-    # the hivemind systemd unit running as root or via sudoers rules.
-
+    """Executes a shell command directly on the host."""
     args = shlex.split(cmd)
     try:
         result = subprocess.run(
@@ -439,128 +413,139 @@ def run_cmd(cmd, ignore_errors=False):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
         return result.stdout.strip()
+    except FileNotFoundError:
+        print(f"[CMD FAIL] executable not found: {args[0]}")
+        return None
     except subprocess.CalledProcessError as e:
         if not ignore_errors:
             print(f"[CMD FAIL] {cmd}\n  stderr: {e.stderr.strip()}")
         return None
+    except OSError as e:
+        print(f"[CMD FAIL] {cmd}\n  os error: {e}")
+        return None
 
 
-def init_wireguard():
-    """Initialises traffic control and fetches the server's public key."""
-    global SERVER_PUBKEY
-    print(f"[TC] Initialising traffic control on {WG_INTERFACE}...")
-    run_cmd(f"tc qdisc del dev {WG_INTERFACE} root", ignore_errors=True)
-    run_cmd(f"tc qdisc add dev {WG_INTERFACE} root handle 1: htb default 999")
-    print("[TC] Root qdisc ready.")
+def add_vless_client(uuid, email, level=0):
+    """Add a client UUID to the Xray inbound config and hot-reload.
 
-    print(f"[IP] Expanding routing table for /16 subnet...")
-    run_cmd(f"ip route add 10.8.0.0/16 dev {WG_INTERFACE}", ignore_errors=True)
-    
-    print(f"[NAT] Applying masquerade for /16 subnet...")
-    run_cmd(f"iptables -t nat -A POSTROUTING -s 10.8.0.0/16 -j MASQUERADE", ignore_errors=True)
-
-    print(f"[IP] Adding IPv6 route for fd42::/80...")
-    run_cmd(f"ip -6 route add fd42::/80 dev {WG_INTERFACE}", ignore_errors=True)
-
-    print(f"[NAT] Applying IPv6 masquerade for fd42::/80...")
-    run_cmd(f"ip6tables -t nat -A POSTROUTING -s fd42::/80 -j MASQUERADE", ignore_errors=True)
-
-    # The phone connects to awg0 on port 4433.
-    pubkey = run_cmd("awg show awg0 public-key")
-    if pubkey:
-        SERVER_PUBKEY = pubkey
-        print(f"[AWG] Server Public Key cached from awg0: {SERVER_PUBKEY}")
-    else:
-        print("[AWG] WARNING: Could not fetch awg0 public key! Check that awg is installed on host.")
-
-
-def _class_id(ip):
-    # Combine 3rd and 4th octet for uniqueness across /16
-    # e.g. "10.8.3.5" -> "773" (3*256+5), avoids collisions
-    parts = ip.split('.')
-    return str(int(parts[2]) * 256 + int(parts[3]))
-
-
-def apply_throttle(ip):
-    cid = _class_id(ip)
-    print(f"[TC] Throttling {ip} -> class 1:{cid} @ {THROTTLE_RATE}")
-    run_cmd(f"tc class add dev {WG_INTERFACE} parent 1: classid 1:{cid} htb rate {THROTTLE_RATE}")
-    run_cmd(f"tc filter add dev {WG_INTERFACE} protocol ip parent 1:0 prio 1 u32 match ip dst {ip}/32 flowid 1:{cid}")
-
-
-def remove_throttle(ip):
-    cid = _class_id(ip)
-    print(f"[TC] Removing throttle from {ip} (class 1:{cid})")
-    run_cmd(f"tc class del dev {WG_INTERFACE} classid 1:{cid}", ignore_errors=True)
-
-
-def get_wireguard_stats():
-    """Returns { "10.8.X.Y": {"pubkey": "...", "total_bytes": 1234}, ... }
-    Reads directly from the host's awg0 interface.
-    Uses two separate commands to avoid AmneziaWG dump column-layout differences.
+    level -- Xray policy level for bandwidth limits:
+             0 = unlimited, 1 = throttled (~1.5 Mbps).
     """
-    # Step 1: pubkey -> (rx_bytes, tx_bytes)
-    transfer_out = run_cmd("awg show awg0 transfer")
-    # Step 2: pubkey -> ip/32
-    allowed_out  = run_cmd("awg show awg0 allowed-ips")
+    with open(XRAY_CONFIG, 'r') as f:
+        config = json.load(f)
 
-    if not transfer_out or not allowed_out:
+    for inbound in config["inbounds"]:
+        if inbound.get("tag") == VLESS_INBOUND_TAG:
+            inbound["settings"]["clients"].append({
+                "id": uuid,
+                "email": email,
+                "level": level,
+                "flow": "xtls-rprx-vision"
+            })
+            break
+
+    with open(XRAY_CONFIG, 'w') as f:
+        json.dump(config, f, indent=2)
+
+    run_cmd("xray api adi --server=127.0.0.1:10085")
+    print(f"[VLESS] Client added: {email[:16]}...")
+
+
+def set_vless_client_level(email, level):
+    """Change a client's policy level in the Xray config and hot-reload.
+
+    Used for throttling (level 1) and un-throttling (level 0) without
+    removing and re-adding the client.  Silently no-ops if the client
+    is not found (e.g. already expired and removed).
+    """
+    with open(XRAY_CONFIG, 'r') as f:
+        config = json.load(f)
+
+    found = False
+    for inbound in config["inbounds"]:
+        if inbound.get("tag") == VLESS_INBOUND_TAG:
+            for client in inbound["settings"]["clients"]:
+                if client.get("email") == email:
+                    client["level"] = level
+                    found = True
+                    break
+            break
+
+    if not found:
+        print(f"[VLESS] set_level: client {email[:16]}... not found — skipped.")
+        return
+
+    with open(XRAY_CONFIG, 'w') as f:
+        json.dump(config, f, indent=2)
+
+    run_cmd("xray api adi --server=127.0.0.1:10085")
+    print(f"[VLESS] Client {email[:16]}... level -> {level}.")
+
+
+def remove_vless_client(email):
+    """Remove a client from the Xray inbound config and hot-reload."""
+    with open(XRAY_CONFIG, 'r') as f:
+        config = json.load(f)
+
+    for inbound in config["inbounds"]:
+        if inbound.get("tag") == VLESS_INBOUND_TAG:
+            clients = inbound["settings"]["clients"]
+            inbound["settings"]["clients"] = [
+                c for c in clients if c.get("email") != email
+            ]
+            break
+
+    with open(XRAY_CONFIG, 'w') as f:
+        json.dump(config, f, indent=2)
+
+    run_cmd("xray api adi --server=127.0.0.1:10085")
+    print(f"[VLESS] Client removed: {email[:16]}...")
+
+
+def get_xray_stats():
+    """Query Xray stats API for per-user upload+download bytes.
+
+    Returns: { "device_id": {"total_bytes": 12345}, ... }
+    """
+    global _xray_stats_failures
+
+    try:
+        resp = requests.get(
+            f"{XRAY_API}/stats/query",
+            json={"pattern": "", "reset": False},
+            timeout=5
+        )
+        data = resp.json()
+    except Exception as e:
+        # Rate-limit log spam: warn on first failure, then every 10th.
+        _xray_stats_failures += 1
+        if _xray_stats_failures == 1:
+            print(f"[XRAY_STATS] WARNING: Cannot reach Xray stats API: {e}")
+        elif _xray_stats_failures % 10 == 0:
+            print(f"[XRAY_STATS] ERROR: {_xray_stats_failures} consecutive failures. "
+                  f"Quota enforcement is NOT running. Last error: {e}")
         return {}
 
-    # Build pubkey -> IP map from allowed-ips
-    pubkey_to_ip = {}
-    for line in allowed_out.splitlines():
-        parts = line.split('\t')
-        if len(parts) >= 2:
-            pubkey_to_ip[parts[0]] = parts[1].split('/')[0]
+    # Success — reset the failure counter.
+    if _xray_stats_failures > 0:
+        print(f"[XRAY_STATS] Recovered after {_xray_stats_failures} failure(s).")
+        _xray_stats_failures = 0
 
-    # Build IP -> stats from transfer bytes
     stats = {}
-    for line in transfer_out.splitlines():
-        parts = line.split('\t')
-        if len(parts) >= 3:
-            pubkey = parts[0]
-            ip     = pubkey_to_ip.get(pubkey)
-            if ip:
-                stats[ip] = {
-                    "pubkey":      pubkey,
-                    "total_bytes": int(parts[1]) + int(parts[2])
-                }
+    for entry in data.get("stat", []):
+        name = entry.get("name", "")
+        value = int(entry.get("value", 0))
+
+        # Xray stats names look like: "user>>>email>>>traffic>>>uplink"
+        if ">>>traffic>>>" in name:
+            parts = name.split(">>>")
+            email = parts[1] if len(parts) > 1 else None
+            if email and email != "api":
+                if email not in stats:
+                    stats[email] = {"total_bytes": 0}
+                stats[email]["total_bytes"] += value
+
     return stats
-
-
-def ipv4_to_ipv6(ipv4):
-    """Map 10.8.X.Y → fd42::X:Y (ULA for internal VPN routing, no NAT64 needed)."""
-    parts = ipv4.split('.')
-    return f"fd42::{parts[2]}:{parts[3]}"
-
-
-def allocate_ip():
-    """Pops an available IP from the pre-generated pool."""
-    if not AVAILABLE_IPS:
-        return None
-    return AVAILABLE_IPS.pop()
-
-def release_ip(ip):
-    """Returns an IP back to the available pool."""
-    if ip:
-        AVAILABLE_IPS.add(ip)
-
-def add_wg_peer(pubkey, ipv4, ipv6):
-    """Dynamically adds an ephemeral dual-stack peer to AmneziaWG."""
-    # Remove it first just in case it exists to avoid conflicts
-    run_cmd(f"awg set awg0 peer {pubkey} remove", ignore_errors=True)
-    res = run_cmd(f"awg set awg0 peer {pubkey} allowed-ips {ipv4}/32,{ipv6}/128")
-    time.sleep(0.2)  # Let AmneziaWG register the peer before baseline snapshot
-    if res is not None:
-        print(f"[AWG] Ephemeral peer added: {pubkey[:8]}... -> {ipv4} / {ipv6}")
-
-
-def remove_wg_peer(pubkey):
-    """Removes an ephemeral peer from AmneziaWG."""
-    if pubkey:
-        run_cmd(f"awg set awg0 peer {pubkey} remove", ignore_errors=True)
-        print(f"[AWG] Ephemeral peer removed: {pubkey[:8]}...")
 
 
 # ==============================================================================

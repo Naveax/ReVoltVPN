@@ -7,7 +7,6 @@ import 'package:paladinvpn/logic/vpn_connection.dart';
 import 'package:paladinvpn/logic/session_timer.dart';
 import 'package:paladinvpn/logic/ad_manager.dart';
 import 'package:paladinvpn/logic/consent_manager.dart';
-import 'package:paladinvpn/screens/main_screen.dart';
 import 'package:paladinvpn/screens/intro.dart';
 
 /// The entry point for the Paladin VPN application.

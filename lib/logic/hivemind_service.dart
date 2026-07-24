@@ -20,7 +20,7 @@ class HivemindService {
   }
 
   /// Polls the Hivemind server until the session is ready or timeout occurs.
-  /// Returns the WireGuard config string.
+  /// Returns a VLESS connection URL string.
   ///
   /// [onAttempt] is called after each poll with (current, total) so the UI
   /// can show progress (e.g. "Contacting server (3/15)…").
@@ -29,30 +29,19 @@ class HivemindService {
     void Function(int attempt, int total)? onAttempt,
   }) async {
     final deviceId = await CryptoService.getDeviceId();
-    final keys = await CryptoService.getOrCreateKeys();
-    final privKey = keys['privateKey']!;
 
     // ── Generate a connect nonce ──────────────────────────────────────
-    // Every fresh connect cycle gets a new random token.  The server
-    // stores it in the session and echoes it back in /session/status.
-    // If the poll returns a session whose nonce differs (e.g. a stale
-    // leftover from a failed disconnectAndCleanup), we skip it and keep
-    // polling until the right session appears or the timeout fires.
     final nonce = '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
     _expectedNonce = nonce;
     debugPrint('[HivemindService] Connect nonce: $nonce');
-    
+
     final url = Uri.parse('${AppConfig.hivemindApiBase}/session/status?device_id=$deviceId');
 
     // ── AD BYPASS (debug only) ────────────────────────────────────────
-    // In debug mode, send a fake AdMob callback so the server creates
-    // a session without a real ad.  In release mode this code is
-    // stripped — sessions are only created by real AdMob SSV callbacks.
     if (kDebugMode) {
       try {
         final customData = jsonEncode({
           'device_id': deviceId,
-          'public_key': keys['publicKey']!,
           'ad_type': 'main_ad',
           'nonce': nonce,
         });
@@ -71,52 +60,31 @@ class HivemindService {
         final response = await http.get(url).timeout(const Duration(seconds: 10));
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body);
-          
+
           debugPrint('[HivemindService] Session found, checking nonce…');
 
           // ── Nonce gate ──────────────────────────────────────────────
-          // Reject any session whose nonce doesn't match what we sent.
-          // If the server is old and doesn't return a nonce we still
-          // accept it (backwards-compat), but a mismatch is a hard skip.
           final serverNonce = data['nonce'] as String?;
           if (_expectedNonce != null && serverNonce != null && serverNonce != _expectedNonce) {
             debugPrint('[HivemindService] Nonce mismatch (expected $_expectedNonce, got $serverNonce) — stale session, retrying…');
-            // Fall through to retry — do NOT accept this session.
-          } else if (data['active'] == true && data['client_ip'] != null && data['server_pubkey'] != null) {
-            final clientIp = data['client_ip'];
-            final clientIpv6 = data['client_ipv6'] ?? '';
-            final serverPubkey = data['server_pubkey'];
+          } else if (data['active'] == true && data['vless_uuid'] != null) {
+            final vlessUuid = data['vless_uuid'];
 
-            // Build dual-stack Address: IPv4/16 + optional IPv6/80
-            final addresses = clientIpv6.isNotEmpty
-                ? '$clientIp/16, $clientIpv6/80'
-                : '$clientIp/16';
+            // Build VLESS connection URL
+            final vlessUrl = 'vless://$vlessUuid@${AppConfig.serverDomain}:${AppConfig.serverPort}'
+                '?path=${Uri.encodeComponent(AppConfig.vlessPath)}'
+                '&security=${AppConfig.vlessSecurity}'
+                '&type=${AppConfig.vlessType}'
+                '&flow=${AppConfig.vlessFlow}'
+                '#PaladinVPN';
 
-            // Construct the WireGuard config locally
-            final configText = '''
-[Interface]
-PrivateKey = $privKey
-Address = $addresses
-DNS = ${AppConfig.dnsServers}
-MTU = ${AppConfig.mtu}
-Jc = ${AppConfig.awgJc}
-Jmin = ${AppConfig.awgJmin}
-Jmax = ${AppConfig.awgJmax}
-S1 = ${AppConfig.awgS1}
-S2 = ${AppConfig.awgS2}
-H1 = ${AppConfig.awgH1}
-H2 = ${AppConfig.awgH2}
-H3 = ${AppConfig.awgH3}
-H4 = ${AppConfig.awgH4}
-
-[Peer]
-PublicKey = $serverPubkey
-AllowedIPs = ${AppConfig.allowedIps}
-Endpoint = ${AppConfig.serverEndpoint}
-PersistentKeepalive = ${AppConfig.persistentKeepalive}
-''';
             _expectedNonce = null; // consumed successfully
-            return configText;
+            return vlessUrl;
+          } else if (data['active'] == true && data['client_ip'] != null) {
+            // Server is still running AWG — VLESS client cannot use this.
+            debugPrint('[HivemindService] Server returned AWG format (client_ip) — server migration needed.');
+            throw Exception('Server is running the old AWG protocol. '
+                'Please update the server to VLESS.');
           }
         } else {
           debugPrint('[HivemindService] Non-200 status: ${response.statusCode}');
@@ -125,7 +93,7 @@ PersistentKeepalive = ${AppConfig.persistentKeepalive}
         debugPrint('[HivemindService] Polling exception: $e');
         // Ignore network errors and keep polling
       }
-      
+
       attempts++;
       await Future.delayed(const Duration(seconds: 2));
     }
@@ -134,8 +102,6 @@ PersistentKeepalive = ${AppConfig.persistentKeepalive}
   }
 
   /// Quick one-shot check: does the server have a live session for this device?
-  /// Used by VpnConnection after the tunnel starts to confirm the server-side
-  /// session exists before reporting "connected" to the UI.
   static Future<bool> verifySession() async {
     try {
       final deviceId = await CryptoService.getDeviceId();

@@ -98,10 +98,8 @@ class AdManager extends ChangeNotifier {
       }
     }
 
-    // 2. Fetch device credentials for Server-Side Verification (SSV)
+    // 2. Fetch device ID for Server-Side Verification (SSV)
     final deviceId = await CryptoService.getDeviceId();
-    final keys = await CryptoService.getOrCreateKeys();
-    final pubKey = keys['publicKey']!;
 
     // 3. Generate a connect nonce so the subsequent poll can verify
     //    it's talking to the session created by *this* ad.
@@ -113,7 +111,6 @@ class AdManager extends ChangeNotifier {
     final ssvOptions = ServerSideVerificationOptions(
       customData: jsonEncode({
         'device_id': deviceId,
-        'public_key': pubKey,
         'ad_type': adType,
         'nonce': nonce,
       }),

@@ -66,12 +66,14 @@ local_packages/*/.dart_tool/
 android/key.properties
 android/admob.properties
 SECURITY_HARDENING.md
+VLESS_APP_CONTRACT.md
 AGENTS.md
 SERVER_NOTES.md
 lib/logic/backup/
 00-FULL-REPORT.md
 server full picture.txt
-technical_debt_1_answer.md
-technical_debt_1.md
+technical_debt_*.md
 server_full_picture_2.txt
 hivemind_backup.py
+AGENTS.md
+00-FULL-REPORT.md

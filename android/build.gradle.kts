@@ -13,10 +13,12 @@ allprojects {
     }
 }
 
-rootProject.buildDir = "../build"
+rootProject.layout.buildDirectory.set(layout.projectDirectory.dir("../build"))
 
 subprojects {
-    project.buildDir = "${rootProject.buildDir}/${project.name}"
+    project.layout.buildDirectory.set(
+        rootProject.layout.buildDirectory.dir(project.name)
+    )
 }
 
 subprojects {
@@ -24,5 +26,5 @@ subprojects {
 }
 
 tasks.register("clean", Delete::class) {
-    delete(rootProject.buildDir)
+    delete(rootProject.layout.buildDirectory)
 }
