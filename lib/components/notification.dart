@@ -10,7 +10,7 @@ class VpnNotificationManager {
     if (_initialized) return;
 
     const androidSettings =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
+        AndroidInitializationSettings('@drawable/notification_icon');
     const initSettings = InitializationSettings(android: androidSettings);
 
     await _plugin.initialize(initSettings);
