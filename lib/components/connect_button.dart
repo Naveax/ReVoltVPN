@@ -7,6 +7,13 @@ import 'package:revoltvpn/logic/session_timer.dart';
 import 'package:revoltvpn/logic/ad_manager.dart';
 
 /// ConnectButton — circle with brand.png + pulsing glow when connected.
+///
+/// Rules:
+///   disconnected → connect (ad → config → tunnel)
+///   connecting   → disconnect (cancel)
+///   connected    → disconnect
+///   error        → connect (retry)
+///   disconnecting → ignore
 class ConnectButton extends StatefulWidget {
   const ConnectButton({super.key});
 
@@ -17,6 +24,7 @@ class ConnectButton extends StatefulWidget {
 class _ConnectButtonState extends State<ConnectButton>
     with SingleTickerProviderStateMixin {
   bool _busy = false;
+  DateTime _lastTap = DateTime.now();
   AnimationController? _pulse;
   Animation<double>? _pulseAnim;
 
@@ -51,21 +59,30 @@ class _ConnectButtonState extends State<ConnectButton>
   }
 
   Future<void> _handleTap() async {
+    // 1-second cooldown to prevent spam
+    final now = DateTime.now();
+    if (now.difference(_lastTap).inMilliseconds < 1000) return;
+    _lastTap = now;
+
     HapticFeedback.lightImpact();
 
     final vpn = context.read<VpnConnection>();
     final timer = context.read<SessionTimer>();
     final ad = context.read<AdManager>();
 
-    // Disconnect always works — even mid-connection
+    // ── Disconnect if connected or connecting ───────────────────────────
     if (vpn.status == VpnStatus.connected || vpn.status == VpnStatus.connecting) {
-      _busy = false; // cancel any in-flight connect
+      _busy = false;
+      timer.stop(); // MUST stop timer BEFORE disconnect — prevents auto-reconnect
       await vpn.disconnect();
-      timer.stop();
       return;
     }
 
-    if (_busy) return; // already connecting, prevent double-tap
+    // ── Ignore if disconnecting ─────────────────────────────────────────
+    if (vpn.status == VpnStatus.disconnecting) return;
+
+    // ── Connect (or retry) ─────────────────────────────────────────────
+    if (_busy) return;
 
     setState(() => _busy = true);
     try {
@@ -87,8 +104,7 @@ class _ConnectButtonState extends State<ConnectButton>
       builder: (context, vpn, _) {
         final isConnected = vpn.status == VpnStatus.connected;
         final spinning = vpn.status == VpnStatus.connecting ||
-            vpn.status == VpnStatus.disconnecting ||
-            _busy;
+            vpn.status == VpnStatus.disconnecting;
 
         return GestureDetector(
           onTap: _handleTap,
@@ -130,7 +146,7 @@ class _ConnectButtonState extends State<ConnectButton>
               ),
             )
           : Padding(
-              padding: const EdgeInsets.all(0), // <-- CHANGE ME: brand.png padding from edge
+              padding: const EdgeInsets.all(14), // <-- CHANGE ME: brand.png padding from edge
               child: Image.asset('assets/brand.png', fit: BoxFit.contain),
             ),
     );

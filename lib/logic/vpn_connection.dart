@@ -132,9 +132,9 @@ class VpnConnection extends ChangeNotifier {
     } catch (e) {
       debugPrint('[VPN] Hivemind config error: $e');
       final raw = e.toString().replaceAll('Exception: ', '');
-      if (raw.contains('AWG protocol') || raw.contains('old AWG')) {
-        _errorMessage = 'Server update required.\nThe VPN server needs to be upgraded to VLESS.';
-        _setStatus(VpnStatus.error, 'Server outdated');
+      if (raw.contains('Cancelled')) {
+        // User tapped disconnect — silently abort
+        return false;
       } else if (raw.contains('timed out') || raw.contains('Session not activated')) {
         _errorMessage = 'The server did not respond in time.\nCheck your connection and try again.';
         _setStatus(VpnStatus.error, 'Server unreachable');
@@ -202,6 +202,7 @@ class VpnConnection extends ChangeNotifier {
   // ── Disconnect ────────────────────────────────────────────────────────────
   Future<void> disconnect() async {
     _cancelled = true;
+    HivemindService.cancel(); // abort any in-progress polling
     if (_status == VpnStatus.disconnected || _status == VpnStatus.disconnecting) {
       return;
     }
