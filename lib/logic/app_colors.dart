@@ -1,12 +1,5 @@
 import 'package:flutter/material.dart';
 
-// =============================================================================
-//  app_colors.dart — Single source of truth for every color in ReVoltVPN
-//  ─────────────────────────────────────────────────────────────────────────────
-//  Import this file and reference AppColors.* instead of hardcoding hex values
-//  or Color.fromRGBO() calls anywhere else in the app.
-// =============================================================================
-
 abstract final class AppColors {
   AppColors._();
 
@@ -39,8 +32,7 @@ abstract final class AppColors {
   static const Color green50    = Color(0x8000E676); // 50 % opacity
   static const Color red        = Color(0xFFEF5350);
 
-  // ── Glass / Borders ────────────────────────────────────────────────────────
-  static const Color glassBg    = Color(0x22FFFFFF); // subtle glass background
-  static const Color glassBorder = Color(0x33FFFFFF); // muted translucent border
+  static const Color glassBg    = Color(0x22FFFFFF);
+  static const Color glassBorder = Color(0x33FFFFFF);
 
 }

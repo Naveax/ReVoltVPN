@@ -3,7 +3,6 @@ import 'package:provider/provider.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/logic/session_timer.dart';
 
-/// SpeedBox — a small card showing current network speed or "Idle".
 class SpeedBox extends StatelessWidget {
   const SpeedBox({super.key});
 

@@ -3,13 +3,6 @@ import 'package:provider/provider.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/logic/session_timer.dart';
 
-/// ClockDisplay renders inside the ConnectButton circle when the VPN is active.
-///
-/// Shows a circular quota-progress arc, a glowing countdown timer, and the
-/// current transfer speed — all sized to fit within the 260px button.
-///
-/// Before the first server sync arrives, a subtle "Syncing…" placeholder
-/// is shown instead of a misleading 00:00:00.
 class ClockDisplay extends StatelessWidget {
   const ClockDisplay({super.key});
 

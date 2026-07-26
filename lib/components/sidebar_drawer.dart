@@ -5,8 +5,6 @@ import 'package:revoltvpn/components/sidebar_contents/privacy_policy_button.dart
 import 'package:revoltvpn/components/sidebar_contents/info_button.dart';
 import 'package:revoltvpn/components/sidebar_contents/discord_link_button.dart';
 
-/// Right-edge drawer. Four fully-tappable rows — tap anywhere on a row
-/// to trigger its action and close the drawer.
 class SidebarDrawer extends StatelessWidget {
   const SidebarDrawer({super.key});
 
@@ -19,7 +17,6 @@ class SidebarDrawer extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // ── Header ──────────────────────────────────────────────────
             Container(
               padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
               decoration: const BoxDecoration(
@@ -51,7 +48,6 @@ class SidebarDrawer extends StatelessWidget {
 
             const SizedBox(height: 8),
 
-            // ── Ad Consent (fully tappable) ─────────────────────────────
             _Row(
               icon: Icons.admin_panel_settings_outlined,
               label: 'Ad Consent',
@@ -61,7 +57,6 @@ class SidebarDrawer extends StatelessWidget {
               },
             ),
 
-            // ── Privacy Policy (fully tappable) ─────────────────────────
             _Row(
               icon: Icons.privacy_tip_outlined,
               label: 'Privacy Policy',
@@ -71,7 +66,6 @@ class SidebarDrawer extends StatelessWidget {
               },
             ),
 
-            // ── About (fully tappable) ──────────────────────────────────
             _Row(
               icon: Icons.help_outline,
               label: 'About',
@@ -81,7 +75,6 @@ class SidebarDrawer extends StatelessWidget {
               },
             ),
 
-            // ── Discord (fully tappable) ────────────────────────────────
             _Row(
               icon: Icons.discord,
               label: 'Discord',

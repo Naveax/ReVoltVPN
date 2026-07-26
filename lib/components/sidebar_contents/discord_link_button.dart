@@ -5,7 +5,6 @@ import 'package:revoltvpn/logic/app_colors.dart';
 class DiscordLinkButton extends StatelessWidget {
   const DiscordLinkButton({super.key});
 
-  /// Public entry point for the sidebar or any other widget.
   static Future<void> launchDiscord() async {
     final Uri url = Uri.parse('https://discord.gg/revoltvpn');
     if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {

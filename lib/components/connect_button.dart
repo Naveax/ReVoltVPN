@@ -6,14 +6,6 @@ import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/logic/session_timer.dart';
 import 'package:revoltvpn/logic/ad_manager.dart';
 
-/// ConnectButton — circle with brand.png + pulsing glow when connected.
-///
-/// Rules:
-///   disconnected → connect (ad → config → tunnel)
-///   connecting   → disconnect (cancel)
-///   connected    → disconnect
-///   error        → connect (retry)
-///   disconnecting → ignore
 class ConnectButton extends StatefulWidget {
   const ConnectButton({super.key});
 
@@ -59,7 +51,7 @@ class _ConnectButtonState extends State<ConnectButton>
   }
 
   Future<void> _handleTap() async {
-    // 1-second cooldown to prevent spam
+
     final now = DateTime.now();
     if (now.difference(_lastTap).inMilliseconds < 1000) return;
     _lastTap = now;
@@ -70,7 +62,7 @@ class _ConnectButtonState extends State<ConnectButton>
     final timer = context.read<SessionTimer>();
     final ad = context.read<AdManager>();
 
-    // ── Disconnect if connected or connecting ───────────────────────────
+
     if (vpn.status == VpnStatus.connected || vpn.status == VpnStatus.connecting) {
       _busy = false;
       timer.stop(); // MUST stop timer BEFORE disconnect — prevents auto-reconnect
@@ -78,10 +70,10 @@ class _ConnectButtonState extends State<ConnectButton>
       return;
     }
 
-    // ── Ignore if disconnecting ─────────────────────────────────────────
+
     if (vpn.status == VpnStatus.disconnecting) return;
 
-    // ── Connect (or retry) ─────────────────────────────────────────────
+
     if (_busy) return;
 
     setState(() => _busy = true);

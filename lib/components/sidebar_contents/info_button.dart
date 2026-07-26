@@ -5,7 +5,6 @@ import 'package:revoltvpn/logic/app_colors.dart';
 class InfoButton extends StatelessWidget {
   const InfoButton({super.key});
 
-  /// Public entry point for the sidebar or any other widget.
   static Future<void> launchGitHub() async {
     final Uri url = Uri.parse('https://github.com/esefxdz/ReVoltVPN');
     if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {

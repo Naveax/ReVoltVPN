@@ -1,13 +1,8 @@
-// =============================================================================
-//  vpn_connection.dart — VLESS VPN Tunnel Manager
-//  =============================================================================
-
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_vless/flutter_vless.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 
-// ── VPN States ────────────────────────────────────────────────────────────────
 enum VpnStatus {
   disconnected,
   connecting,
@@ -99,8 +94,7 @@ class VpnConnection extends ChangeNotifier {
     }
   }
 
-  // ── Connect ───────────────────────────────────────────────────────────────
-  Future<bool> connect() async {
+    Future<bool> connect() async {
     if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
       return false;
     }
@@ -121,7 +115,6 @@ class VpnConnection extends ChangeNotifier {
       return true;
     }
 
-    // ── Step 1: Fetch VLESS URL from Hivemind ──────────────────────────
     String vlessUrl;
     try {
       vlessUrl = await HivemindService.fetchConfigWithPolling(
@@ -149,13 +142,11 @@ class VpnConnection extends ChangeNotifier {
       return false;
     }
 
-    // ── Step 2: Check for cancellation ────────────────────────────────
     if (_cancelled) {
       _setStatus(VpnStatus.disconnected, 'Tap to connect');
       return false;
     }
 
-    // ── Step 3: Parse and start VLESS tunnel ───────────────────────────
     try {
       final parsed = FlutterVless.parse(vlessUrl);
       final config = parsed.getFullConfiguration();
@@ -199,7 +190,6 @@ class VpnConnection extends ChangeNotifier {
     }
   }
 
-  // ── Disconnect ────────────────────────────────────────────────────────────
   Future<void> disconnect() async {
     _cancelled = true;
     HivemindService.cancel(); // abort any in-progress polling

@@ -1,13 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 
-/// OnlineDot displays a glowing green dot when the server is healthy,
-/// and a muted gray dot when disconnected or still syncing.
 class OnlineDot extends StatelessWidget {
-  /// Whether the server has been confirmed reachable.
   final bool isOnline;
-
-  /// Optional custom label. Falls back to "Server Online" / "Disconnected".
   final String? label;
 
   const OnlineDot({

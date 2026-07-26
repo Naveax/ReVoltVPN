@@ -5,8 +5,6 @@ import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/logic/session_timer.dart';
 import 'package:revoltvpn/components/online_dot.dart';
 
-/// StatusBar — unified bottom card combining the Finland connection badge
-/// and the server health indicator in one box.
 class StatusBar extends StatelessWidget {
   const StatusBar({super.key});
 

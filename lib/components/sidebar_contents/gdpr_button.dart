@@ -4,17 +4,9 @@ import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-/// GdprButton lets the user review or change their ad consent choices.
-///
-/// When tapped, it tries to show Google's UMP consent form so the user
-/// can adjust their preferences (personalized vs non-personalized ads).
-/// If the form isn't available (e.g. user is outside the EEA), it falls
-/// back to opening the privacy policy instead.
 class GdprButton extends StatelessWidget {
   const GdprButton({super.key});
 
-  /// Public entry point so the sidebar (or any other widget) can trigger
-  /// the consent flow without embedding an IconButton.
   static Future<void> showConsentForm() async {
     try {
       // If the form is already available, show it directly — no need to

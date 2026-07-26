@@ -3,7 +3,6 @@ import 'package:provider/provider.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/logic/session_timer.dart';
 
-/// TimerBox — a rectangular card showing the session countdown.
 class TimerBox extends StatelessWidget {
   const TimerBox({super.key});
 
