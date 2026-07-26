@@ -13,7 +13,9 @@ import 'package:url_launcher/url_launcher.dart';
 class GdprButton extends StatelessWidget {
   const GdprButton({super.key});
 
-  Future<void> _showConsentForm() async {
+  /// Public entry point so the sidebar (or any other widget) can trigger
+  /// the consent flow without embedding an IconButton.
+  static Future<void> showConsentForm() async {
     try {
       // If the form is already available, show it directly — no need to
       // re-request consent info from Google's servers on every tap.
@@ -48,7 +50,7 @@ class GdprButton extends StatelessWidget {
     }
   }
 
-  Future<void> _loadAndShowForm() async {
+  static Future<void> _loadAndShowForm() async {
     final completer = Completer<void>();
     ConsentForm.loadConsentForm(
       (ConsentForm form) {
@@ -71,7 +73,7 @@ class GdprButton extends StatelessWidget {
     );
   }
 
-  void _fallbackToPrivacyPolicy() async {
+  static void _fallbackToPrivacyPolicy() async {
     final Uri url = Uri.parse(
       'https://github.com/esefxdz/ReVoltVPN/blob/main/PRIVACY_POLICY.md',
     );
@@ -85,7 +87,7 @@ class GdprButton extends StatelessWidget {
     return IconButton(
       icon: const Icon(Icons.admin_panel_settings_outlined,
           color: AppColors.textWhite, size: 28),
-      onPressed: _showConsentForm,
+      onPressed: showConsentForm,
       tooltip: 'Ad consent & privacy choices',
       splashRadius: 24,
     );

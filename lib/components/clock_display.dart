@@ -37,7 +37,7 @@ class ClockDisplay extends StatelessWidget {
                       height: 32,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        color: AppColors.cyan50,
+                        color: AppColors.accent50,
                       ),
                     ),
                     const SizedBox(height: 10),
@@ -46,7 +46,7 @@ class ClockDisplay extends StatelessWidget {
                       style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w600,
-                        color: AppColors.cyan60,
+                        color: AppColors.accent60,
                         letterSpacing: 1.5,
                       ),
                     ),
@@ -61,7 +61,7 @@ class ClockDisplay extends StatelessWidget {
                         letterSpacing: 2,
                         shadows: [
                           Shadow(
-                            color: AppColors.cyan50,
+                            color: AppColors.accent50,
                             blurRadius: 16,
                           ),
                         ],

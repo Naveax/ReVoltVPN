@@ -1,21 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
-import 'package:revoltvpn/components/header.dart';
-import 'package:revoltvpn/components/status_text.dart';
 import 'package:revoltvpn/components/connect_button.dart';
-import 'package:revoltvpn/components/bottom_bar.dart';
-import 'package:revoltvpn/components/info_button.dart';
-import 'package:revoltvpn/components/privacy_policy_button.dart';
-import 'package:revoltvpn/components/gdpr_button.dart';
+import 'package:revoltvpn/components/sidebar_drawer.dart';
+import 'package:revoltvpn/components/timer_box.dart';
+import 'package:revoltvpn/components/speed_box.dart';
+import 'package:revoltvpn/components/status_bar.dart';
 
-/// MainScreen serves as the primary home screen for REVOLT VPN.
-/// 
-/// It provides a dark mode, cyberpunk-inspired visual layout displaying:
-/// - Logo and Branding at the top (`Header`)
-/// - Session countdown timer displaying remaining time (`ClockDisplay`)
-/// - Tap-to-connect action trigger (`ConnectButton`)
-/// - Connected status badge displaying tunnel information (`StatusText`)
-/// - Bottom bar showing server health status and voluntary support button (`BottomBar`)
 class MainScreen extends StatelessWidget {
   const MainScreen({super.key});
 
@@ -23,6 +13,7 @@ class MainScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.bgDeep,
+      endDrawer: const SidebarDrawer(),
       body: Container(
         width: double.infinity,
         height: double.infinity,
@@ -31,53 +22,50 @@ class MainScreen extends StatelessWidget {
           image: DecorationImage(
             image: AssetImage('assets/background.png'),
             fit: BoxFit.cover,
-            colorFilter: ColorFilter.mode(
-              AppColors.bgOverlay, // Deep dark tint overlay to guarantee readability of overlay elements
-              BlendMode.darken,
-            ),
+            colorFilter: ColorFilter.mode(AppColors.bgOverlay, BlendMode.darken),
           ),
         ),
         child: SafeArea(
           child: Stack(
             children: [
-              // ── Main content column ──
-              LayoutBuilder(
-                builder: (context, constraints) {
-                  return SingleChildScrollView(
-                    physics: const BouncingScrollPhysics(),
-                    child: ConstrainedBox(
-                      constraints: BoxConstraints(minHeight: constraints.maxHeight),
-                      child: const IntrinsicHeight(
-                        child: Column(
-                          children: [
-                            SizedBox(height: 4),
-                            Header(),
-                            Spacer(flex: 1),
-                            ConnectButton(),
-                            SizedBox(height: 24),
-                            StatusText(),
-                            Spacer(flex: 3),
-                            BottomBar(),
-                            SizedBox(height: 16),
-                          ],
-                        ),
-                      ),
-                    ),
-                  );
-                },
-              ),
-              // ── Info / About buttons (top-right) ──
-              const Positioned(
-                top: 4,
+              Positioned(
+                top: 0,
                 right: 4,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    GdprButton(),
-                    PrivacyPolicyButton(),
-                    InfoButton(),
-                  ],
+                child: Builder(
+                  builder: (ctx) => IconButton(
+                    icon: const Icon(Icons.menu, color: AppColors.textWhite, size: 28),
+                    onPressed: () => Scaffold.of(ctx).openEndDrawer(),
+                    tooltip: 'Menu', splashRadius: 24,
+                  ),
                 ),
+              ),
+
+              Positioned(
+                top: 100, // <-- CHANGE ME: timer distance from top
+                left: 0,
+                right: 0,
+                child: const Center(child: TimerBox()),
+              ),
+
+              Positioned(
+                top: 250, // <-- CHANGE ME: connect button from top
+                left: 0,
+                right: 0,
+                child: const Center(child: ConnectButton()),
+              ),
+
+              Positioned(
+                top: 520, // <-- CHANGE ME: speed box from top
+                left: 0,
+                right: 0,
+                child: const Center(child: SpeedBox()),
+              ),
+
+              Positioned(
+                bottom: 16, // <-- CHANGE ME: status bar from bottom
+                left: 0,
+                right: 0,
+                child: const StatusBar(),
               ),
             ],
           ),
@@ -86,4 +74,3 @@ class MainScreen extends StatelessWidget {
     );
   }
 }
-

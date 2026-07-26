@@ -49,7 +49,7 @@ class OnlineDot extends StatelessWidget {
             fontSize: 13,
             fontWeight: FontWeight.w500,
             color: isOnline
-                ? AppColors.textWhite80
+                ? AppColors.textDim
                 : AppColors.slate,
             letterSpacing: 0.5,
           ),

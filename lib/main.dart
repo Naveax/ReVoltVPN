@@ -84,8 +84,8 @@ class ReVoltApp extends StatelessWidget {
       brightness: Brightness.dark,
       scaffoldBackgroundColor: AppColors.bgDeep,
       colorScheme: const ColorScheme.dark(
-        primary: AppColors.cyan,
-        secondary: AppColors.cyan,
+        primary: AppColors.accent,
+        secondary: AppColors.accent,
         surface: AppColors.bgSurface,
       ),
       fontFamily: 'Roboto',

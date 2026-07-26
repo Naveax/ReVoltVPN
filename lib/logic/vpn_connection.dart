@@ -17,6 +17,7 @@ enum VpnStatus {
 }
 
 class VpnConnection extends ChangeNotifier {
+  bool _cancelled = false;
   VpnStatus _status = VpnStatus.disconnected;
   VpnStatus get status => _status;
 
@@ -103,6 +104,7 @@ class VpnConnection extends ChangeNotifier {
     if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
       return false;
     }
+    _cancelled = false;
 
     if (!kIsWeb && !_initialized) {
       _errorMessage = 'VPN service unavailable.';
@@ -147,7 +149,13 @@ class VpnConnection extends ChangeNotifier {
       return false;
     }
 
-    // ── Step 2: Parse and start VLESS tunnel ───────────────────────────
+    // ── Step 2: Check for cancellation ────────────────────────────────
+    if (_cancelled) {
+      _setStatus(VpnStatus.disconnected, 'Tap to connect');
+      return false;
+    }
+
+    // ── Step 3: Parse and start VLESS tunnel ───────────────────────────
     try {
       final parsed = FlutterVless.parse(vlessUrl);
       final config = parsed.getFullConfiguration();
@@ -193,6 +201,7 @@ class VpnConnection extends ChangeNotifier {
 
   // ── Disconnect ────────────────────────────────────────────────────────────
   Future<void> disconnect() async {
+    _cancelled = true;
     if (_status == VpnStatus.disconnected || _status == VpnStatus.disconnecting) {
       return;
     }

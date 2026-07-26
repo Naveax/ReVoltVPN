@@ -60,43 +60,47 @@ class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.bgDeep,
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Image.asset(
-              'assets/logo.png',
-              width: 140,
-              height: 140,
+      body: Column(
+        children: [
+          const Spacer(flex: 7),
+          // Image slightly below center
+          Center(
+            child: Image.asset(
+              'assets/brand.png',
+              width: 200,
+              height: 200,
               errorBuilder: (context, error, stackTrace) {
                 return const Icon(
                   Icons.shield,
-                  size: 140,
-                  color: AppColors.cyan,
+                  size: 200,
+                  color: AppColors.accent,
                 );
               },
             ),
-            const SizedBox(height: 30),
-            const Text(
-              'REVOLT VPN',
-              style: TextStyle(
-                color: AppColors.textWhite,
-                fontSize: 28,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 2.0,
-              ),
+          ),
+          // Spinner + text paired together below the image
+          const SizedBox(height: 8),
+          const SizedBox(
+            width: 40,
+            height: 40,
+            child: CircularProgressIndicator(
+              color: AppColors.accent,
+              strokeWidth: 3.0,
             ),
-            const SizedBox(height: 60),
-            const SizedBox(
-              width: 40,
-              height: 40,
-              child: CircularProgressIndicator(
-                color: AppColors.cyan,
-                strokeWidth: 3.0,
-              ),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'REVOLT VPN',
+            style: TextStyle(
+              color: AppColors.textWhite,
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 2.0,
             ),
-          ],
-        ),
+          ),
+          const Spacer(flex: 5),
+          const SizedBox(height: 12),
+        ],
       ),
     );
   }
