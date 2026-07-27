@@ -88,7 +88,7 @@ class SessionTimer extends ChangeNotifier {
     }
   }
 
-  Future<void> start(String adType) async {
+  Future<void> start() async {
     _remainingSeconds    = 0;
     _usedBytes           = 0;
     _lastUsedBytes       = 0;

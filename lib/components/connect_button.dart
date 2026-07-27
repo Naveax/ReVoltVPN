@@ -84,7 +84,7 @@ class _ConnectButtonState extends State<ConnectButton>
         return;
       }
       final ok = await vpn.connect();
-      if (ok) timer.start('main_ad');
+      if (ok) timer.start();
     } finally {
       if (mounted) setState(() => _busy = false);
     }
