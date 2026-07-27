@@ -94,7 +94,7 @@ class VpnConnection extends ChangeNotifier {
     }
   }
 
-    Future<bool> connect() async {
+    Future<bool> connect({bool skipAdBypass = false, bool quickReconnect = false}) async {
     if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
       return false;
     }
@@ -118,8 +118,12 @@ class VpnConnection extends ChangeNotifier {
     String vlessUrl;
     try {
       vlessUrl = await HivemindService.fetchConfigWithPolling(
+        skipAdBypass: skipAdBypass,
+        quickReconnect: quickReconnect,
         onAttempt: (attempt, total) {
-          _setStatus(VpnStatus.connecting, 'Contacting server ($attempt/$total)…');
+          if (!quickReconnect) {
+            _setStatus(VpnStatus.connecting, 'Contacting server ($attempt/$total)…');
+          }
         },
       );
     } catch (e) {
@@ -156,31 +160,35 @@ class VpnConnection extends ChangeNotifier {
         config: config,
       );
 
-      // Give the tunnel a moment to stabilise
-      _setStatus(VpnStatus.connecting, 'Verifying session…');
-      await Future.delayed(const Duration(seconds: 1));
+      if (quickReconnect) {
+        _setStatus(VpnStatus.connected, 'Secured');
+      } else {
+        // Give the tunnel a moment to stabilise
+        _setStatus(VpnStatus.connecting, 'Verifying session…');
+        await Future.delayed(const Duration(seconds: 1));
 
-      bool sessionOk = false;
-      for (int attempt = 0; attempt < 2; attempt++) {
-        sessionOk = await HivemindService.verifySession();
-        if (sessionOk) break;
-        if (attempt == 0) {
-          debugPrint('[VPN] verifySession attempt 1 failed, retrying…');
-          await Future.delayed(const Duration(seconds: 2));
+        bool sessionOk = false;
+        for (int attempt = 0; attempt < 2; attempt++) {
+          sessionOk = await HivemindService.verifySession();
+          if (sessionOk) break;
+          if (attempt == 0) {
+            debugPrint('[VPN] verifySession attempt 1 failed, retrying…');
+            await Future.delayed(const Duration(seconds: 2));
+          }
         }
-      }
 
-      if (!sessionOk) {
-        debugPrint('[VPN] Tunnel started but no server session — tearing down.');
-        try {
-          await _vless.stopVless();
-        } catch (_) {}
-        _errorMessage = 'Session not confirmed by server.\nPlease try again.';
-        _setStatus(VpnStatus.error, 'Session rejected');
-        return false;
-      }
+        if (!sessionOk) {
+          debugPrint('[VPN] Tunnel started but no server session — tearing down.');
+          try {
+            await _vless.stopVless();
+          } catch (_) {}
+          _errorMessage = 'Session not confirmed by server.\nPlease try again.';
+          _setStatus(VpnStatus.error, 'Session rejected');
+          return false;
+        }
 
-      _setStatus(VpnStatus.connected, 'Secured');
+        _setStatus(VpnStatus.connected, 'Secured');
+      }
       return true;
     } catch (e) {
       debugPrint('[VPN] VLESS tunnel error: $e');
@@ -190,7 +198,7 @@ class VpnConnection extends ChangeNotifier {
     }
   }
 
-  Future<void> disconnect() async {
+  Future<void> disconnect({bool skipCleanup = false}) async {
     _cancelled = true;
     HivemindService.cancel(); // abort any in-progress polling
     if (_status == VpnStatus.disconnected || _status == VpnStatus.disconnecting) {
@@ -214,7 +222,9 @@ class VpnConnection extends ChangeNotifier {
       debugPrint('[VPN] VLESS stop error: $e');
     }
 
-    HivemindService.disconnectAndCleanup();
+    if (!skipCleanup) {
+      HivemindService.disconnectAndCleanup();
+    }
     _setStatus(VpnStatus.disconnected, 'Tap to connect');
   }
 

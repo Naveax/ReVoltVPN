@@ -24,6 +24,8 @@ class HivemindService {
   /// has usually already fired.
   static Future<String> fetchConfigWithPolling({
     void Function(int attempt, int total)? onAttempt,
+    bool skipAdBypass = false,
+    bool quickReconnect = false,
   }) async {
     final deviceId = await CryptoService.getDeviceId();
 
@@ -35,7 +37,7 @@ class HivemindService {
     final url = Uri.parse('${AppConfig.hivemindApiBase}/session/status?device_id=$deviceId');
 
     // ── AD BYPASS (debug only) ────────────────────────────────────────
-    if (kDebugMode) {
+    if (kDebugMode && !skipAdBypass) {
       try {
         final customData = jsonEncode({'device_id': deviceId, 'nonce': nonce});
         final fakeUrl = Uri.parse(
@@ -44,7 +46,7 @@ class HivemindService {
       } catch (_) {}
     }
 
-    const maxAttempts = 5;
+    final maxAttempts = quickReconnect ? 1 : 5;
     for (int i = 1; i <= maxAttempts; i++) {
       if (_currentCallId != callId) throw Exception('Cancelled');
 
@@ -59,8 +61,9 @@ class HivemindService {
             debugPrint('[HivemindService] Nonce mismatch — retrying…');
           } else if (data['active'] == true && data['vless_uuid'] != null) {
             final vlessUuid = data['vless_uuid'];
+            final vlessPath = data['vless_path'] ?? AppConfig.vlessPath;
             final vlessUrl = 'vless://$vlessUuid@${AppConfig.serverDomain}:${AppConfig.serverPort}'
-                '?path=${Uri.encodeComponent(AppConfig.vlessPath)}'
+                '?path=${Uri.encodeComponent(vlessPath)}'
                 '&security=${AppConfig.vlessSecurity}'
                 '&type=${AppConfig.vlessType}'
                 '#ReVoltVPN';

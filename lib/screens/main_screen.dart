@@ -5,6 +5,7 @@ import 'package:revoltvpn/components/sidebar_drawer.dart';
 import 'package:revoltvpn/components/timer_box.dart';
 import 'package:revoltvpn/components/speed_box.dart';
 import 'package:revoltvpn/components/status_bar.dart';
+import 'package:revoltvpn/components/support_button.dart';
 
 class MainScreen extends StatelessWidget {
   const MainScreen({super.key});
@@ -45,6 +46,13 @@ class MainScreen extends StatelessWidget {
                 left: 0,
                 right: 0,
                 child: const Center(child: TimerBox()),
+              ),
+
+              Positioned(
+                top: 175, // <-- CHANGE ME: support button from top
+                left: 0,
+                right: 0,
+                child: const Center(child: SupportButton()),
               ),
 
               Positioned(

@@ -22,6 +22,10 @@ class SessionTimer extends ChangeNotifier {
   bool _isDisconnecting     = false;
   bool _userInitiatedStop   = false;
 
+  String? _currentPath;
+  bool _isThrottled         = false;
+  bool _pathSwitchInProgress = false;
+
   static const int _maxConsecutiveFailures = 3;
 
   static const int _maxOfflineSeconds = 120;
@@ -235,6 +239,29 @@ class SessionTimer extends ChangeNotifier {
         }
         _lastUsedBytes = _usedBytes;
 
+
+        // ── Detect path changes (throttle engage / disengage) ──────
+        final serverPath = data['vless_path'] as String?;
+        if (serverPath != null &&
+            _currentPath != null &&
+            serverPath != _currentPath &&
+            !_pathSwitchInProgress) {
+          debugPrint('[Timer] Path changed $_currentPath → $serverPath — reconnecting…');
+          _currentPath = serverPath;
+          _isThrottled = data['is_throttled'] ?? false;
+          _pathSwitchInProgress = true;
+
+          _timer?.cancel();
+          _isDisconnecting = true;  // block _stopInternal during relocation
+          await vpnConnection.disconnect(skipCleanup: true);
+          await vpnConnection.connect(skipAdBypass: true, quickReconnect: true);
+
+          _resumeTicking();
+          _pathSwitchInProgress = false;
+          return;
+        }
+        _currentPath = serverPath;
+        _isThrottled = data['is_throttled'] ?? false;
 
         _consecutiveFailures = 0;
         _offlineSeconds = 0;
