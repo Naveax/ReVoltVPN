@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:ui';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
@@ -21,6 +22,15 @@ void main() async {
     systemNavigationBarColor: Color(0xFF0D1117),
     systemNavigationBarIconBrightness: Brightness.light,
   ));
+
+  FlutterError.onError = (details) {
+    debugPrint('[FlutterError] ${details.exception}');
+  };
+
+  PlatformDispatcher.instance.onError = (error, stack) {
+    debugPrint('[PlatformError] $error\n$stack');
+    return true;
+  };
 
   await ConsentManager.requestConsentIfNeeded();
   await MobileAds.instance.initialize();

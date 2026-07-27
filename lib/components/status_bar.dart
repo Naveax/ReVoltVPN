@@ -14,7 +14,7 @@ class StatusBar extends StatelessWidget {
       builder: (context, vpn, timer, _) {
         final isConnected = vpn.status == VpnStatus.connected;
         final isConnecting = vpn.status == VpnStatus.connecting;
-        final serverHealthy = isConnected && timer.hasSyncedOnce;
+        final serverHealthy = vpn.serverReachable || (isConnected && timer.hasSyncedOnce);
 
         return Container(
           margin: const EdgeInsets.symmetric(horizontal: 24),
@@ -55,11 +55,9 @@ class StatusBar extends StatelessWidget {
               // ── Server health dot (right) ────────────────────────────
               OnlineDot(
                 isOnline: serverHealthy,
-                label: isConnected && !timer.hasSyncedOnce
-                    ? 'Syncing…'
-                    : serverHealthy
-                        ? 'Online'
-                        : 'Offline',
+                label: isConnected
+                    ? (timer.hasSyncedOnce ? 'Online' : 'Syncing…')
+                    : (vpn.serverReachable ? 'Ready' : 'Offline'),
               ),
             ],
           ),

@@ -78,7 +78,7 @@ class _ConnectButtonState extends State<ConnectButton>
 
     setState(() => _busy = true);
     try {
-      final adWatched = await ad.showAd('main_ad');
+      final adWatched = await ad.showAd('main');
       if (!adWatched && AdManager.adsEnabled) {
         setState(() => _busy = false);
         return;

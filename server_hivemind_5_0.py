@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """
 Hivemind VPN Session Manager
-Manages time + data quotas for VLESS clients via ad rewards.
+Manages VLESS Reality sessions via ad rewards — 60 min, throttle at 4 GB.
 Designed for Android-only clients.
 
 === TABLE OF CONTENTS ===========================================================
-  LINE     SECTION
-    37      Configuration — ad rewards, Xray paths
-   75      State & Cache — sessions dict, stats failure counter
-   97      Flask Routes — /admob/callback, /session/status, /session/stop
-  202      Session Logic — _start_or_extend_session (create / replace)
-  270      AdMob SSV Verification — Google ECDSA signature checks
-  355      Management Loop — expiry + data-quota watchdog (60 s tick)
-  403      Low-Level Plumbing — add/remove users, Xray stats
-  551      Entry Point — daemon thread + gunicorn bootstrap
+   Configuration — ad rewards, Reality constants, Xray paths
+   State & Cache — sessions dict, stats failure counter
+   Flask Routes — /admob/callback, /session/status, /session/stop
+   Session Logic — _start_or_extend_session, _extend_session
+   AdMob SSV Verification — Google ECDSA signature checks
+   Management Loop — expiry + throttle watchdog (60 s tick)
+   Low-Level Plumbing — add/remove users, Xray stats
+   Entry Point — daemon thread + gunicorn bootstrap
 ================================================================================
 """
 
@@ -77,100 +76,25 @@ CHECK_INTERVAL_SECONDS = 60      # Checking every 1 minute is extremely safe and
 
 # Main Ad Rewards
 MAIN_AD_MINUTES = 60
-MAIN_AD_BYTES = 10 * 1024 * 1024 * 1024    # 10 GB (generous — no mobile device hits this in 1 hr)
 
 # Support Ad Rewards (top-up)
 SUPPORT_AD_MINUTES = 30
-SUPPORT_AD_BYTES = 2 * 1024 * 1024 * 1024     # 2 GB
 
-# VLESS server info — returned to app in /session/status
-VLESS_DOMAIN = "yourdomain.com"           # TODO: set your real domain
-VLESS_PATH   = "/tunnel"
+# ── Reality — returned to app in /session/status ────────────────────────
+REALITY_SNI         = "www.microsoft.com"
+VLESS_SERVER_IP     = "204.168.246.88"
+VLESS_REALITY_PORT  = 8443
+REALITY_PUBLIC_KEY  = "GENERATE_ME_WITH_xray_x25519"
+REALITY_SHORT_ID    = "abc123"
+REALITY_FINGERPRINT = "chrome"
 
-# ── Xray config.json template  ────────────────────────────────────────────────
-# Copy this to /usr/local/etc/xray/config.json on the server.
-#
-#   • Two VLESS inbounds: vless-normal (full speed) + vless-throttled (1.5 Mbps via nginx)
-#   • nginx routes /tunnel → :8443 and /tunnel-throttled → :8444 with limit_rate 187k
-#   • Hivemind moves users between inbounds at 4 GB threshold
-#
-# {
-#   "log": { "loglevel": "warning" },
-#   "inbounds": [
-#     {
-#       "tag": "vless-normal",
-#       "port": 8443,
-#       "listen": "127.0.0.1",
-#       "protocol": "vless",
-#       "settings": { "clients": [], "decryption": "none" },
-#       "streamSettings": { "method": "ws", "wsSettings": { "path": "/tunnel" } },
-#       "sniffing": { "enabled": true, "destOverride": ["http", "tls"] }
-#     },
-#     {
-#       "tag": "vless-throttled",
-#       "port": 8444,
-#       "listen": "127.0.0.1",
-#       "protocol": "vless",
-#       "settings": { "clients": [], "decryption": "none" },
-#       "streamSettings": { "method": "ws", "wsSettings": { "path": "/tunnel" } },
-#       "sniffing": { "enabled": true, "destOverride": ["http", "tls"] }
-#     }
-#   ],
-#   "outbounds": [
-#     {
-#       "protocol": "freedom",
-#       "tag": "direct",
-#       "mux": { "enabled": true, "concurrency": 8 }
-#     }
-#   ],
-#   "api": {
-#     "tag": "api",
-#     "listen": "127.0.0.1:10085",
-#     "services": ["HandlerService", "StatsService"]
-#   },
-#   "stats": {},
-#   "policy": {
-#     "system": {
-#       "statsInboundUplink": true,
-#       "statsInboundDownlink": true
-#     },
-#     "levels": {
-#       "0": { "statsUserUplink": true, "statsUserDownlink": true }
-#     }
-#   }
-# }
-#   "outbounds": [
-#     {
-#       "protocol": "freedom",
-#       "tag": "direct",
-#       "mux": { "enabled": true, "concurrency": 8 }
-#     }
-#   ],
-#   "api": {
-#     "tag": "api",
-#     "listen": "127.0.0.1:10085",
-#     "services": ["HandlerService", "StatsService"]
-#   },
-#   "stats": {},
-#   "policy": {
-#     "system": {
-#       "statsInboundUplink": true,
-#       "statsInboundDownlink": true
-#     },
-#     "levels": {
-#       "0": { "statsUserUplink": true, "statsUserDownlink": true }
-#     }
-#   }
-# }
-
-# Xray paths
+# ── Xray paths ───────────────────────────────────────────────────────────
 XRAY_CONFIG = "/usr/local/etc/xray/config.json"
 XRAY_API    = "http://127.0.0.1:10085"
-VLESS_INBOUND_TAG    = "vless-in"        # legacy — kept for backwards compat
-VLESS_NORMAL_TAG     = "vless-normal"    # full-speed inbox
-VLESS_THROTTLED_TAG  = "vless-throttled" # 1.5 Mbps inbox
+VLESS_REALITY_TAG           = "vless-reality"
+VLESS_REALITY_THROTTLED_TAG = "vless-reality-throttled"
 
-THROTTLE_BYTES = 4 * 1024 * 1024 * 1024   # 4 GB — throttle beyond this
+THROTTLE_BYTES = 4 * 1024 * 1024 * 1024   # 4 GB
 
 # AdMob SSV verification toggle
 #   True  = dev mode, accept any callback (no signature check)
@@ -190,15 +114,6 @@ sessions_lock = threading.Lock()
 # Used to rate-limit log spam when the stats endpoint is unreachable.
 _xray_stats_failures = 0
 
-# Keyed by device_id (e.g. "esf-18fc2...")
-# {
-#   "device_id": {
-#       "vless_uuid":   "550e8400-...",
-#       "expires_at":   1716480000,
-#       "quota_bytes":  2147483648,
-#       "nonce":        "a7f3b2-1716480000000",
-#   }
-# }
 active_sessions = {}
 
 
@@ -267,6 +182,11 @@ def admob_callback():
         return "Internal Error", 500
 
 
+@app.route('/api/health')
+def health():
+    return jsonify({"ok": True})
+
+
 @app.route('/api/session/status', methods=['GET'])
 def session_status():
     """
@@ -287,21 +207,22 @@ def session_status():
 
     stats          = get_xray_stats()
     used_bytes     = stats.get(device_id, {}).get("total_bytes", 0)
-    remaining_data = max(0, session["quota_bytes"] - used_bytes)
     remaining_secs = max(0, session["expires_at"] - time.time())
 
     return jsonify({
         "active":             remaining_secs > 0,
         "vless_uuid":         session["vless_uuid"],
-        "server_domain":      VLESS_DOMAIN,
-        "server_port":        443,
-        "vless_path":         VLESS_PATH,
+        "vless_ip":           VLESS_SERVER_IP,
+        # NOTE: assumes throttled port = normal port + 1. If you change the
+        # throttled port in xray_config_reality.json, update this logic too.
+        "vless_port":         VLESS_REALITY_PORT + 1 if session.get("throttled") else VLESS_REALITY_PORT,
+        "reality_pbk":        REALITY_PUBLIC_KEY,
+        "reality_sid":        REALITY_SHORT_ID,
+        "reality_sni":        REALITY_SNI,
+        "reality_fp":         REALITY_FINGERPRINT,
         "expires_in_seconds": int(remaining_secs),
-        "quota_bytes":        session["quota_bytes"],
         "used_bytes":         used_bytes,
-        "remaining_bytes":    remaining_data,
         "nonce":              session.get("nonce", ""),
-        "vless_path":         "/tunnel-throttled" if session.get("throttled") else VLESS_PATH,
         "is_throttled":       session.get("throttled", False),
     })
 
@@ -348,7 +269,6 @@ def _start_or_extend_session(device_id, nonce=None):
         active_sessions[device_id] = {
             "vless_uuid":   vless_uuid,
             "expires_at":   now + (MAIN_AD_MINUTES * 60),
-            "quota_bytes":  MAIN_AD_BYTES,
             "nonce":        nonce,
             "throttled":    False,
         }
@@ -364,10 +284,10 @@ def _start_or_extend_session(device_id, nonce=None):
     op, arg = xray_action[0], xray_action[1]
     if op == "replace":
         remove_vless_client(device_id)
-        add_vless_client(arg, device_id, inbound_tag=VLESS_NORMAL_TAG)
+        add_vless_client(arg, device_id, inbound_tag=VLESS_REALITY_TAG)
         return True, "Session active."
     elif op == "add":
-        add_vless_client(arg, device_id, inbound_tag=VLESS_NORMAL_TAG)
+        add_vless_client(arg, device_id, inbound_tag=VLESS_REALITY_TAG)
         return True, "Session active."
     else:
         raise RuntimeError(
@@ -378,7 +298,7 @@ def _start_or_extend_session(device_id, nonce=None):
 
 
 def _extend_session(device_id, nonce=None):
-    """Top-up an EXISTING session — adds time + quota without replacing the UUID.
+    """Top-up an EXISTING session — adds time without replacing the UUID.
 
     Used by the 'Support us' rewarded ad.  Does NOT touch the throttle state
     or move the user between inbounds.
@@ -390,13 +310,9 @@ def _extend_session(device_id, nonce=None):
             return False, "No active session to extend"
 
         session["expires_at"]  += SUPPORT_AD_MINUTES * 60
-        session["quota_bytes"] += SUPPORT_AD_BYTES
         session["nonce"]        = nonce
 
-        print(f"[SESSION] Extended for {device_id}: "
-              f"+{SUPPORT_AD_MINUTES} min, "
-              f"+{SUPPORT_AD_BYTES/1e9:.1f} GB, "
-              f"new quota={session['quota_bytes']/1e9:.1f} GB")
+        print(f"[SESSION] Extended for {device_id}: +{SUPPORT_AD_MINUTES} min")
 
     return True, "Session extended"
 
@@ -487,7 +403,7 @@ def _verify_admob_signature(raw_query_string: str, signature_b64url: str, key_id
 
 
 # ==============================================================================
-# MANAGEMENT LOOP  (The Hivemind — expiry + data-quota watchdog)
+# MANAGEMENT LOOP  (The Hivemind — expiry + throttle watchdog)
 # ==============================================================================
 def management_loop():
     print(f"[HIVEMIND] Started. Tick every {CHECK_INTERVAL_SECONDS}s.")
@@ -497,21 +413,18 @@ def management_loop():
             stats = get_xray_stats()
             now   = time.time()
 
-            # ── Phase 1: decide what to do under the lock ────────────────
             with sessions_lock:
-                to_remove   = []  # (device_id,) — expired
-                to_throttle_add     = []  # (device_id, uuid) — add to throttled box
-                to_throttle_cleanup = []  # (device_id,) — remove from normal box (delayed)
+                to_remove            = []
+                to_throttle_add      = []
+                to_throttle_cleanup  = []
 
                 for device_id, session in list(active_sessions.items()):
 
-                    # ── 1. Check expiry ───────────────────────────────────────
                     if now > session["expires_at"]:
                         print(f"[HIVEMIND] Session expired for {device_id}.")
                         to_remove.append(device_id)
                         continue
 
-                    # ── 2. Check throttle threshold ────────────────────────────
                     used_bytes = stats.get(device_id, {}).get("total_bytes", 0)
 
                     just_throttled = False
@@ -521,9 +434,6 @@ def management_loop():
                         just_throttled = True
                         to_throttle_add.append((device_id, session["vless_uuid"]))
 
-                    # ── 3. Delayed cleanup: remove from normal box ─────────────
-                    #     Only on the NEXT tick — app needs time to see the path
-                    #     change and gracefully reconnect first.
                     if (session.get("throttled") and not just_throttled
                             and not session.get("_cleaned_normal")):
                         to_throttle_cleanup.append(device_id)
@@ -532,17 +442,14 @@ def management_loop():
                 for device_id in to_remove:
                     del active_sessions[device_id]
 
-            # ── Phase 2: file I/O + subprocess OUTSIDE the lock ───────
             for device_id in to_remove:
                 remove_vless_client(device_id)
 
-            # Add to throttled box FIRST — app needs the UUID there to reconnect
             for device_id, uuid in to_throttle_add:
-                add_vless_client(uuid, device_id, inbound_tag=VLESS_THROTTLED_TAG)
+                add_vless_client(uuid, device_id, level=1, inbound_tag=VLESS_REALITY_THROTTLED_TAG)
 
-            # Then clean up the normal box — app already reconnected by now
             for device_id in to_throttle_cleanup:
-                remove_vless_client(device_id, inbound_tag=VLESS_NORMAL_TAG)
+                remove_vless_client_from(device_id, VLESS_REALITY_TAG)
 
         except Exception as e:
             print(f"[HIVEMIND] Unhandled error: {e}")
@@ -575,11 +482,11 @@ def run_cmd(cmd, ignore_errors=False):
         return None
 
 
-def add_vless_client(uuid, email, level=0, inbound_tag=VLESS_NORMAL_TAG):
+def add_vless_client(uuid, email, level=0, inbound_tag=VLESS_REALITY_TAG):
     """Add a client UUID to the Xray inbound config and hot-reload.
 
     level       -- Xray policy level for bandwidth limits: 0 = default.
-    inbound_tag -- which inbound to add the client to (VLESS_NORMAL_TAG or VLESS_THROTTLED_TAG).
+    inbound_tag -- which inbound to add the client to (default: VLESS_REALITY_TAG).
     """
     with open(XRAY_CONFIG, 'r') as f:
         config = json.load(f)
@@ -598,19 +505,13 @@ def add_vless_client(uuid, email, level=0, inbound_tag=VLESS_NORMAL_TAG):
     print(f"[VLESS] User added to {inbound_tag}: {email[:16]}...")
 
 
-def remove_vless_client(email, inbound_tag=None):
-    """Remove a client from the Xray inbound config and hot-reload.
-
-    inbound_tag -- if provided, only remove from that inbound.
-                  if None, remove from ALL VLESS inbounds (cleanup).
-    """
+def remove_vless_client(email):
+    """Remove a client from ALL VLESS inbounds and hot-reload."""
     with open(XRAY_CONFIG, 'r') as f:
         config = json.load(f)
 
     for inbound in config["inbounds"]:
-        if inbound_tag and inbound.get("tag") != inbound_tag:
-            continue
-        if inbound.get("tag") in (VLESS_NORMAL_TAG, VLESS_THROTTLED_TAG, VLESS_INBOUND_TAG):
+        if inbound.get("tag") in (VLESS_REALITY_TAG, VLESS_REALITY_THROTTLED_TAG):
             clients = inbound["settings"]["clients"]
             inbound["settings"]["clients"] = [
                 c for c in clients if c.get("email") != email
@@ -619,6 +520,24 @@ def remove_vless_client(email, inbound_tag=None):
     _atomic_write_json(XRAY_CONFIG, config)
     run_cmd("xray api adi --server=127.0.0.1:10085")
     print(f"[VLESS] User removed: {email[:16]}...")
+
+
+def remove_vless_client_from(email, inbound_tag):
+    """Remove a client from one specific inbound and hot-reload."""
+    with open(XRAY_CONFIG, 'r') as f:
+        config = json.load(f)
+
+    for inbound in config["inbounds"]:
+        if inbound.get("tag") == inbound_tag:
+            clients = inbound["settings"]["clients"]
+            inbound["settings"]["clients"] = [
+                c for c in clients if c.get("email") != email
+            ]
+            break
+
+    _atomic_write_json(XRAY_CONFIG, config)
+    run_cmd("xray api adi --server=127.0.0.1:10085")
+    print(f"[VLESS] User removed from {inbound_tag}: {email[:16]}...")
 
 
 def get_xray_stats():

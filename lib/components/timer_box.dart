@@ -24,6 +24,12 @@ class TimerBox extends StatelessWidget {
               fontWeight: FontWeight.w700,
               color: AppColors.textWhite,
               letterSpacing: 2,
+              shadows: [
+                Shadow(
+                  color: AppColors.accent50,
+                  blurRadius: 16,
+                ),
+              ],
             ),
           ),
         );

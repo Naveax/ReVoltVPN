@@ -14,7 +14,6 @@ class SessionTimer extends ChangeNotifier {
   final VpnConnection vpnConnection;
 
   int _remainingSeconds = 0;
-  int _quotaBytes      = 0;
   int _usedBytes       = 0;
 
   bool _hasSyncedOnce       = false;
@@ -22,9 +21,10 @@ class SessionTimer extends ChangeNotifier {
   bool _isDisconnecting     = false;
   bool _userInitiatedStop   = false;
 
-  String? _currentPath;
   bool _isThrottled         = false;
-  bool _pathSwitchInProgress = false;
+
+  int? _currentPort;
+  bool _portSwitchInProgress = false;
 
   static const int _maxConsecutiveFailures = 3;
 
@@ -48,9 +48,7 @@ class SessionTimer extends ChangeNotifier {
   bool get isExpired        => _remainingSeconds <= 0 && !isRunning;
   bool get hasSyncedOnce    => _hasSyncedOnce;
 
-  int    get quotaBytes     => _quotaBytes;
   int    get usedBytes      => _usedBytes;
-  int    get remainingBytes => _quotaBytes > _usedBytes ? _quotaBytes - _usedBytes : 0;
   double get currentSpeedKBps => _currentSpeedKBps;
 
   String get formatted {
@@ -58,27 +56,6 @@ class SessionTimer extends ChangeNotifier {
     final m = ((_remainingSeconds % 3600) ~/ 60).toString().padLeft(2, '0');
     final s = (_remainingSeconds % 60).toString().padLeft(2, '0');
     return '$h:$m:$s';
-  }
-
-  String get formattedDataRemaining {
-    if (_quotaBytes == 0) return '0.00 GB';
-    final gb = remainingBytes / (1024 * 1024 * 1024);
-    return '${gb.toStringAsFixed(2)} GB';
-  }
-
-  String get formattedDataUsed {
-    if (_usedBytes == 0) return '0.00 MB';
-    if (_usedBytes > 1024 * 1024 * 1024) {
-      final gb = _usedBytes / (1024 * 1024 * 1024);
-      return '${gb.toStringAsFixed(2)} GB';
-    }
-    final mb = _usedBytes / (1024 * 1024);
-    return '${mb.toStringAsFixed(2)} MB';
-  }
-
-  double get progress {
-    if (_quotaBytes == 0) return 0.0;
-    return (_quotaBytes - _usedBytes) / _quotaBytes;
   }
 
   // Lifecycle
@@ -113,7 +90,6 @@ class SessionTimer extends ChangeNotifier {
 
   Future<void> start(String adType) async {
     _remainingSeconds    = 0;
-    _quotaBytes          = 0;
     _usedBytes           = 0;
     _lastUsedBytes       = 0;
     _currentSpeedKBps    = 0.0;
@@ -123,6 +99,8 @@ class SessionTimer extends ChangeNotifier {
     _offlineSeconds      = 0;
     _isDisconnecting     = false;
     _userInitiatedStop   = false;
+    _currentPort         = null;
+    _portSwitchInProgress = false;
 
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), _tick);
@@ -227,7 +205,6 @@ class SessionTimer extends ChangeNotifier {
         }
 
         _remainingSeconds = data['expires_in_seconds'] ?? _remainingSeconds;
-        _quotaBytes       = data['quota_bytes']       ?? _quotaBytes;
         _usedBytes        = data['used_bytes']        ?? _usedBytes;
 
 
@@ -240,27 +217,27 @@ class SessionTimer extends ChangeNotifier {
         _lastUsedBytes = _usedBytes;
 
 
-        // ── Detect path changes (throttle engage / disengage) ──────
-        final serverPath = data['vless_path'] as String?;
-        if (serverPath != null &&
-            _currentPath != null &&
-            serverPath != _currentPath &&
-            !_pathSwitchInProgress) {
-          debugPrint('[Timer] Path changed $_currentPath → $serverPath — reconnecting…');
-          _currentPath = serverPath;
+        // ── Detect port change (throttle engage / disengage) ──────
+        final serverPort = data['vless_port'];
+        if (serverPort != null &&
+            _currentPort != null &&
+            serverPort != _currentPort &&
+            !_portSwitchInProgress) {
+          debugPrint('[Timer] Port changed $_currentPort → $serverPort — reconnecting…');
+          _currentPort = serverPort;
           _isThrottled = data['is_throttled'] ?? false;
-          _pathSwitchInProgress = true;
+          _portSwitchInProgress = true;
 
           _timer?.cancel();
-          _isDisconnecting = true;  // block _stopInternal during relocation
+          _isDisconnecting = true;
           await vpnConnection.disconnect(skipCleanup: true);
           await vpnConnection.connect(skipAdBypass: true, quickReconnect: true);
 
           _resumeTicking();
-          _pathSwitchInProgress = false;
+          _portSwitchInProgress = false;
           return;
         }
-        _currentPath = serverPath;
+        _currentPort = serverPort;
         _isThrottled = data['is_throttled'] ?? false;
 
         _consecutiveFailures = 0;

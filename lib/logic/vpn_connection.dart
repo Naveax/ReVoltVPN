@@ -26,6 +26,11 @@ class VpnConnection extends ChangeNotifier {
   bool _isStartupRestoration = false;
   bool get isStartupRestoration => _isStartupRestoration;
 
+  bool _serverReachable = false;
+  bool get serverReachable => _serverReachable;
+
+  Timer? _healthTimer;
+
   late final FlutterVless _vless;
   bool _initialized = false;
 
@@ -53,6 +58,10 @@ class VpnConnection extends ChangeNotifier {
       debugPrint('[VPN] VLESS init error (expected on emulator): $e');
     }
 
+    // Periodic server health check
+    _checkHealth();
+    _healthTimer = Timer.periodic(const Duration(seconds: 30), (_) => _checkHealth());
+
     // Check if VPN was already running (app killed and reopened)
     try {
       final coreVersion = await _vless.getCoreVersion();
@@ -62,9 +71,6 @@ class VpnConnection extends ChangeNotifier {
       if (delay > 0) {
         _isStartupRestoration = true;
         _setStatus(VpnStatus.connected, 'Secured');
-        Future.delayed(const Duration(seconds: 5), () {
-          _isStartupRestoration = false;
-        });
       }
     } catch (_) {}
   }
@@ -75,12 +81,14 @@ class VpnConnection extends ChangeNotifier {
         _setStatus(VpnStatus.connected, 'Secured');
         break;
       case VlessConnectionState.disconnected:
+        _isStartupRestoration = false;
         _setStatus(VpnStatus.disconnected, 'Tap to connect');
         break;
       case VlessConnectionState.connecting:
         _setStatus(VpnStatus.connecting, 'Establishing tunnel…');
         break;
       case VlessConnectionState.disconnecting:
+        _isStartupRestoration = false;
         _setStatus(VpnStatus.disconnecting, 'Tearing down…');
         break;
       case VlessConnectionState.unknown:
@@ -234,8 +242,14 @@ class VpnConnection extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> _checkHealth() async {
+    _serverReachable = await HivemindService.checkHealth();
+    notifyListeners();
+  }
+
   @override
   void dispose() {
+    _healthTimer?.cancel();
     if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
       try {
         _vless.stopVless();
