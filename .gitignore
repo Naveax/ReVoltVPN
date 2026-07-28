@@ -83,3 +83,5 @@ UI_POSITIONING.md
 SERVER_SETUP.md
 REALITY_MIGRATION_PLAN.md
 xray_config_reality.json
+SERVER_DEPLOYMENT.md
+swarm_watch.py

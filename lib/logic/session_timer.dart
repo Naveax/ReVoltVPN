@@ -21,7 +21,6 @@ class SessionTimer extends ChangeNotifier {
   bool _isDisconnecting     = false;
   bool _userInitiatedStop   = false;
 
-  bool _isThrottled         = false;
 
   int? _currentPort;
   bool _portSwitchInProgress = false;
@@ -66,7 +65,7 @@ class SessionTimer extends ChangeNotifier {
     if (vpnConnection.status == VpnStatus.connected &&
         !isRunning &&
         vpnConnection.isStartupRestoration) {
-      start('resume');
+      _resumeTicking();
       return;
     }
 
@@ -225,7 +224,6 @@ class SessionTimer extends ChangeNotifier {
             !_portSwitchInProgress) {
           debugPrint('[Timer] Port changed $_currentPort → $serverPort — reconnecting…');
           _currentPort = serverPort;
-          _isThrottled = data['is_throttled'] ?? false;
           _portSwitchInProgress = true;
 
           _timer?.cancel();
@@ -238,17 +236,12 @@ class SessionTimer extends ChangeNotifier {
           return;
         }
         _currentPort = serverPort;
-        _isThrottled = data['is_throttled'] ?? false;
 
         _consecutiveFailures = 0;
         _offlineSeconds = 0;
         _hasSyncedOnce = true;
 
         notifyListeners();
-      } else if (response.statusCode == 404) {
-        // Peer not found on server (expired / deleted natively)
-        stop();
-        await vpnConnection.disconnect();
       } else {
         _markSyncFailure();
       }

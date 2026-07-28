@@ -35,6 +35,30 @@ from cryptography.hazmat.primitives.serialization import load_pem_public_key
 app = Flask(__name__)
 
 
+# ── Log buffer for TUI / remote monitoring ────────────────────────────────
+# Captures every print() into a ring buffer so the TUI dashboard can pull
+# recent log lines without SSH.  /api/log returns the last 200 lines.
+import sys
+from collections import deque
+
+_log_buffer = deque(maxlen=200)
+
+class _TeeStdout:
+    def __init__(self, original):
+        self.original = original
+    def write(self, s):
+        self.original.write(s)
+        self.original.flush()
+        for line in s.splitlines():
+            stripped = line.rstrip()
+            if stripped:
+                _log_buffer.append(stripped)
+    def flush(self):
+        self.original.flush()
+
+sys.stdout = _TeeStdout(sys.stdout)
+
+
 def _is_valid_device_id(device_id):
     """Validate that device_id is a well-formed UUID (Flutter uuid.v4() format).
 
@@ -86,6 +110,11 @@ VLESS_SERVER_IP     = "204.168.246.88"
 VLESS_REALITY_PORT  = 8443
 REALITY_PUBLIC_KEY  = "GENERATE_ME_WITH_xray_x25519"
 REALITY_SHORT_ID    = "abc123"
+
+# ── Persistent swarm total (survives restarts) ──────────────────────────
+SWARM_TOTAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "swarm_total.json")
+_persistent_total_gb = 0.0
 REALITY_FINGERPRINT = "chrome"
 
 # ── Xray paths ───────────────────────────────────────────────────────────
@@ -104,6 +133,25 @@ THROTTLE_BYTES = 4 * 1024 * 1024 * 1024   # 4 GB
 #     working correctly with real rewarded ads.  Until then, keep True so
 #     the debug fake-callback path in the Flutter app still functions.
 ADMOB_BYPASS = True
+
+def _load_persistent_total():
+    """Read the running total GB from disk.  Returns 0.0 if file missing/corrupt."""
+    try:
+        with open(SWARM_TOTAL_FILE, 'r') as f:
+            data = json.load(f)
+            return float(data.get("total_gb", 0.0))
+    except Exception:
+        return 0.0
+
+
+def _save_persistent_total():
+    """Write the running total GB to disk atomically."""
+    _atomic_write_json(SWARM_TOTAL_FILE, {"total_gb": _persistent_total_gb})
+
+
+# Load at module init — survives Hivemind restarts.
+_persistent_total_gb = _load_persistent_total()
+
 
 # ==============================================================================
 # STATE & CACHE
@@ -187,6 +235,18 @@ def health():
     return jsonify({"ok": True})
 
 
+@app.route('/api/swarm')
+def swarm_status():
+    """Returns sorted drone list — consumed by TUI dashboards and CLI tools."""
+    return jsonify(get_swarm_status())
+
+
+@app.route('/api/log')
+def log_tail():
+    """Returns recent log lines — consumed by TUI dashboards."""
+    return jsonify(list(_log_buffer))
+
+
 @app.route('/api/session/status', methods=['GET'])
 def session_status():
     """
@@ -243,6 +303,13 @@ def session_stop():
             session = active_sessions.pop(device_id, None)
         # Lock released — file I/O and subprocess happen outside.
         if session:
+            # Add final bytes to persistent odometer.
+            stats = get_xray_stats()
+            used = stats.get(device_id, {}).get("total_bytes", 0)
+            if used > 0:
+                global _persistent_total_gb
+                _persistent_total_gb += used / 1_000_000_000
+                _save_persistent_total()
             remove_vless_client(device_id)
             print(f"[API] Explicit stop for {device_id}.")
 
@@ -271,6 +338,8 @@ def _start_or_extend_session(device_id, nonce=None):
             "expires_at":   now + (MAIN_AD_MINUTES * 60),
             "nonce":        nonce,
             "throttled":    False,
+            "_created_at":  now,
+            "_prev_bytes":  0,
         }
 
         if existing:
@@ -406,6 +475,7 @@ def _verify_admob_signature(raw_query_string: str, signature_b64url: str, key_id
 # MANAGEMENT LOOP  (The Hivemind — expiry + throttle watchdog)
 # ==============================================================================
 def management_loop():
+    global _persistent_total_gb
     print(f"[HIVEMIND] Started. Tick every {CHECK_INTERVAL_SECONDS}s.")
 
     while True:
@@ -426,6 +496,7 @@ def management_loop():
                         continue
 
                     used_bytes = stats.get(device_id, {}).get("total_bytes", 0)
+                    session["_prev_bytes"] = used_bytes
 
                     just_throttled = False
                     if used_bytes > THROTTLE_BYTES and not session.get("throttled", False):
@@ -440,6 +511,11 @@ def management_loop():
                         session["_cleaned_normal"] = True
 
                 for device_id in to_remove:
+                    # Add final used bytes to the persistent odometer before culling.
+                    used = stats.get(device_id, {}).get("total_bytes", 0)
+                    if used > 0:
+                        _persistent_total_gb += used / 1_000_000_000
+                        _save_persistent_total()
                     del active_sessions[device_id]
 
             for device_id in to_remove:
@@ -455,6 +531,69 @@ def management_loop():
             print(f"[HIVEMIND] Unhandled error: {e}")
 
         time.sleep(CHECK_INTERVAL_SECONDS)
+
+
+# ##############################################################################
+# SWARM INTELLIGENCE  (drone status — sorted data for TUI / API consumers)
+# ##############################################################################
+#   get_swarm_status() returns a list of dicts sorted by GB used (highest first).
+#   Callers (CLI tools, TUI dashboards, /api/swarm endpoint) consume this.
+#   It snapshots active_sessions under lock and reads Xray stats — no side effects.
+# ##############################################################################
+
+def get_swarm_status():
+    """Return sorted drone list + aggregate totals for external monitoring.
+
+    Returns a dict:
+        {
+            "drones": [ {...}, {...}, ... ],   # sorted by gb descending
+            "swarm_gb": 7.3,                   # total GB across all drones
+            "active_count": 3,                 # sessions still alive
+        }
+
+    Each drone dict:
+        {
+            "id":           "a1b2c3d4",       # first 8 chars of device_id
+            "uptime_min":   23,                # minutes since session created
+            "gb":           2.14,              # data used (GB, 2 decimal places)
+            "throttled":    false,             # over quota?
+            "active":       true,              # had traffic in the last tick?
+            "remaining_min": 37,               # minutes until expiry
+        }
+    """
+    now   = time.time()
+    stats = get_xray_stats()
+
+    with sessions_lock:
+        drones = []
+        for device_id, session in active_sessions.items():
+            used_bytes = stats.get(device_id, {}).get("total_bytes", 0)
+            gb = round(used_bytes / 1_000_000_000, 2)
+            uptime_min = int((now - session.get("_created_at", session.get("expires_at", now) - MAIN_AD_MINUTES * 60)) / 60)
+            remaining_min = max(0, int((session["expires_at"] - now) / 60))
+            prev_bytes = session.get("_prev_bytes", 0)
+            active = used_bytes > prev_bytes
+
+            drones.append({
+                "id":            device_id[:8],
+                "uptime_min":    max(0, uptime_min),
+                "gb":            gb,
+                "throttled":     session.get("throttled", False),
+                "active":        active,
+                "remaining_min": remaining_min,
+            })
+
+    # Sort: highest data usage first — abusers float to the top.
+    drones.sort(key=lambda d: d["gb"], reverse=True)
+
+    swarm_gb = round(sum(d["gb"] for d in drones), 2)
+
+    return {
+        "drones":       drones,
+        "swarm_gb":     swarm_gb,
+        "total_gb":     round(_persistent_total_gb + swarm_gb, 2),
+        "active_count": len(drones),
+    }
 
 
 # ==============================================================================
