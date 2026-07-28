@@ -7,12 +7,6 @@
 # ReVoltVPN
 A free VPN app built from scratch. I handle the Flutter app, Hivemind backend, and AdMob integration — the ReVolt team manages server security and VLESS/Xray infrastructure.
 
-<p align="center">
-  <img src="screenshots/hero_screenshot.png" alt="ReVoltVPN splash screen" width="32%"/>
-  &nbsp;&nbsp;&nbsp;
-  <img src="screenshots/styled_idle.png" alt="ReVoltVPN connected — 60 min session active" width="32%"/>
-</p>
-
 There are hundreds of free VPN apps on the Play Store. Most of them are fine honestly — some are genuinely good. But a lot of them are vague about how they work, who runs them, and what happens to your traffic. I wanted to build something where the answer to all of those questions is just... public.
 
 So here it is.
