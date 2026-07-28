@@ -5,7 +5,7 @@
 </p>
 
 # ReVoltVPN
-A free VPN app I built in my spare time as a student with basically no prior experience. Now backed by the ReVolt team handling server security and infrastructure.
+A free VPN app built from scratch. I handle the Flutter app, Hivemind backend, and AdMob integration — the ReVolt team manages server security and VLESS/Xray infrastructure.
 
 <p align="center">
   <img src="screenshots/hero_screenshot.png" alt="ReVoltVPN splash screen" width="32%"/>
@@ -20,17 +20,17 @@ So here it is.
 ---
 
 ## How it works
-You watch a short ad. You get 60 minutes and 2GB of full-speed traffic. That's it. The ad pays for the server (actually not even enough). No accounts, no emails, no subscriptions.
+You watch a short ad. You get 60 minutes and 4 GB of full-speed traffic. That's it. The ad pays for the server (actually not even enough). No accounts, no emails, no subscriptions.
 
-When your data runs out you get throttled to 1.5 Mbps instead of getting cut off.
+When your data runs out you get throttled to 1.5 Mbps instead of getting cut off. A second Reality inbound on a different port handles throttled traffic — your client reconnects automatically, no ad required.
 
 ---
 
 ## The stack
 - **App** — Flutter (Android only for now)
 - **Server** — A single Debian box rented from Hetzner, located in Finland
-- **VPN protocol** — VLESS with Xray, which is great for bypassing DPI in countries that are aggressive with it
-- **Backend** — A Python script I wrote called Hivemind that manages sessions, data quotas, and throttling
+- **VPN protocol** — VLESS + Xray Reality (XTLS-Vision). Spoofs real TLS certificates (e.g. www.microsoft.com) so your tunnel looks like regular HTTPS. Great for bypassing DPI in countries that are aggressive with it.
+- **Backend** — Hivemind, a Python Flask server I wrote that manages sessions, data quotas, throttling, and live swarm monitoring. Entire server is open source — in this repo.
 - **Ads** — Google AdMob rewarded ads, verified server-side so fake callbacks don't work
 
 ---
