@@ -1,4 +1,4 @@
-package com.revoltvpn.app
+package com.paladinvpn.app
 
 import io.flutter.embedding.android.FlutterActivity
 

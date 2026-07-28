@@ -7,7 +7,7 @@ plugins {
 }
 
 android {
-    namespace = "com.revoltvpn.app"
+    namespace = "com.paladinvpn.app"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -34,7 +34,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.revoltvpn.app"
+        applicationId = "com.paladinvpn.app"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
