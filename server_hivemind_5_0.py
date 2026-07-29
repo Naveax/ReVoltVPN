@@ -635,7 +635,8 @@ def add_vless_client(uuid, email, level=0, inbound_tag=VLESS_REALITY_TAG):
             inbound["settings"]["clients"].append({
                 "id": uuid,
                 "email": email,
-                "level": level
+                "level": level,
+                "flow": "xtls-rprx-vision"
             })
             break
 

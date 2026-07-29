@@ -4,6 +4,8 @@ import 'package:revoltvpn/components/sidebar_contents/gdpr_button.dart';
 import 'package:revoltvpn/components/sidebar_contents/privacy_policy_button.dart';
 import 'package:revoltvpn/components/sidebar_contents/info_button.dart';
 import 'package:revoltvpn/components/sidebar_contents/discord_link_button.dart';
+import 'package:revoltvpn/components/sidebar_contents/website_button.dart';
+import 'package:revoltvpn/logic/updater.dart';
 
 class SidebarDrawer extends StatelessWidget {
   const SidebarDrawer({super.key});
@@ -84,11 +86,29 @@ class SidebarDrawer extends StatelessWidget {
               },
             ),
 
+            _Row(
+              icon: Icons.language,
+              label: 'Website',
+              onTap: () {
+                Navigator.of(context).pop();
+                WebsiteButton.launchWebsite();
+              },
+            ),
+
+            _Row(
+              icon: Icons.system_update_alt,
+              label: 'Check for updates',
+              onTap: () {
+                Navigator.of(context).pop();
+                Updater.check(context);
+              },
+            ),
+
             const Spacer(),
 
             const Padding(
               padding: EdgeInsets.all(20),
-              child: Text('ReVoltVPN · v1.0.6', textAlign: TextAlign.center,
+              child: Text('ReVoltVPN · v1.0.7', textAlign: TextAlign.center,
                 style: TextStyle(color: AppColors.slate, fontSize: 11, letterSpacing: 1),
               ),
             ),
