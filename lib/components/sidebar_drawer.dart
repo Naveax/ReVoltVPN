@@ -108,7 +108,7 @@ class SidebarDrawer extends StatelessWidget {
 
             const Padding(
               padding: EdgeInsets.all(20),
-              child: Text('ReVoltVPN · v1.0.7', textAlign: TextAlign.center,
+              child: Text('ReVoltVPN · v2.0.7', textAlign: TextAlign.center,
                 style: TextStyle(color: AppColors.slate, fontSize: 11, letterSpacing: 1),
               ),
             ),

@@ -1,32 +1,47 @@
 // =============================================================================
 //  app_config.example.dart — TEMPLATE FOR SERVER SETTINGS
 //  ─────────────────────────────────────────────────────────────────────────────
+//  Copy this file to `app_config.dart` and fill in your real values.
+//  ⚠️  Do not commit your real `app_config.dart` to GitHub!
+// =============================================================================
 
 abstract final class AppConfig {
-  AppConfig._();
+  AppConfig._(); // static members only
 
-  // ── Server (API) ──────────────────────────────────────────────────────
-  static const String serverDomain = 'yourdomain.com'; 
+  // ── Server ───────────────────────────────────────────────────────────
+  /// Your server's public IP.  The VPN tunnel is pinned to this.
+  static const String serverIp = '0.0.0.0';  // ◄── REPLACE
 
+  /// API domain for session management (TLS traffic blending).
+  static const String serverDomain = 'yourdomain.com';  // ◄── REPLACE
+
+  /// Hivemind API base URL — standard TLS to the domain.
   static String get hivemindApiBase => 'https://$serverDomain/api';
 
   // ── Reality (VPN tunnel) ──────────────────────────────────────────────
-  // These are fallbacks — normally overridden by /session/status response.
-  static const String realitySni = 'www.microsoft.com';
-  static const String realityFp  = 'chrome';
+  /// TLS camouflage — which site the Reality tunnel impersonates.
+  /// Server overrides this per session from REALITY_SNI_POOL.
+  ///   www.microsoft.com  — classic, never blocked
+  ///   cloudflare.com     — CDN, clean TLS
+  ///   yandex.ru          — Russian, absolutely never blocked in Russia
+  static const String realitySni = 'www.microsoft.com';  // ◄── REPLACE
 
-  // These are authoritative — never sent by the server.
+  /// TLS fingerprint: chrome | firefox | safari | random
+  static const String realityFp = 'chrome';
+
+  // These are normally overridden by /session/status response fields.
+  // The constants below serve as fallbacks if the server doesn't provide them.
   static const String vlessSecurity = 'reality';
   static const String vlessType     = 'tcp';
   static const String vlessFlow     = 'xtls-rprx-vision';
 
   // ── Updates ────────────────────────────────────────────────────────────
   /// Used by the updater.
-  static const String applicationId = 'com.paladinvpn.app';  
-  static const String githubOwner   = 'YOUR_USERNAME';       
-  static const String githubRepo    = 'revoltvpn';          
+  static const String applicationId = 'com.paladinvpn.app';   // ◄── REPLACE
+  static const String githubOwner   = 'YOUR_USERNAME';        // ◄── REPLACE
+  static const String githubRepo    = 'revoltvpn';            // ◄── REPLACE
 
-  /// Fallback URL if the GitHub API call fails.
+  /// Fallback URL if the GitHub API call fails — just opens the releases page.
   static const String githubReleasesUrl = 'https://github.com/$githubOwner/$githubRepo/releases/latest';
 
   // ── AdMob ──────────────────────────────────────────────────────────────

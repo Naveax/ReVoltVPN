@@ -168,39 +168,23 @@ class Updater {
   }
 
   static Future<InstallSource> _detectInstallerSource() async {
-    // ╔══════════════════════════════════════════════════════════════════════╗
-    // ║  TODO — BEFORE PLAY STORE RELEASE                                    ║
-    // ║                                                                      ║
-    // ║  Wire this method channel in MainActivity.kt so Play Store users     ║
-    // ║  get redirected to the Play Store listing instead of GitHub.          ║
-    // ║                                                                      ║
-    // ║  Kotlin (android/app/src/main/kotlin/.../MainActivity.kt):            ║
-    // ║                                                                      ║
-    // ║  override fun configureFlutterEngine(flutterEngine: FlutterEngine) {  ║
-    // ║    super.configureFlutterEngine(flutterEngine)                       ║
-    // ║    MethodChannel(                                                    ║
-    // ║      flutterEngine.dartExecutor.binaryMessenger,                     ║
-    // ║      "com.revoltvpn.app/installer"                                   ║
-    // ║    ).setMethodCallHandler { call, result ->                          ║
-    // ║      if (call.method == "getInstallerPackage") {                     ║
-    // ║        val installer = packageManager                                ║
-    // ║          .getInstallerPackageName(packageName)                       ║
-    // ║        result.success(installer)                                     ║
-    // ║      } else { result.notImplemented() }                              ║
-    // ║    }                                                                 ║
-    // ║  }                                                                   ║
-    // ║                                                                      ║
-    // ║  Then uncomment the 7 lines below this block.                        ║
-    // ╚══════════════════════════════════════════════════════════════════════╝
-    // ── Uncomment after wiring MainActivity.kt ──────────────────────────
+    // Install source detection is stubbed until the native method channel
+    // is wired in MainActivity.kt.  Without it, all users default to the
+    // GitHub update path — which works, but Play Store users should ideally
+    // be sent to the Play Store listing instead.
+    //
+    // To wire: add a MethodChannel named "com.revoltvpn.app/installer" in
+    // MainActivity.kt that calls PackageManager.getInstallerPackageName().
+    // If it returns "com.android.vending", return InstallSource.playStore.
+    // Then uncomment the 7 lines below and delete the fallback return.
+    //
     // const channel = MethodChannel('com.revoltvpn.app/installer');
     // final installer = await channel.invokeMethod<String>('getInstallerPackage');
     // if (installer == 'com.android.vending') {
     //   return InstallSource.playStore;
     // }
     // return InstallSource.sideload;
-    // ─────────────────────────────────────────────────────────────────────
-    return InstallSource.sideload; // TODO: remove this line after uncommenting above
+    return InstallSource.sideload; // Stubbed — see above.
   }
 
   /// Compares two semver strings.  Positive = a > b, negative = a < b, 0 = equal.

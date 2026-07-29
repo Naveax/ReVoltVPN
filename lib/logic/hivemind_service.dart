@@ -34,14 +34,14 @@ class HivemindService {
     _expectedNonce = nonce;
     debugPrint('[HivemindService] Call #$callId — nonce: $nonce');
 
-    final url = Uri.parse('${AppConfig.hivemindApiBase}/session/status?device_id=$deviceId');
+    final url = _url('/session/status?device_id=$deviceId');
 
     // ── AD BYPASS (debug only) ────────────────────────────────────────
     if (kDebugMode && !skipAdBypass) {
       try {
         final customData = jsonEncode({'device_id': deviceId, 'nonce': nonce});
-        final fakeUrl = Uri.parse(
-            '${AppConfig.hivemindApiBase}/admob/callback?signature=test&key_id=test&custom_data=${Uri.encodeComponent(customData)}');
+        final fakeUrl = _url(
+            '/admob/callback?signature=test&key_id=test&custom_data=${Uri.encodeComponent(customData)}');
         await http.get(fakeUrl).timeout(const Duration(seconds: 8));
       } catch (_) {}
     }
@@ -62,8 +62,13 @@ class HivemindService {
           } else if (data['active'] == true && data['vless_uuid'] != null) {
             final vlessUuid = data['vless_uuid'];
 
-            // Reality tunnel fields — server is source of truth, AppConfig is fallback.
-            final vlessIp   = data['vless_ip']   ?? AppConfig.serverDomain;
+            // vless_ip is pinned — even if the API is MITM'd, the tunnel
+            // never goes anywhere except the real server IP.
+            final vlessIp = data['vless_ip'] ?? AppConfig.serverIp;
+            if (vlessIp != AppConfig.serverIp) {
+              throw Exception('API returned unexpected tunnel IP — possible MITM');
+            }
+
             final vlessPort = data['vless_port'] ?? 8443;
             final pbk       = data['reality_pbk'] ?? '';
             final sid       = data['reality_sid'] ?? '';
@@ -96,7 +101,7 @@ class HivemindService {
 
   static Future<bool> checkHealth() async {
     try {
-      final url = Uri.parse('${AppConfig.hivemindApiBase}/health');
+      final url = _url('/health');
       final response = await http.get(url).timeout(const Duration(seconds: 3));
       return response.statusCode == 200;
     } catch (_) {
@@ -107,7 +112,7 @@ class HivemindService {
   static Future<bool> verifySession() async {
     try {
       final deviceId = await CryptoService.getDeviceId();
-      final url = Uri.parse('${AppConfig.hivemindApiBase}/session/status?device_id=$deviceId');
+      final url = _url('/session/status?device_id=$deviceId');
       final response = await http.get(url).timeout(const Duration(seconds: 5));
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -119,7 +124,7 @@ class HivemindService {
 
   static Future<void> disconnectAndCleanup() async {
     final deviceId = await CryptoService.getDeviceId();
-    final url = Uri.parse('${AppConfig.hivemindApiBase}/session/stop');
+    final url = _url('/session/stop');
     try {
       await http.post(
         url,
@@ -127,5 +132,10 @@ class HivemindService {
         body: jsonEncode({'device_id': deviceId}),
       ).timeout(const Duration(seconds: 3));
     } catch (_) {}
+  }
+
+  /// Builds a URI pointing directly at the server IP — no domain involved.
+  static Uri _url(String path) {
+    return Uri.parse('${AppConfig.hivemindApiBase}$path');
   }
 }

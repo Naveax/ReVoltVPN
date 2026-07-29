@@ -21,6 +21,7 @@ import subprocess
 import threading
 import json
 import os
+import random
 import tempfile
 import requests
 import shlex
@@ -35,13 +36,11 @@ from cryptography.hazmat.primitives.serialization import load_pem_public_key
 app = Flask(__name__)
 
 
-# ── Log buffer for TUI / remote monitoring ────────────────────────────────
-# Captures every print() into a ring buffer so the TUI dashboard can pull
-# recent log lines without SSH.  /api/log returns the last 200 lines.
+# ── Stdout passthrough ──────────────────────────────────────────────────
+# Ensures print() works inside gunicorn workers by forwarding to the real
+# stdout.  (The log buffer + /api/log endpoint were removed — monitoring
+# now lives on a separate internal-only server.)
 import sys
-from collections import deque
-
-_log_buffer = deque(maxlen=200)
 
 class _TeeStdout:
     def __init__(self, original):
@@ -49,10 +48,6 @@ class _TeeStdout:
     def write(self, s):
         self.original.write(s)
         self.original.flush()
-        for line in s.splitlines():
-            stripped = line.rstrip()
-            if stripped:
-                _log_buffer.append(stripped)
     def flush(self):
         self.original.flush()
 
@@ -104,8 +99,13 @@ MAIN_AD_MINUTES = 60
 # Support Ad Rewards (top-up)
 SUPPORT_AD_MINUTES = 30
 
-# ── Reality — returned to app in /session/status ────────────────────────
-REALITY_SNI         = "www.microsoft.com"
+REALITY_SNI_POOL = [
+    "www.microsoft.com",
+    "www.cloudflare.com",
+    "www.google.com",
+    "www.amazon.com",
+    "www.yandex.ru",
+]
 VLESS_SERVER_IP     = "204.168.246.88"
 VLESS_REALITY_PORT  = 8443
 REALITY_PUBLIC_KEY  = "GENERATE_ME_WITH_xray_x25519"
@@ -235,16 +235,17 @@ def health():
     return jsonify({"ok": True})
 
 
-@app.route('/api/swarm')
-def swarm_status():
-    """Returns sorted drone list — consumed by TUI dashboards and CLI tools."""
-    return jsonify(get_swarm_status())
-
-
-@app.route('/api/log')
-def log_tail():
-    """Returns recent log lines — consumed by TUI dashboards."""
-    return jsonify(list(_log_buffer))
+# ── Swarm / log endpoints REMOVED (2026-07-29) ──────────────────────────
+# These exposed internal monitoring on the same domain as the public API.
+# Moved to a separate internal-only server.  See backups/swarm_watch.py.
+#
+# @app.route('/api/swarm')
+# def swarm_status():
+#     return jsonify(get_swarm_status())
+#
+# @app.route('/api/log')
+# def log_tail():
+#     return jsonify(list(_log_buffer))
 
 
 @app.route('/api/session/status', methods=['GET'])
@@ -278,7 +279,7 @@ def session_status():
         "vless_port":         VLESS_REALITY_PORT + 1 if session.get("throttled") else VLESS_REALITY_PORT,
         "reality_pbk":        REALITY_PUBLIC_KEY,
         "reality_sid":        REALITY_SHORT_ID,
-        "reality_sni":        REALITY_SNI,
+        "reality_sni":        session.get("_sni", REALITY_SNI_POOL[0]),
         "reality_fp":         REALITY_FINGERPRINT,
         "expires_in_seconds": int(remaining_secs),
         "used_bytes":         used_bytes,
@@ -333,6 +334,10 @@ def _start_or_extend_session(device_id, nonce=None):
         existing = active_sessions.get(device_id)
         vless_uuid = str(uuid.uuid4())
 
+        # Pick a random SNI for this session so every user looks
+        # like they're connecting to a different real website.
+        sni = random.choice(REALITY_SNI_POOL)
+
         active_sessions[device_id] = {
             "vless_uuid":   vless_uuid,
             "expires_at":   now + (MAIN_AD_MINUTES * 60),
@@ -340,6 +345,7 @@ def _start_or_extend_session(device_id, nonce=None):
             "throttled":    False,
             "_created_at":  now,
             "_prev_bytes":  0,
+            "_sni":         sni,
         }
 
         if existing:
