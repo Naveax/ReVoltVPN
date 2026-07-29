@@ -23,7 +23,7 @@ When your data runs out you get throttled to 1.5 Mbps instead of getting cut off
 ## The stack
 - **App** — Flutter (Android only for now)
 - **Server** — A single Debian box rented from Hetzner, located in Finland
-- **VPN protocol** — VLESS + Xray Reality (XTLS-Vision). Spoofs real TLS certificates (e.g. www.microsoft.com) so your tunnel looks like regular HTTPS. Great for bypassing DPI in countries that are aggressive with it.
+- **VPN protocol** — VLESS + Xray Reality (XTLS-Vision). Spoofs real TLS certificates (rotating pool of major sites) so your tunnel looks like regular HTTPS. Great for bypassing DPI in countries that are aggressive with it.
 - **Backend** — Hivemind, a Python Flask server I wrote that manages sessions, data quotas, throttling, and live swarm monitoring. Entire server is open source — in this repo.
 - **Ads** — Google AdMob rewarded ads, verified server-side so fake callbacks don't work
 
