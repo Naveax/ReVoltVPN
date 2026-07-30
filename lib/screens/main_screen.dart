@@ -6,6 +6,8 @@ import 'package:revoltvpn/components/timer_box.dart';
 import 'package:revoltvpn/components/speed_box.dart';
 import 'package:revoltvpn/components/status_bar.dart';
 import 'package:revoltvpn/components/support_button.dart';
+import 'package:revoltvpn/components/rain.dart';
+import 'package:revoltvpn/components/lightning.dart';
 
 class MainScreen extends StatelessWidget {
   const MainScreen({super.key});
@@ -29,6 +31,12 @@ class MainScreen extends StatelessWidget {
         child: SafeArea(
           child: Stack(
             children: [
+              // ── Lightning — behind rain so drops stay visible during flash ──
+              const Positioned.fill(child: LightningEffect()),
+
+              // ── Rain effect — behind all UI, baked into the background ──
+              const Positioned.fill(child: RainEffect()),
+
               Positioned(
                 top: 0,
                 right: 4,
