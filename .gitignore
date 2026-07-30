@@ -86,5 +86,9 @@ xray_config_reality.json
 SERVER_DEPLOYMENT.md
 swarm_watch.py
 nginx_hivemind_reality.conf
-nginx_hivemind_reality.conf
-nginx_hivemind_reality.conf
+
+# Hivemind server package (deployed separately)
+hivemind/
+
+# Thin entry point (imports from hivemind/)
+server_hivemind_5_0.py
