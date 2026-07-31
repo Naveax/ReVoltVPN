@@ -1,9 +1,6 @@
 // =============================================================================
 //  app_config.example.dart — TEMPLATE FOR SERVER SETTINGS
 //  ─────────────────────────────────────────────────────────────────────────────
-//  Copy this file to `app_config.dart` and fill in your real values.
-//  ⚠️  Do not commit your real `app_config.dart` to GitHub!
-// =============================================================================
 
 abstract final class AppConfig {
   AppConfig._(); // static members only
