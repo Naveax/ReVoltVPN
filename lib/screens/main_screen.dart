@@ -29,61 +29,70 @@ class MainScreen extends StatelessWidget {
           ),
         ),
         child: SafeArea(
-          child: Stack(
-            children: [
-              // ── Lightning — behind rain so drops stay visible during flash ──
-              const Positioned.fill(child: LightningEffect()),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              // Proportional positioning — fractions of available height.
+              // On the reference device (~700 dp) this produces the exact
+              // original pixel positions (100, 175, 250, 520) and scales
+              // proportionally on taller/shorter screens.
+              final h = constraints.maxHeight;
+              return Stack(
+                children: [
+                  // ── Lightning — behind rain so drops stay visible during flash ──
+                  const Positioned.fill(child: LightningEffect()),
 
-              // ── Rain effect — behind all UI, baked into the background ──
-              const Positioned.fill(child: RainEffect()),
+                  // ── Rain effect — behind all UI, baked into the background ──
+                  const Positioned.fill(child: RainEffect()),
 
-              Positioned(
-                top: 0,
-                right: 4,
-                child: Builder(
-                  builder: (ctx) => IconButton(
-                    icon: const Icon(Icons.menu, color: AppColors.textWhite, size: 28),
-                    onPressed: () => Scaffold.of(ctx).openEndDrawer(),
-                    tooltip: 'Menu', splashRadius: 24,
+                  Positioned(
+                    top: 0,
+                    right: 4,
+                    child: Builder(
+                      builder: (ctx) => IconButton(
+                        icon: const Icon(Icons.menu, color: AppColors.textWhite, size: 28),
+                        onPressed: () => Scaffold.of(ctx).openEndDrawer(),
+                        tooltip: 'Menu', splashRadius: 24,
+                      ),
+                    ),
                   ),
-                ),
-              ),
 
-              Positioned(
-                top: 100, // <-- CHANGE ME: timer distance from top
-                left: 0,
-                right: 0,
-                child: const Center(child: TimerBox()),
-              ),
+                  Positioned(
+                    top: h * 0.143,
+                    left: 0,
+                    right: 0,
+                    child: const Center(child: TimerBox()),
+                  ),
 
-              Positioned(
-                top: 175, // <-- CHANGE ME: support button from top
-                left: 0,
-                right: 0,
-                child: const Center(child: SupportButton()),
-              ),
+                  Positioned(
+                    top: h * 0.250,
+                    left: 0,
+                    right: 0,
+                    child: const Center(child: SupportButton()),
+                  ),
 
-              Positioned(
-                top: 250, // <-- CHANGE ME: connect button from top
-                left: 0,
-                right: 0,
-                child: const Center(child: ConnectButton()),
-              ),
+                  Positioned(
+                    top: h * 0.357,
+                    left: 0,
+                    right: 0,
+                    child: const Center(child: ConnectButton()),
+                  ),
 
-              Positioned(
-                top: 520, // <-- CHANGE ME: speed box from top
-                left: 0,
-                right: 0,
-                child: const Center(child: SpeedBox()),
-              ),
+                  Positioned(
+                    top: h * 0.743,
+                    left: 0,
+                    right: 0,
+                    child: const Center(child: SpeedBox()),
+                  ),
 
-              Positioned(
-                bottom: 16, // <-- CHANGE ME: status bar from bottom
-                left: 0,
-                right: 0,
-                child: const StatusBar(),
-              ),
-            ],
+                  const Positioned(
+                    bottom: 16,
+                    left: 0,
+                    right: 0,
+                    child: StatusBar(),
+                  ),
+                ],
+              );
+            },
           ),
         ),
       ),

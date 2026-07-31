@@ -13,7 +13,13 @@ gunicorn (production)::
 See ``hivemind/config.py`` for all tunables.
 """
 
-from hivemind.main import app
+from hivemind.main import app, start_management
+
+# The management daemon starts automatically when gunicorn imports
+# hivemind.main:app.  For direct runs (python server_hivemind_5_0.py),
+# we call start_management() explicitly.  It's idempotent — safe to
+# call even if the import-time start already fired.
+start_management()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

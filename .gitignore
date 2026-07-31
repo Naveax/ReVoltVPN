@@ -17,7 +17,6 @@
 .idea/
 
 # The .vscode folder contains configure files for the Visual Studio Code
-# editor. Although we may keep it, we often ignore it.
 .vscode/
 
 # Python cache & User files
@@ -92,3 +91,11 @@ hivemind/
 
 # Thin entry point (imports from hivemind/)
 server_hivemind_5_0.py
+devtools_options.yaml
+.codewhale/state/subagents.v1.lock
+
+#ai
+.codewhale/
+
+#backup for files i might use later
+backup/

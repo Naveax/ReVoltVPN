@@ -7,7 +7,20 @@ Versions follow [semver](https://semver.org/): MAJOR.MINOR.PATCH
 
 ## [2.0.7] — Unreleased
 
-### Added
+### Fixed (audit #13 — 2026-07-31)
+- **Notification bug** — `SessionTimer.stop()` now cancels the persistent Android notification. Previously it lingered after user-initiated disconnect.
+- **Concurrent sync guard** — `_syncInProgress` flag in `_syncWithHivemind()` prevents duplicate HTTP requests from overlapping.
+- **Debug bypass gate** — `AppConfig.enableAdBypass` (in `app_config.example.dart`) replaces `kDebugMode` for the fake AdMob callback. Tree-shaken in release.
+
+### Changed
+- **Responsive layout** — main screen uses `LayoutBuilder` with proportional fractions instead of hardcoded pixel positions. Pixel-identical on reference device, scales to any screen.
+- **Dynamic version** — sidebar footer reads `ReVoltApp.appVersion` from `PackageInfo` instead of hardcoded `v2.0.7`.
+- **Swarm/log blocked** — nginx explicitly returns 404 for `/api/swarm` and `/api/log`. Monitoring runs locally via `swarm_watch.py` on `127.0.0.1:5000`.
+
+### Server fixes (internal)
+- `/session/stop` fetches Xray stats BEFORE popping session — prevents race where final byte count is lost
+- `XrayManager._stats_lock` serializes diagnostic counter (non-atomic `+=` race)
+- `ManagementLoop._start_lock` prevents TOCTOU on daemon startup
 - **Manual update checker** — "Check for updates" button in sidebar
   - Uses GitHub Releases API to find the latest version
   - Up to date → snackbar "✓ Up to date"

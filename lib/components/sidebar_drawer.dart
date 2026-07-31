@@ -6,6 +6,7 @@ import 'package:revoltvpn/components/sidebar_contents/info_button.dart';
 import 'package:revoltvpn/components/sidebar_contents/discord_link_button.dart';
 import 'package:revoltvpn/components/sidebar_contents/website_button.dart';
 import 'package:revoltvpn/logic/updater.dart';
+import 'package:revoltvpn/main.dart';
 
 class SidebarDrawer extends StatelessWidget {
   const SidebarDrawer({super.key});
@@ -108,7 +109,7 @@ class SidebarDrawer extends StatelessWidget {
 
             const Padding(
               padding: EdgeInsets.all(20),
-              child: Text('ReVoltVPN · v2.0.7', textAlign: TextAlign.center,
+              child: Text('ReVoltVPN · v${ReVoltApp.appVersion}', textAlign: TextAlign.center,
                 style: TextStyle(color: AppColors.slate, fontSize: 11, letterSpacing: 1),
               ),
             ),

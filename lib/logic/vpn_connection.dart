@@ -60,7 +60,8 @@ class VpnConnection extends ChangeNotifier {
 
     // Periodic server health check
     _checkHealth();
-    _healthTimer = Timer.periodic(const Duration(seconds: 30), (_) => _checkHealth());
+    _healthTimer =
+        Timer.periodic(const Duration(seconds: 30), (_) => _checkHealth());
 
     // Check if VPN was already running (app killed and reopened)
     try {
@@ -102,7 +103,8 @@ class VpnConnection extends ChangeNotifier {
     }
   }
 
-    Future<bool> connect({bool skipAdBypass = false, bool quickReconnect = false}) async {
+  Future<bool> connect(
+      {bool skipAdBypass = false, bool quickReconnect = false}) async {
     if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
       return false;
     }
@@ -130,7 +132,8 @@ class VpnConnection extends ChangeNotifier {
         quickReconnect: quickReconnect,
         onAttempt: (attempt, total) {
           if (!quickReconnect) {
-            _setStatus(VpnStatus.connecting, 'Contacting server ($attempt/$total)…');
+            _setStatus(
+                VpnStatus.connecting, 'Contacting server ($attempt/$total)…');
           }
         },
       );
@@ -140,11 +143,15 @@ class VpnConnection extends ChangeNotifier {
       if (raw.contains('Cancelled')) {
         // User tapped disconnect — silently abort
         return false;
-      } else if (raw.contains('timed out') || raw.contains('Session not activated')) {
-        _errorMessage = 'The server did not respond in time.\nCheck your connection and try again.';
+      } else if (raw.contains('timed out') ||
+          raw.contains('Session not activated')) {
+        _errorMessage =
+            'The server did not respond in time.\nCheck your connection and try again.';
         _setStatus(VpnStatus.error, 'Server unreachable');
-      } else if (raw.contains('SocketException') || raw.contains('Failed host lookup')) {
-        _errorMessage = 'Cannot reach the server.\nMake sure you have internet access.';
+      } else if (raw.contains('SocketException') ||
+          raw.contains('Failed host lookup')) {
+        _errorMessage =
+            'Cannot reach the server.\nMake sure you have internet access.';
         _setStatus(VpnStatus.error, 'No internet');
       } else {
         _errorMessage = raw;
@@ -186,7 +193,8 @@ class VpnConnection extends ChangeNotifier {
         }
 
         if (!sessionOk) {
-          debugPrint('[VPN] Tunnel started but no server session — tearing down.');
+          debugPrint(
+              '[VPN] Tunnel started but no server session — tearing down.');
           try {
             await _vless.stopVless();
           } catch (_) {}
@@ -209,7 +217,8 @@ class VpnConnection extends ChangeNotifier {
   Future<void> disconnect({bool skipCleanup = false}) async {
     _cancelled = true;
     HivemindService.cancel(); // abort any in-progress polling
-    if (_status == VpnStatus.disconnected || _status == VpnStatus.disconnecting) {
+    if (_status == VpnStatus.disconnected ||
+        _status == VpnStatus.disconnecting) {
       return;
     }
 
@@ -223,9 +232,9 @@ class VpnConnection extends ChangeNotifier {
 
     try {
       await _vless.stopVless().timeout(
-        const Duration(seconds: 5),
-        onTimeout: () => debugPrint('[VPN] stopVless() timed out.'),
-      );
+            const Duration(seconds: 5),
+            onTimeout: () => debugPrint('[VPN] stopVless() timed out.'),
+          );
     } catch (e) {
       debugPrint('[VPN] VLESS stop error: $e');
     }

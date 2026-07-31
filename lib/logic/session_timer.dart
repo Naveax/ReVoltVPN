@@ -20,6 +20,7 @@ class SessionTimer extends ChangeNotifier {
   int  _consecutiveFailures = 0;
   bool _isDisconnecting     = false;
   bool _userInitiatedStop   = false;
+  bool _syncInProgress      = false;
 
 
   int? _currentPort;
@@ -183,9 +184,10 @@ class SessionTimer extends ChangeNotifier {
 
 
   Future<void> _syncWithHivemind() async {
-    // Never sync while the user is explicitly disconnecting.
-    if (_isDisconnecting) return;
-
+    // Never sync while the user is explicitly disconnecting,
+    // or while another sync is already in flight.
+    if (_isDisconnecting || _syncInProgress) return;
+    _syncInProgress = true;
     try {
       final deviceId = await CryptoService.getDeviceId();
       final url = Uri.parse(
@@ -248,6 +250,8 @@ class SessionTimer extends ChangeNotifier {
     } catch (e) {
       debugPrint('Hivemind sync error: $e');
       _markSyncFailure();
+    } finally {
+      _syncInProgress = false;
     }
   }
 
@@ -268,6 +272,7 @@ class SessionTimer extends ChangeNotifier {
     _currentSpeedKBps = 0.0;
     _hasSyncedOnce = false;
     _remainingSeconds = 0;
+    VpnNotificationManager.cancel();
     notifyListeners();
   }
 

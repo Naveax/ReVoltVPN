@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/logic/session_timer.dart';
@@ -35,11 +36,18 @@ void main() async {
   await ConsentManager.requestConsentIfNeeded();
   await MobileAds.instance.initialize();
 
+  final packageInfo = await PackageInfo.fromPlatform();
+  ReVoltApp.appVersion = packageInfo.version;
+
   runApp(const ReVoltApp());
 }
 
 class ReVoltApp extends StatelessWidget {
   const ReVoltApp({super.key});
+
+  /// Set at startup from PackageInfo — used by sidebar and anywhere
+  /// the app version needs to be displayed.
+  static String appVersion = '';
 
   @override
   Widget build(BuildContext context) {
