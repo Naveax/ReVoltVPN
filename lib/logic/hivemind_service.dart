@@ -37,7 +37,7 @@ class HivemindService {
     final url = _url('/session/status?device_id=$deviceId');
 
     // ── AD BYPASS (debug only) ────────────────────────────────────────
-    if (AppConfig.enableAdBypass && !skipAdBypass) {
+    if (kDebugMode && !skipAdBypass) {
       try {
         final customData = jsonEncode({'device_id': deviceId, 'nonce': nonce});
         final fakeUrl = _url(

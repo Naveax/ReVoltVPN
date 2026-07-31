@@ -46,11 +46,4 @@ abstract final class AppConfig {
 
   // ── AdMob ──────────────────────────────────────────────────────────────
   static const String adUnitId = 'ca-app-pub-0000000000000000/0000000000'; // REPLACE
-
-  // ── Debug ──────────────────────────────────────────────────────────────
-  /// When true, the client skips the real AdMob flow and sends a fake SSV
-  /// callback directly to the server (requires ADMOB_BYPASS=True server-side).
-  /// Set to false in production — the Dart compiler tree-shakes the bypass
-  /// code entirely when this is a compile-time constant false.
-  static const bool enableAdBypass = false;
 }
