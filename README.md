@@ -1,56 +1,60 @@
----
-
 <p align="center">
   <img src="screenshots/feature_graphic.png" alt="ReVoltVPN banner" width="100%"/>
 </p>
 
 # ReVoltVPN
-A free VPN app built from scratch. I handle the Flutter app, Hivemind backend, and AdMob integration — the ReVolt team manages server security and VLESS/Xray infrastructure.
 
-There are hundreds of free VPN apps on the Play Store. Most of them are fine honestly — some are genuinely good. But a lot of them are vague about how they work, who runs them, and what happens to your traffic. I wanted to build something where the answer to all of those questions is just... public.
-
-So here it is.
+A free VPN app for Android. Open-source client, transparent infrastructure. Watch an ad, get 60 minutes of full-speed traffic — no accounts, no logs, no subscriptions.
 
 ---
 
 ## How it works
-You watch a short ad. You get 60 minutes and 4 GB of full-speed traffic. That's it. The ad pays for the server (actually not even enough). No accounts, no emails, no subscriptions.
 
-When your data runs out you get throttled to 1.5 Mbps instead of getting cut off. A second Reality inbound on a different port handles throttled traffic — your client reconnects automatically, no ad required.
+1. Watch a short rewarded ad
+2. Server creates a temporary VLESS session (60 min / 4 GB)
+3. Your traffic routes through a single server in Finland
+4. When data runs out, you're throttled to 1.5 Mbps instead of cut off
+5. Session expires — watch another ad or move on
 
----
-
-## The stack
-- **App** — Flutter (Android only for now)
-- **Server** — A single Debian box rented from Hetzner, located in Finland
-- **VPN protocol** — VLESS + Xray Reality (XTLS-Vision). Spoofs real TLS certificates (rotating pool of major sites) so your tunnel looks like regular HTTPS. Great for bypassing DPI in countries that are aggressive with it.
-- **Backend** — Hivemind, a Python Flask server I wrote that manages sessions, data quotas, throttling, and live swarm monitoring. Entire server is open source — in this repo.
-- **Ads** — Google AdMob rewarded ads, verified server-side so fake callbacks don't work
+No email. No password. No payment. The ad pays for the server.
 
 ---
 
-## Limitations (being honest)
-- One server, one location (Finland). That's all I can afford right now (planning to escalate further)
-- 2 cores and 4GB RAM. It will not handle thousands of concurrent users
-- iOS is not supported and probably won't be for a while
-- The app is built by me in my free time — expect rough edges
+## Protocol
+
+- **Transport** — VLESS over XHTTP (HTTP/2 multiplexed, path-hidden behind `/revolt`)
+- **Obfuscation** — Xray Reality spoofs `www.github.com` TLS. To any DPI box, your tunnel looks like a browser visiting GitHub
+- **Encryption** — TLS 1.3 with borrowed certificate (Reality). No certbot, no domain ownership required
+- **API** — Standard HTTPS to a separate domain. Tunnel destination is IP-pinned — domain compromise is DoS only
 
 ---
 
-## Why I built this
-Free time project. I wanted to learn how VPNs actually work under the hood. Ended up building the whole thing from scratch — the Flutter app, Hivemind backend, and AdMob integration are made by me, while server security and VLESS/Xray setup are handled by the ReVolt team. It took way longer than expected.
+## Stack
+
+| Layer | Technology |
+|-------|-----------|
+| App | Flutter (Android) |
+| VPN | VLESS + Xray Reality + XHTTP |
+| Backend | Python Flask ("Hivemind") — session management, quotas, stats |
+| Ads | Google AdMob rewarded, verified server-side |
+| Server | Debian, single Hetzner box in Finland |
+
+---
+
+## Limitations
+
+- One server, one location (Finland)
+- 2 vCPU / 4 GB RAM — not built for thousands of concurrent users
+- Android only
 
 ---
 
 ## Privacy
-Your traffic goes through my server in Finland. I don't log it, I don't sell it, I have no reason to. The session manager (Hivemind) only tracks whether your session is active and how much data you've used — nothing else.
 
-Internet privacy at the cost of watching an ad. Honest business.
+Your traffic routes through Finland. We don't log it, inspect it, or sell it. Hivemind tracks only session liveness and byte counters for quota enforcement — no packet contents, no destination IPs, no DNS queries.
 
-You can read the server code yourself, it's in this repo.
+Full privacy policy: [`PRIVACY_POLICY.md`](PRIVACY_POLICY.md)
 
 ---
 
 *ReVoltVPN is not affiliated with any VPN company.*
-
----

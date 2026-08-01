@@ -10,18 +10,14 @@ class HivemindService {
   static String? _expectedNonce;
   static int _currentCallId = 0;
 
-  /// Call this from disconnect to abort any in-progress polling.
   static void cancel() {
-    _currentCallId++; // bump — any running loop sees a stale ID and exits
+    _currentCallId++;
   }
 
   static void setExpectedNonce(String nonce) {
     _expectedNonce = nonce;
   }
 
-  /// Tries to fetch the VLESS config from the server.
-  /// Only polls a few times — by the time the ad finishes, the SSV callback
-  /// has usually already fired.
   static Future<String> fetchConfigWithPolling({
     void Function(int attempt, int total)? onAttempt,
     bool skipAdBypass = false,
@@ -36,7 +32,7 @@ class HivemindService {
 
     final url = _url('/session/status?device_id=$deviceId');
 
-    // ── AD BYPASS (debug only) ────────────────────────────────────────
+    // Dev: fake ad callback when running in debug mode.
     if (kDebugMode && !skipAdBypass) {
       try {
         final customData = jsonEncode({'device_id': deviceId, 'nonce': nonce});
@@ -77,10 +73,8 @@ class HivemindService {
             final fp        = data['reality_fp']  ?? AppConfig.realityFp;
             final xhttpPath = data['xhttp_path']  ?? AppConfig.vlessPath;
 
-            // host is intentionally omitted per XHTTP docs:
-            // "建议没事别设" — the server doesn't set host, so it won't check.
+            // Host header not set — server doesn't require it.
             // Client falls through: host → serverName (SNI) → address.
-            // With Reality SNI = github.com, the Host header blends naturally.
             final vlessUrl = 'vless://$vlessUuid@$vlessIp:$vlessPort'
                 '?security=${AppConfig.vlessSecurity}'
                 '&type=${AppConfig.vlessType}'
@@ -140,7 +134,6 @@ class HivemindService {
     } catch (_) {}
   }
 
-  /// Builds a URI pointing directly at the server IP — no domain involved.
   static Uri _url(String path) {
     return Uri.parse('${AppConfig.hivemindApiBase}$path');
   }

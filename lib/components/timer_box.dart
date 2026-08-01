@@ -25,7 +25,7 @@ class TimerBox extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // ── Countdown text (always visible) ──────────────────────
+              // Countdown
               Text(
                 timer.hasSyncedOnce ? timer.formatted : '00:00:00',
                 style: TextStyle(
@@ -46,8 +46,7 @@ class TimerBox extends StatelessWidget {
                 ),
               ),
 
-              // ── Syncing indicator (only shown while connecting or
-              //     waiting for the first server poll) ──────────────────
+              // Syncing indicator
               if (showIndicator) ...[
                 const SizedBox(height: 8),
                 Row(

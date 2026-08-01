@@ -38,10 +38,10 @@ class MainScreen extends StatelessWidget {
               final h = constraints.maxHeight;
               return Stack(
                 children: [
-                  // ── Lightning — behind rain so drops stay visible during flash ──
+                   // Lightning — behind rain
                   const Positioned.fill(child: LightningEffect()),
 
-                  // ── Rain effect — behind all UI, baked into the background ──
+                   // Rain — behind all UI
                   const Positioned.fill(child: RainEffect()),
 
                   Positioned(

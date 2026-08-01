@@ -7,12 +7,7 @@ import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/app_config.dart';
 
-/// AdManager manages the lifecycle of rewarded video ads.
-///
-/// When [adsEnabled] is false (pre-launch mode) all ad operations are
-/// silently skipped — the app connects without any ad requirement.
 class AdManager extends ChangeNotifier {
-  /// Flip to `true` after Google Play launch when real ads are wired up.
   static const bool adsEnabled = false;
 
   RewardedAd? _rewardedAd;
@@ -32,15 +27,9 @@ class AdManager extends ChangeNotifier {
     if (adsEnabled) preloadAd();
   }
 
-  /// Loads a rewarded ad in the background and returns a Future when ready.
-  /// Safe to call multiple times — re-entrant calls wait on the same load.
-  /// No-op when [adsEnabled] is false.
   Future<bool> preloadAd() async {
     if (!adsEnabled) return true;
-    // If already loaded, return instantly
     if (_isAdLoaded) return true;
-    
-    // If we're already loading one right now, wait for that same request to finish
     if (_isAdLoading) return _loadCompleter?.future ?? Future.value(false);
 
     _isAdLoading = true;
@@ -84,12 +73,9 @@ class AdManager extends ChangeNotifier {
     return _loadCompleter!.future;
   }
 
-  /// Displays the rewarded video ad to the user.
-  /// Returns false immediately when [adsEnabled] is false.
   Future<bool> showAd(String adType) async {
     if (!adsEnabled) return false;
 
-    // 1. Ensure the ad is fully loaded before trying to show it
     if (!_isAdLoaded || _rewardedAd == null) {
       final loaded = await preloadAd();
       if (!loaded || _rewardedAd == null) {
@@ -98,16 +84,12 @@ class AdManager extends ChangeNotifier {
       }
     }
 
-    // 2. Fetch device ID for Server-Side Verification (SSV)
     final deviceId = await CryptoService.getDeviceId();
 
-    // 3. Generate a connect nonce so the subsequent poll can verify
-    //    it's talking to the session created by *this* ad.
     final nonce = '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
     HivemindService.setExpectedNonce(nonce);
     debugPrint('[AdManager] Ad nonce: $nonce');
 
-    // 4. Build SSV options to send to our Hivemind server via Google's callback
     final ssvOptions = ServerSideVerificationOptions(
       customData: jsonEncode({
         'device_id': deviceId,
@@ -118,7 +100,6 @@ class AdManager extends ChangeNotifier {
 
     Completer<bool> rewardCompleter = Completer<bool>();
 
-    // 4. Setup full screen callbacks to handle dismissal and errors
     _rewardedAd!.fullScreenContentCallback = FullScreenContentCallback(
       onAdShowedFullScreenContent: (ad) => debugPrint('[AdManager] Ad showing.'),
       onAdDismissedFullScreenContent: (ad) {
@@ -126,10 +107,9 @@ class AdManager extends ChangeNotifier {
         ad.dispose();
         _isAdLoaded = false;
         _rewardedAd = null;
-        // Start loading the next ad immediately
         preloadAd();
         if (!rewardCompleter.isCompleted) {
-          rewardCompleter.complete(false); // User closed before earning reward
+          rewardCompleter.complete(false);
         }
       },
       onAdFailedToShowFullScreenContent: (ad, error) {
@@ -143,13 +123,11 @@ class AdManager extends ChangeNotifier {
       },
     );
 
-    // 5. Show the ad with SSV options
+    // Show with SSV options
     _rewardedAd!.setServerSideOptions(ssvOptions);
     await _rewardedAd!.show(
       onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {
         debugPrint('[AdManager] Reward earned: ${reward.amount} ${reward.type}');
-        // The SSV callback will hit our server independently. We just need to signal the UI
-        // that the ad was successfully completed.
         if (!rewardCompleter.isCompleted) {
           rewardCompleter.complete(true);
         }

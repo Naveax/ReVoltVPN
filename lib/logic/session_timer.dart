@@ -218,7 +218,7 @@ class SessionTimer extends ChangeNotifier {
         _lastUsedBytes = _usedBytes;
 
 
-        // ── Detect port change (throttle engage / disengage) ──────
+        // Port change — throttle engaged or disengaged
         final serverPort = data['vless_port'];
         if (serverPort != null &&
             _currentPort != null &&

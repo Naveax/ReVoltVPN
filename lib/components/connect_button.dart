@@ -65,7 +65,7 @@ class _ConnectButtonState extends State<ConnectButton>
 
     if (vpn.status == VpnStatus.connected || vpn.status == VpnStatus.connecting) {
       _busy = false;
-      timer.stop(); // MUST stop timer BEFORE disconnect — prevents auto-reconnect
+      timer.stop();
       await vpn.disconnect();
       return;
     }
@@ -116,7 +116,7 @@ class _ConnectButtonState extends State<ConnectButton>
     final glowRadius = isConnected ? 18.0 + (pulse * 14) : 0.0;
 
     return Container(
-      width: 260, // <-- CHANGE ME: circle size
+      width: 260,
       height: 260,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
@@ -138,7 +138,7 @@ class _ConnectButtonState extends State<ConnectButton>
               ),
             )
           : Padding(
-              padding: const EdgeInsets.all(14), // <-- CHANGE ME: brand.png padding from edge
+              padding: const EdgeInsets.all(14),
               child: Image.asset('assets/brand.png', fit: BoxFit.contain),
             ),
     );

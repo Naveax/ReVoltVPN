@@ -176,7 +176,7 @@ class _LightningPainter extends CustomPainter {
     final baseColor = AppColors.accent.withAlpha((opacity * 255).round());
     final glowColor = AppColors.accent.withAlpha((opacity * 0.35 * 255).round());
 
-    // ── Glow layer (thick, blurry) ──────────────
+    // Glow
     final glowPaint = Paint()
       ..color = glowColor
       ..strokeWidth = 18
@@ -187,7 +187,7 @@ class _LightningPainter extends CustomPainter {
 
     _drawPath(canvas, scaledMain, scaledBranches, glowPaint);
 
-    // ── Core bolt (thin, bright) ────────────────
+    // Core
     final corePaint = Paint()
       ..color = baseColor
       ..strokeWidth = 5
@@ -197,7 +197,7 @@ class _LightningPainter extends CustomPainter {
 
     _drawPath(canvas, scaledMain, scaledBranches, corePaint);
 
-    // ── Hot center (extra white core) ───────────
+    // Hot center
     if (opacity > 0.6) {
       final hotPaint = Paint()
         ..color = Colors.white.withAlpha((opacity * 180).round())

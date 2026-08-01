@@ -26,7 +26,7 @@ class StatusBar extends StatelessWidget {
           ),
           child: Row(
             children: [
-              // ── Connection status (left) ─────────────────────────────
+              // Connection status
               if (isConnected) ...[
                 Image.asset('assets/finland_flag_256.png', width: 20, height: 20),
                 const SizedBox(width: 8),
@@ -52,7 +52,7 @@ class StatusBar extends StatelessWidget {
 
               const Spacer(),
 
-              // ── Server health dot (right) ────────────────────────────
+              // Server health
               OnlineDot(
                 isOnline: serverHealthy,
                 label: isConnected

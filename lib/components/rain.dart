@@ -37,7 +37,7 @@ class _RainEffectState extends State<RainEffect>
   final _random = Random();
   Duration _last = Duration.zero;
 
-  // ── Lifecycle ────────────────────────────────────────────────────────
+  // Lifecycle
 
   @override
   void initState() {
@@ -54,7 +54,7 @@ class _RainEffectState extends State<RainEffect>
     super.dispose();
   }
 
-  // ── Tick — move drops, recycle off-screen ones ──────────────────────
+  // Tick
 
   void _onTick(Duration now) {
     double dt = 0.016; // ~60 fps fallback on first tick
@@ -74,7 +74,7 @@ class _RainEffectState extends State<RainEffect>
     setState(() {}); 
   }
 
-  // ── Build ────────────────────────────────────────────────────────────
+  // Build
 
   @override
   Widget build(BuildContext context) {
