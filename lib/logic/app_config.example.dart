@@ -24,8 +24,11 @@ abstract final class AppConfig {
 
   // These are normally overridden by /session/status response fields.
   static const String vlessSecurity = 'reality';
-  static const String vlessType     = 'tcp';
-  static const String vlessFlow     = 'xtls-rprx-vision';
+  static const String vlessType     = 'xhttp';
+
+  /// XHTTP path — must match the server's xhttpSettings.path.
+  /// Server default: "/revolt" (hardcoded in xray_config_reality.json).
+  static const String vlessPath = '/revolt';
 
   // ── Updates ────────────────────────────────────────────────────────────
   /// Used by the updater.

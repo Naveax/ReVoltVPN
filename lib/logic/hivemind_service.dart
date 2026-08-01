@@ -75,11 +75,16 @@ class HivemindService {
             final sni       = data['reality_sni'];
             if (sni == null) throw Exception('Server did not provide reality_sni');
             final fp        = data['reality_fp']  ?? AppConfig.realityFp;
+            final xhttpPath = data['xhttp_path']  ?? AppConfig.vlessPath;
 
+            // host is intentionally omitted per XHTTP docs:
+            // "建议没事别设" — the server doesn't set host, so it won't check.
+            // Client falls through: host → serverName (SNI) → address.
+            // With Reality SNI = github.com, the Host header blends naturally.
             final vlessUrl = 'vless://$vlessUuid@$vlessIp:$vlessPort'
                 '?security=${AppConfig.vlessSecurity}'
                 '&type=${AppConfig.vlessType}'
-                '&flow=${AppConfig.vlessFlow}'
+                '&path=${Uri.encodeComponent(xhttpPath)}'
                 '&pbk=${Uri.encodeComponent(pbk)}'
                 '&sni=${Uri.encodeComponent(sni)}'
                 '&sid=${Uri.encodeComponent(sid)}'

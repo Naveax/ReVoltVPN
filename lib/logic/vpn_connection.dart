@@ -51,7 +51,7 @@ class VpnConnection extends ChangeNotifier {
 
     try {
       await _vless.initializeVless(
-        providerBundleIdentifier: 'com.revoltvpn.app',
+        providerBundleIdentifier: 'com.paladinvpn.app',
       );
       _initialized = true;
     } catch (e) {
