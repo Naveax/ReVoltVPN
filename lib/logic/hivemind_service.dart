@@ -72,7 +72,8 @@ class HivemindService {
             final vlessPort = data['vless_port'] ?? 8443;
             final pbk       = data['reality_pbk'] ?? '';
             final sid       = data['reality_sid'] ?? '';
-            final sni       = data['reality_sni'] ?? AppConfig.realitySni;
+            final sni       = data['reality_sni'];
+            if (sni == null) throw Exception('Server did not provide reality_sni');
             final fp        = data['reality_fp']  ?? AppConfig.realityFp;
 
             final vlessUrl = 'vless://$vlessUuid@$vlessIp:$vlessPort'

@@ -16,18 +16,13 @@ abstract final class AppConfig {
   static String get hivemindApiBase => 'https://$serverDomain/api';
 
   // ── Reality (VPN tunnel) ──────────────────────────────────────────────
-  /// TLS camouflage — which site the Reality tunnel impersonates.
-  /// Server overrides this per session from REALITY_SNI_POOL.
-  ///   www.microsoft.com  — classic, never blocked
-  ///   cloudflare.com     — CDN, clean TLS
-  ///   yandex.ru          — Russian, absolutely never blocked in Russia
-  static const String realitySni = 'www.microsoft.com';  // ◄── REPLACE
+  /// The server picks a random SNI per session from REALITY_SNI_POOL.
+  /// The client does NOT hardcode one — server is always the source of truth.
 
   /// TLS fingerprint: chrome | firefox | safari | random
   static const String realityFp = 'chrome';
 
   // These are normally overridden by /session/status response fields.
-  // The constants below serve as fallbacks if the server doesn't provide them.
   static const String vlessSecurity = 'reality';
   static const String vlessType     = 'tcp';
   static const String vlessFlow     = 'xtls-rprx-vision';
