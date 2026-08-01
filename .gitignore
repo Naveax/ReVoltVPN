@@ -1,36 +1,22 @@
-# Miscellaneous
-*.class
-*.log
-*.pyc
+# =============================================================================
+#  ReVoltVPN — .gitignore
+# =============================================================================
+
+# ── OS & Editor ────────────────────────────────────────────────────────────
 *.swp
 .DS_Store
 .atom/
-.buildlog/
 .history
 .svn/
 .java-version
-
-# IntelliJ related
-*.iml
-*.ipr
-*.iws
 .idea/
-
-# The .vscode folder contains configure files for the Visual Studio Code
 .vscode/
 
-# Python cache & User files
-TECHNICAL_DEBT.md
-RUNNING.md
+# ── Python ─────────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 
-# App Config (Hide real IPs/IDs from GitHub)
-lib/logic/app_config.dart
-
-# Flutter/Dart/Pub related
-**/doc/api/
-**/ios/Flutter/.last_build_id
+# ── Flutter / Dart ─────────────────────────────────────────────────────────
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
@@ -41,8 +27,10 @@ build/
 local_packages/*/build/
 local_packages/*/.dart_tool/
 *.dart_tool/
+**/doc/api/
+**/ios/Flutter/.last_build_id
 
-# Android related
+# ── Android ────────────────────────────────────────────────────────────────
 **/android/**/gradle-wrapper.jar
 **/android/.gradle
 **/android/captures/
@@ -53,49 +41,61 @@ local_packages/*/.dart_tool/
 **/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
 **/android/.cxx/
 **/android/app/build/
-
-# Keystore files
-*.keystore
-*.jks
-
-# Crashlytics cache
 **/android/app/crashlytics-build.properties
 
-# Shell scripts (dev only, not for public)
-server_picture.sh
-XRAY_CONFIG_REFERENCE.md
-
-# Secrets
+# ── Secrets & Keystores ───────────────────────────────────────────────────
+*.keystore
+*.jks
 android/key.properties
 android/admob.properties
-SECURITY_HARDENING.md
-VLESS_APP_CONTRACT.md
-AGENTS.md
-SERVER_NOTES.md
-lib/logic/backup/
-00-FULL-REPORT.md
-server full picture.txt
-technical_debt_*.md
-server_full_picture_2.txt
-hivemind_backup.py
-UI_POSITIONING.md
-SERVER_SETUP.md
-REALITY_MIGRATION_PLAN.md
-xray_config_reality.json
-SERVER_DEPLOYMENT.md
+
+# App config (contains real IPs/IDs — use example as template)
+lib/logic/app_config.dart
+
+# ── Hivemind server (deployed separately, not part of the Flutter repo) ───
+hivemind/
+server_hivemind_5_0.py
 swarm_watch.py
 nginx_hivemind_reality.conf
+xray_config_reality.json
+swarm_total.json
 
-# Hivemind server package (deployed separately)
-hivemind/
+# ── Internal docs (not for public repo) ────────────────────────────────────
+AGENTS.md
+RUNNING.md
+SERVER_DEPLOYMENT.md
+SERVER_NOTES.md
+SERVER_SETUP.md
+REALITY_MIGRATION_PLAN.md
+SECURITY_HARDENING.md
+VLESS_APP_CONTRACT.md
+UI_POSITIONING.md
 
-# Thin entry point (imports from hivemind/)
-server_hivemind_5_0.py
-devtools_options.yaml
-.codewhale/state/subagents.v1.lock
+# ── Technical debt & security audits ───────────────────────────────────────
+technical_debt_*.md
+technical_debt_*_answer.md
 
-#ai
+# ── Backups & reference files ──────────────────────────────────────────────
+backups/
+backup/
+hivemind_backup.py
+server full picture.txt
+server_full_picture_2.txt
+00-FULL-REPORT.md
+XRAY_CONFIG_REFERENCE.md
+
+# ── Logs & temp ────────────────────────────────────────────────────────────
+*.log
+*.class
+server_picture.sh
+
+# ── AI assistant ───────────────────────────────────────────────────────────
 .codewhale/
 
-#backup for files i might use later
-backup/
+# ── Dev tool config ────────────────────────────────────────────────────────
+devtools_options.yaml
+lib/logic/backup/
+scraped
+scraped.zip
+hivemind.zip
+XRAY_AUDIT.md
