@@ -18,10 +18,14 @@ class HivemindService {
     _expectedNonce = nonce;
   }
 
-  static Future<String> fetchConfigWithPolling({
+  /// Fetch a real VLESS session config from the tunnel-internal API.
+  ///
+  /// Called AFTER the bootstrap tunnel is already up — all HTTP requests
+  /// go through the Reality tunnel to 10.254.254.1:5000 (redirected to
+  /// Flask by Xray's "api" freedom outbound).
+  static Future<String> fetchConfigThroughTunnel({
     void Function(int attempt, int total)? onAttempt,
     bool skipAdBypass = false,
-    bool quickReconnect = false,
   }) async {
     final deviceId = await CryptoService.getDeviceId();
 
@@ -33,6 +37,7 @@ class HivemindService {
     final url = _url('/session/status?device_id=$deviceId');
 
     // Dev: fake ad callback when running in debug mode.
+    // Goes through the tunnel to 10.254.254.1:5000 — same internal API.
     if (kDebugMode && !skipAdBypass) {
       try {
         final customData = jsonEncode({'device_id': deviceId, 'nonce': nonce});
@@ -42,7 +47,7 @@ class HivemindService {
       } catch (_) {}
     }
 
-    final maxAttempts = quickReconnect ? 1 : 5;
+    const maxAttempts = 5;
     for (int i = 1; i <= maxAttempts; i++) {
       if (_currentCallId != callId) throw Exception('Cancelled');
 

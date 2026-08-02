@@ -7,52 +7,36 @@ Versions follow [semver](https://semver.org/): MAJOR.MINOR.PATCH
 
 ## [3.0.0] — 2026-08
 
-### Protocol — TCP → XHTTP migration
-- **Transport changed from TCP to XHTTP** (H2 stream-up with Reality).
-  XTLS-Vision (`xtls-rprx-vision`) removed — it only applies to TCP+TLS/Reality,
-  not XHTTP. XHTTP provides H2 multiplexing, CDN passthrough, and path-based
-  hiding behind `/revolt`.
-- **`flow` field removed from VLESS client config.** Xray falls back to standard
-  TLS proxying inside the XHTTP tunnel — correct and intentional per official
-  VLESS inbound docs.
+### Architecture — domain-free client
+- **Zero domain strings in APK.** RKN has nothing to DNS-block. API calls go
+  through the Reality tunnel to `10.254.254.1:5000`, redirected to Flask by
+  Xray's `api` freedom outbound (`redirect: 127.0.0.1:5000`).
+- **Bootstrap tunnel.** Bundled Reality config in APK → connect → fetch real
+  per-session VLESS URL from inside the tunnel → reconnect. Bootstrap client
+  permanently in `xray_config_reality.json`, restricted by Xray routing to
+  internal API only.
+- `serverDomain` removed from `AppConfig`. `fetchConfigThroughTunnel()`
+  replaces `fetchConfigWithPolling()`. `connect()` rewritten.
 
-### Fixed — critical server bug
-- **Client hot-reload was broken.** `xray.py` called `xray api adi` (add inbounds,
-  zero arguments) after writing `config.json`. This was a no-op — Xray never
-  learned about new VLESS clients. Every session created since the modular
-  rewrite was silently rejected at the VLESS layer.
-  Fixed: `add_client()` now writes a temp JSON and calls `xray api adu`
-  (add users). `remove_client()` calls `xray api rmu -tag=X email`.
-  Verified against `XTLS/Xray-core` HandlerService source.
+### Protocol — TCP to XHTTP
+- Transport: TCP → XHTTP (H2 stream-up with Reality). No more XTLS-Vision,
+  no `flow` field. Path-hidden behind `/revolt`.
 
-### Fixed — client
-- **Missing XHTTP path in VLESS URL.** Server requires `path: "/revolt"` in
-  `xhttpSettings` but the VLESS URL never included a `path` parameter.
-  Fixed: `hivemind_service.dart` reads `xhttp_path` from `/session/status`,
-  falls back to `AppConfig.vlessPath`.
-- **`providerBundleIdentifier` mismatch.** Was `com.revoltvpn.app` — must match
-  Android `applicationId` (`com.paladinvpn.app`) for VPN service registration.
+### Fixed
+- Client hot-reload was silently broken — `xray api adi` no-op. Fixed:
+  `adu`/`rmu` commands per Xray HandlerService spec.
+- Missing XHTTP `path` param in VLESS URL — now reads `xhttp_path` from
+  `/session/status`.
+- `providerBundleIdentifier` was `com.revoltvpn.app` — must match
+  `com.paladinvpn.app` for VPN service registration.
+- Reality keypair generated (was placeholder). Throttle `uplinkOnly`/`downlinkOnly`
+  corrected (seconds, not bytes/sec). Fallback rate limits removed (fingerprint).
 
-### Fixed — server config
-- **Reality keypair generated.** Replaced `GENERATE_ME_WITH_xray_x25519`
-  placeholders in both `config.py` and `xray_config_reality.json` with a real
-  X25519 keypair. Private key stays on server; public key sent to clients.
-- **Throttle policy corrected.** `uplinkOnly`/`downlinkOnly` were set to
-  `187500` — that's 52 hours, not 1.5 Mbps. These fields are **seconds**
-  (idle timeouts), not bandwidth rate limiters (per official Policy docs).
-  Set to defaults (2s / 5s). Real 1.5 Mbps cap requires Linux `tc`.
-- **Fallback rate limits removed.** Live Reality docs warn fallback limiting
-  *"is itself a fingerprint and is not recommended."* Ports are firewalled
-  so fallback traffic is impossible anyway. Comment added for future reference.
-
-### Added
-- **`xhttp_path` in `/session/status` response.** Server now sends the XHTTP
-  path to clients, same pattern as `reality_pbk`/`reality_sid`/`reality_sni`.
-  `VLESS_XHTTP_PATH` constant in `config.py` is the single source of truth.
-- **Updated deployment guide** (`SERVER_DEPLOYMENT.md`) — full step-by-step
-  for XHTTP+Reality, verified against live Xray docs at xtls.github.io.
-- **Updated cheatsheet** (`scraped/VLESS_XRAY_CHEATSHEET.md`) — all sections
-  rewritten for XHTTP. Old TCP/Vision info replaced.
+### Server
+- `api` outbound + 3 routing rules in `xray_config_reality.json` (bootstrap
+  isolation + API routing). Permanent bootstrap client. Hivemind unchanged.
+- `xhttp_path` in `/session/status` response.
+- Full deployment guide: `SERVER_DEPLOYMENT.md`.
 
 ---
 

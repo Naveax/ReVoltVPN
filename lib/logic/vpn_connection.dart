@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_vless/flutter_vless.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
+import 'package:revoltvpn/logic/app_config.dart';
 
 enum VpnStatus {
   disconnected,
@@ -58,7 +59,8 @@ class VpnConnection extends ChangeNotifier {
       debugPrint('[VPN] VLESS init error (expected on emulator): $e');
     }
 
-    // Periodic server health check
+    // Periodic server health check — now goes through the tunnel
+    // (AppConfig.hivemindApiBase = http://10.254.254.1:5000/api)
     _checkHealth();
     _healthTimer =
         Timer.periodic(const Duration(seconds: 30), (_) => _checkHealth());
@@ -103,6 +105,18 @@ class VpnConnection extends ChangeNotifier {
     }
   }
 
+  // ── Connect (V2: bootstrap → poll → real tunnel) ────────────────────
+  //
+  // Flow:
+  //   1. Connect with hardcoded bootstrap VLESS URL (bundle in APK)
+  //   2. Through bootstrap tunnel, poll 10.254.254.1:5000 for real config
+  //   3. Disconnect bootstrap
+  //   4. Connect with real per-session VLESS URL
+  //
+  // Parameter quickReconnect is used by the session timer for throttle
+  // port-swaps — same bootstrap flow, but skip the AdMob bypass (session
+  // is already active).
+
   Future<bool> connect(
       {bool skipAdBypass = false, bool quickReconnect = false}) async {
     if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
@@ -116,7 +130,7 @@ class VpnConnection extends ChangeNotifier {
       return false;
     }
 
-    _setStatus(VpnStatus.connecting, 'Fetching config…');
+    _setStatus(VpnStatus.connecting, 'Establishing secure channel…');
     _errorMessage = null;
 
     if (kIsWeb) {
@@ -125,11 +139,36 @@ class VpnConnection extends ChangeNotifier {
       return true;
     }
 
-    String vlessUrl;
+    // ── Phase 1: Bootstrap tunnel ────────────────────────────────────
     try {
-      vlessUrl = await HivemindService.fetchConfigWithPolling(
+      final bootstrapParsed = FlutterVless.parse(AppConfig.bootstrapVlessUrl);
+      await _vless.startVless(
+        remark: 'ReVoltVPN-Bootstrap',
+        config: bootstrapParsed.getFullConfiguration(),
+      );
+    } catch (e) {
+      debugPrint('[VPN] Bootstrap tunnel error: $e');
+      _errorMessage = 'Tunnel failed to start.\nTry reconnecting.';
+      _setStatus(VpnStatus.error, 'Connection failed');
+      return false;
+    }
+
+    if (_cancelled) {
+      await _safeStopVless();
+      _setStatus(VpnStatus.disconnected, 'Tap to connect');
+      return false;
+    }
+
+    // Let the bootstrap tunnel stabilise before API calls
+    await Future.delayed(const Duration(seconds: 1));
+
+    // ── Phase 2: Fetch real config through bootstrap tunnel ──────────
+    _setStatus(VpnStatus.connecting, 'Fetching config…');
+
+    String realUrl;
+    try {
+      realUrl = await HivemindService.fetchConfigThroughTunnel(
         skipAdBypass: skipAdBypass,
-        quickReconnect: quickReconnect,
         onAttempt: (attempt, total) {
           if (!quickReconnect) {
             _setStatus(
@@ -138,21 +177,17 @@ class VpnConnection extends ChangeNotifier {
         },
       );
     } catch (e) {
-      debugPrint('[VPN] Hivemind config error: $e');
+      debugPrint('[VPN] Config fetch error: $e');
+      await _safeStopVless();
+
       final raw = e.toString().replaceAll('Exception: ', '');
       if (raw.contains('Cancelled')) {
-        // User tapped disconnect — silently abort
         return false;
       } else if (raw.contains('timed out') ||
           raw.contains('Session not activated')) {
         _errorMessage =
             'The server did not respond in time.\nCheck your connection and try again.';
         _setStatus(VpnStatus.error, 'Server unreachable');
-      } else if (raw.contains('SocketException') ||
-          raw.contains('Failed host lookup')) {
-        _errorMessage =
-            'Cannot reach the server.\nMake sure you have internet access.';
-        _setStatus(VpnStatus.error, 'No internet');
       } else {
         _errorMessage = raw;
         final short = raw.length > 35 ? '${raw.substring(0, 35)}…' : raw;
@@ -162,56 +197,59 @@ class VpnConnection extends ChangeNotifier {
     }
 
     if (_cancelled) {
+      await _safeStopVless();
       _setStatus(VpnStatus.disconnected, 'Tap to connect');
       return false;
     }
 
+    // ── Phase 3: Switch to real tunnel ───────────────────────────────
+    _setStatus(VpnStatus.connecting, 'Securing connection…');
+    await _safeStopVless();
+
     try {
-      final parsed = FlutterVless.parse(vlessUrl);
-      final config = parsed.getFullConfiguration();
-
+      final realParsed = FlutterVless.parse(realUrl);
       await _vless.startVless(
-        remark: parsed.remark.isNotEmpty ? parsed.remark : 'ReVoltVPN',
-        config: config,
+        remark: realParsed.remark.isNotEmpty ? realParsed.remark : 'ReVoltVPN',
+        config: realParsed.getFullConfiguration(),
       );
-
-      if (quickReconnect) {
-        _setStatus(VpnStatus.connected, 'Secured');
-      } else {
-        // Give the tunnel a moment to stabilise
-        _setStatus(VpnStatus.connecting, 'Verifying session…');
-        await Future.delayed(const Duration(seconds: 1));
-
-        bool sessionOk = false;
-        for (int attempt = 0; attempt < 2; attempt++) {
-          sessionOk = await HivemindService.verifySession();
-          if (sessionOk) break;
-          if (attempt == 0) {
-            debugPrint('[VPN] verifySession attempt 1 failed, retrying…');
-            await Future.delayed(const Duration(seconds: 2));
-          }
-        }
-
-        if (!sessionOk) {
-          debugPrint(
-              '[VPN] Tunnel started but no server session — tearing down.');
-          try {
-            await _vless.stopVless();
-          } catch (_) {}
-          _errorMessage = 'Session not confirmed by server.\nPlease try again.';
-          _setStatus(VpnStatus.error, 'Session rejected');
-          return false;
-        }
-
-        _setStatus(VpnStatus.connected, 'Secured');
-      }
-      return true;
     } catch (e) {
-      debugPrint('[VPN] VLESS tunnel error: $e');
+      debugPrint('[VPN] Real tunnel error: $e');
       _errorMessage = 'Tunnel failed to start.\nTry reconnecting.';
       _setStatus(VpnStatus.error, 'Connection failed');
       return false;
     }
+
+    if (quickReconnect) {
+      _setStatus(VpnStatus.connected, 'Secured');
+    } else {
+      // Give the tunnel a moment to stabilise, then verify
+      _setStatus(VpnStatus.connecting, 'Verifying session…');
+      await Future.delayed(const Duration(seconds: 1));
+
+      bool sessionOk = false;
+      for (int attempt = 0; attempt < 2; attempt++) {
+        sessionOk = await HivemindService.verifySession();
+        if (sessionOk) break;
+        if (attempt == 0) {
+          debugPrint('[VPN] verifySession attempt 1 failed, retrying…');
+          await Future.delayed(const Duration(seconds: 2));
+        }
+      }
+
+      if (!sessionOk) {
+        debugPrint(
+            '[VPN] Tunnel started but no server session — tearing down.');
+        try {
+          await _vless.stopVless();
+        } catch (_) {}
+        _errorMessage = 'Session not confirmed by server.\nPlease try again.';
+        _setStatus(VpnStatus.error, 'Session rejected');
+        return false;
+      }
+
+      _setStatus(VpnStatus.connected, 'Secured');
+    }
+    return true;
   }
 
   Future<void> disconnect({bool skipCleanup = false}) async {
@@ -254,6 +292,17 @@ class VpnConnection extends ChangeNotifier {
   Future<void> _checkHealth() async {
     _serverReachable = await HivemindService.checkHealth();
     notifyListeners();
+  }
+
+  Future<void> _safeStopVless() async {
+    try {
+      await _vless.stopVless().timeout(
+            const Duration(seconds: 5),
+            onTimeout: () => debugPrint('[VPN] Bootstrap stopVless() timed out.'),
+          );
+    } catch (e) {
+      debugPrint('[VPN] Bootstrap stop error: $e');
+    }
   }
 
   @override
