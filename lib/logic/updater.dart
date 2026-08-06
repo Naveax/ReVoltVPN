@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -115,7 +116,8 @@ class Updater {
   }
 
   static Future<void> check(BuildContext context) async {
-    final localVersion = ReVoltApp.appVersion;
+    final info = await PackageInfo.fromPlatform();
+    final localVersion = info.version;
     if (localVersion.isEmpty) {
       _showSnackBar(context, 'Could not determine app version',
           isError: true);
@@ -176,7 +178,7 @@ class Updater {
         content: Row(
           children: [
             Icon(isError ? Icons.error_outline : Icons.check_circle,
-                color: isError ? AppColors.red400 : AppColors.green400,
+                color: isError ? AppColors.red : AppColors.green,
                 size: 18),
             const SizedBox(width: 8),
             Text(message),

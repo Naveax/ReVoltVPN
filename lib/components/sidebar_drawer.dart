@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/components/sidebar_contents/gdpr_button.dart';
 import 'package:revoltvpn/components/sidebar_contents/privacy_policy_button.dart';
@@ -6,10 +7,34 @@ import 'package:revoltvpn/components/sidebar_contents/info_button.dart';
 import 'package:revoltvpn/components/sidebar_contents/discord_link_button.dart';
 import 'package:revoltvpn/components/sidebar_contents/website_button.dart';
 import 'package:revoltvpn/logic/updater.dart';
-import 'package:revoltvpn/main.dart';
 
-class SidebarDrawer extends StatelessWidget {
+class SidebarDrawer extends StatefulWidget {
   const SidebarDrawer({super.key});
+
+  @override
+  State<SidebarDrawer> createState() => _SidebarDrawerState();
+}
+
+class _SidebarDrawerState extends State<SidebarDrawer> {
+  String _version = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadVersion();
+  }
+
+  Future<void> _loadVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      debugPrint('[Sidebar] PackageInfo version: ${info.version} '
+          '(build: ${info.buildNumber})');
+      if (mounted) setState(() => _version = info.version);
+    } catch (e) {
+      debugPrint('[Sidebar] PackageInfo failed: $e');
+      if (mounted) setState(() => _version = '?.?.?');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -109,7 +134,7 @@ class SidebarDrawer extends StatelessWidget {
 
             Padding(
               padding: const EdgeInsets.all(20),
-              child: Text('ReVoltVPN · v${ReVoltApp.appVersion}', textAlign: TextAlign.center,
+              child: Text('ReVoltVPN · v$_version', textAlign: TextAlign.center,
                 style: const TextStyle(color: AppColors.slate, fontSize: 11, letterSpacing: 1),
               ),
             ),

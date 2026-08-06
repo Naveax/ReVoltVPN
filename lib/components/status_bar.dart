@@ -26,14 +26,18 @@ class StatusBar extends StatelessWidget {
           ),
           child: Row(
             children: [
-              // Connection status
+              // Connection status — wrapped in Flexible to prevent overflow
+              // on narrow screens (the Row must fit both the status text
+              // and the online dot without RenderFlex errors).
               if (isConnected) ...[
                 Image.asset('assets/finland_flag_256.png', width: 20, height: 20),
                 const SizedBox(width: 8),
-                const Text('Helsinki, Finland', style: TextStyle(
-                  color: AppColors.accent, fontWeight: FontWeight.w600,
-                  fontSize: 13, letterSpacing: 0.5,
-                )),
+                const Flexible(
+                  child: Text('Helsinki, Finland', style: TextStyle(
+                    color: AppColors.accent, fontWeight: FontWeight.w600,
+                    fontSize: 13, letterSpacing: 0.5,
+                  ), overflow: TextOverflow.ellipsis),
+                ),
               ] else ...[
                 Icon(
                   isConnecting ? Icons.sync : Icons.shield_outlined,
@@ -41,11 +45,14 @@ class StatusBar extends StatelessWidget {
                   color: isConnecting ? AppColors.accent : AppColors.slate70,
                 ),
                 const SizedBox(width: 8),
-                Text(
-                  vpn.statusMessage.toUpperCase(),
-                  style: TextStyle(
-                    color: isConnecting ? AppColors.accent : AppColors.slate70,
-                    fontWeight: FontWeight.w600, fontSize: 13, letterSpacing: 1,
+                Flexible(
+                  child: Text(
+                    vpn.statusMessage.toUpperCase(),
+                    style: TextStyle(
+                      color: isConnecting ? AppColors.accent : AppColors.slate70,
+                      fontWeight: FontWeight.w600, fontSize: 13, letterSpacing: 1,
+                    ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],

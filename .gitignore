@@ -62,6 +62,7 @@ swarm_total.json
 
 # ── Internal docs (not for public repo) ────────────────────────────────────
 AGENTS.md
+FRONTEND_POLISH_REVIEW.md
 RUNNING.md
 SERVER_DEPLOYMENT.md
 SERVER_NOTES.md
