@@ -5,7 +5,7 @@ Versions follow [semver](https://semver.org/): MAJOR.MINOR.PATCH
 
 ---
 
-## [3.0.0] — 2026-08
+## [3.1.0] — 2026-08-06
 
 ### Architecture — domain-free client
 - **Zero domain strings in APK.** RKN has nothing to DNS-block. API calls go
