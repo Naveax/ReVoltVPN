@@ -23,6 +23,11 @@ Versions follow [semver](https://semver.org/): MAJOR.MINOR.PATCH
   no `flow` field. Path-hidden behind `/revolt`.
 
 ### Fixed
+- **RenderFlex overflow** — status bar text wrapped in `Flexible` with
+  `TextOverflow.ellipsis` to prevent overflow on narrow screens (≤360dp).
+- **Circular import** — removed `import 'package:revoltvpn/main.dart'` from
+  `sidebar_drawer.dart`. `SidebarDrawer` converted to `StatefulWidget`;
+  version footer loaded via `PackageInfo.fromPlatform()`.
 - Client hot-reload was silently broken — `xray api adi` no-op. Fixed:
   `adu`/`rmu` commands per Xray HandlerService spec.
 - Missing XHTTP `path` param in VLESS URL — now reads `xhttp_path` from
@@ -31,6 +36,11 @@ Versions follow [semver](https://semver.org/): MAJOR.MINOR.PATCH
   `com.paladinvpn.app` for VPN service registration.
 - Reality keypair generated (was placeholder). Throttle `uplinkOnly`/`downlinkOnly`
   corrected (seconds, not bytes/sec). Fallback rate limits removed (fingerprint).
+
+### Changed
+- **Timer box spinner removed** — the "Connecting…"/"Syncing…" spinner under
+  the countdown was redundant with the connect button's spinner. Timer card
+  is now a clean countdown only (gray '00:00:00' when idle).
 
 ### Server
 - `api` outbound + 3 routing rules in `xray_config_reality.json` (bootstrap
