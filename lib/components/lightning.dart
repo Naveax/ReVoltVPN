@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
+import 'package:revoltvpn/screens/settings/in_settings/lightning.dart';
 
 /// 2D lightning bolt — a jagged yellow line from top to bottom with glow.
 
@@ -77,6 +78,7 @@ class _LightningEffectState extends State<LightningEffect>
 
   @override
   Widget build(BuildContext context) {
+    if (!lightningEnabled) return const SizedBox.shrink();
     return AnimatedBuilder(
       animation: _ctrl,
       builder: (_, child) {

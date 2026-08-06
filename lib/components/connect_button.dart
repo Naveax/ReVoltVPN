@@ -5,6 +5,7 @@ import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/logic/session_timer.dart';
 import 'package:revoltvpn/logic/ad_manager.dart';
+import 'package:revoltvpn/screens/settings/in_settings/haptic.dart';
 
 class ConnectButton extends StatefulWidget {
   const ConnectButton({super.key});
@@ -56,8 +57,6 @@ class _ConnectButtonState extends State<ConnectButton>
     if (now.difference(_lastTap).inMilliseconds < 1000) return;
     _lastTap = now;
 
-    HapticFeedback.lightImpact();
-
     final vpn = context.read<VpnConnection>();
     final timer = context.read<SessionTimer>();
     final ad = context.read<AdManager>();
@@ -67,6 +66,7 @@ class _ConnectButtonState extends State<ConnectButton>
       _busy = false;
       timer.stop();
       await vpn.disconnect();
+      if (hapticEnabled) HapticFeedback.lightImpact();
       return;
     }
 
@@ -84,7 +84,10 @@ class _ConnectButtonState extends State<ConnectButton>
         return;
       }
       final ok = await vpn.connect();
-      if (ok) timer.start();
+      if (ok) {
+        timer.start();
+        if (hapticEnabled) HapticFeedback.lightImpact();
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }

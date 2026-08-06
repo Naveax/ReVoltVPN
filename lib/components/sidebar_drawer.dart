@@ -6,6 +6,7 @@ import 'package:revoltvpn/components/sidebar_contents/privacy_policy_button.dart
 import 'package:revoltvpn/components/sidebar_contents/info_button.dart';
 import 'package:revoltvpn/components/sidebar_contents/discord_link_button.dart';
 import 'package:revoltvpn/components/sidebar_contents/website_button.dart';
+import 'package:revoltvpn/components/sidebar_contents/settings.dart';
 import 'package:revoltvpn/logic/updater.dart';
 
 class SidebarDrawer extends StatefulWidget {
@@ -118,6 +119,15 @@ class _SidebarDrawerState extends State<SidebarDrawer> {
               onTap: () {
                 Navigator.of(context).pop();
                 WebsiteButton.launchWebsite();
+              },
+            ),
+
+            _Row(
+              icon: Icons.settings,
+              label: 'Settings',
+              onTap: () {
+                Navigator.of(context).pop();
+                SettingsButton.open(context);
               },
             ),
 

@@ -1,6 +1,7 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:revoltvpn/screens/settings/in_settings/rain.dart';
 
 /// Subtle animated rain effect — sits behind all UI as a full-screen overlay.
 ///
@@ -78,6 +79,7 @@ class _RainEffectState extends State<RainEffect>
 
   @override
   Widget build(BuildContext context) {
+    if (!rainEnabled) return const SizedBox.shrink();
     return CustomPaint(
       painter: _RainPainter(
         drops: _drops,
