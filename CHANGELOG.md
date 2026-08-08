@@ -5,6 +5,11 @@ Versions follow [semver](https://semver.org/): MAJOR.MINOR.PATCH
 
 ---
 
+## [3.2.2] — 2026-08-08
+
+### Fixed
+- Updated Discord invite link.
+
 ## [3.2.1] — 2026-08-08
 
 ### Google Play compliance
