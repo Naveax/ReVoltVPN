@@ -5,6 +5,13 @@ Versions follow [semver](https://semver.org/): MAJOR.MINOR.PATCH
 
 ---
 
+## [3.2.1] — 2026-08-08
+
+### Google Play compliance
+- Added first-launch data disclosure dialog ("Before you connect") explaining
+  that connection duration and data usage are logged for quota enforcement, and
+  that traffic content is never monitored.
+
 ## [3.2.0] — 2026-08-08
 
 ### DPI hardening

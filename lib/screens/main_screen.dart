@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/components/connect_button.dart';
+import 'package:revoltvpn/components/data_disclosure_dialog.dart';
 import 'package:revoltvpn/components/sidebar_drawer.dart';
 import 'package:revoltvpn/components/timer_box.dart';
 import 'package:revoltvpn/components/speed_box.dart';
@@ -9,8 +10,22 @@ import 'package:revoltvpn/components/support_button.dart';
 import 'package:revoltvpn/components/rain.dart';
 import 'package:revoltvpn/components/lightning.dart';
 
-class MainScreen extends StatelessWidget {
+class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
+
+  @override
+  State<MainScreen> createState() => _MainScreenState();
+}
+
+class _MainScreenState extends State<MainScreen> {
+  @override
+  void initState() {
+    super.initState();
+    // Show data disclosure on first launch — Google Play Data safety requirement.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      DataDisclosureDialog.showIfFirstLaunch(context);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
