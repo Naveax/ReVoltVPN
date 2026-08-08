@@ -4,12 +4,22 @@
 
 ReVoltVPN is a free VPN service built and operated by ReVolt Team.
 
+## In-app disclosure
+
+When you first open the app, we show a brief summary of this policy before you connect. You can review this full policy at any time from the sidebar menu.
+
 ## What we collect
 
 We collect the minimum required to operate the service:
 
 - A randomly generated device ID created on your phone. This is not linked to your identity in any way.
-- Your active session status and data usage for the current session only. Sessions last up to 1 hour, then expire. Session data is stored in memory and deleted when your session ends.
+- Your connection duration and data usage for the current session, linked to your device ID. This is used solely to enforce the per-session quota (see below).
+
+## Session quotas
+
+Each session lasts up to **2 hours** or **10 GB** of data — whichever comes first. When your session expires or hits the data cap, the tunnel disconnects. You can start a new session by watching another ad. Session data (duration and bytes transferred) is stored in memory and deleted when your session ends.
+
+Support ads (the "Support us" button) extend an active session by 30 minutes and add extra data allowance.
 
 ## Operational logs
 
@@ -18,7 +28,8 @@ We keep a short in-memory log buffer (last 200 lines) for debugging and server h
 ## What we do not collect
 
 - We do not collect your name, email, or any personal information.
-- We do not log your internet traffic or browsing history.
+- We do not log your internet traffic, browsing history, DNS queries, or destination IPs.
+- We do not inspect or store the content of your traffic.
 - We do not sell or share any data with third parties.
 
 ## Ads & Consent
@@ -27,7 +38,7 @@ ReVoltVPN uses Google AdMob to display rewarded video ads. On first launch, user
 
 ## Your traffic
 
-Your internet traffic is routed through our server located in Finland. We do not inspect, log, or store your traffic. We only track total bytes transferred per session (for quota enforcement and blocking abusers) — no packet contents, no destination IPs, no DNS queries.
+Your internet traffic is routed through our server located in Finland. We do not inspect, log, or store your traffic. We only track total bytes transferred per session for quota enforcement — no packet contents, no destination IPs, no DNS queries.
 
 ## Contact
 
