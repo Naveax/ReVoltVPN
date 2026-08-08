@@ -11,10 +11,10 @@ A free VPN app for Android. Open-source client, transparent infrastructure. Watc
 ## How it works
 
 1. Watch a short rewarded ad
-2. Server creates a temporary VLESS session (60 min / 4 GB)
-3. Your traffic routes through a single server in Finland
-4. When data runs out, you're throttled to 1.5 Mbps instead of cut off
-5. Session expires — watch another ad or move on
+2. Server creates a temporary VLESS session (2 hours / 10 GB)
+3. Your traffic routes through a single server in Finland at full speed
+4. When time or data runs out, session ends — watch another ad to continue
+5. No throttling, no slow lane, no mid-session punishment
 
 No email. No password. No payment. The ad pays for the server.
 

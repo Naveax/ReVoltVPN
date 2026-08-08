@@ -8,6 +8,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/logic/session_timer.dart';
 import 'package:revoltvpn/logic/ad_manager.dart';
+import 'package:revoltvpn/logic/server_list.dart';
 import 'package:revoltvpn/logic/consent_manager.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/screens/intro.dart';
@@ -59,6 +60,7 @@ class ReVoltApp extends StatelessWidget {
           update: (_, vpn, prev) => prev ?? SessionTimer(vpnConnection: vpn),
         ),
         ChangeNotifierProvider(create: (_) => AdManager()),
+        ChangeNotifierProvider(create: (_) => ServerList()..init()),
       ],
       child: MaterialApp(
         title: 'ReVolt VPN',

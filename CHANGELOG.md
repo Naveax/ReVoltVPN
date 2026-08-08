@@ -5,6 +5,40 @@ Versions follow [semver](https://semver.org/): MAJOR.MINOR.PATCH
 
 ---
 
+## [3.2.0] — 2026-08-08
+
+### DPI hardening
+- Spoof Chrome-on-Android User-Agent on all API calls instead of `Dart/3.x`.
+- Renamed domain from `getrevolt.app` to `userevolt.app`.
+
+### Branding
+- App name changed from "REVOLT VPN" to "Revolt VPN" across manifest, splash,
+  notification, and VLESS URL remark.
+
+### Notification
+- Removed duplicate `flutter_local_notifications` notification. Only the
+  Android VPN foreground-service notification remains — non-swipeable.
+- Patched `flutter_vless` native code to use custom notification icon
+  (`@drawable/notification_icon`) with dark background (`#0D1117`).
+
+### Connection reliability
+- Merged five separate disconnect paths into a single idempotent
+  `_doDisconnect()` gate. Eliminated race between timer ticks and VPN
+  teardown where the countdown could briefly show -1.
+- `stopVless()` timeout (5 s) now correctly shows an error instead of
+  silently pretending the VPN disconnected while the tunnel was still alive.
+
+### AdMob bypass
+- `kDebugMode` guard removed — the debug AdMob callback now fires in release
+  builds so release APKs can create sessions without real ads during testing.
+  The real gate is `ADMOB_BYPASS` on the server.
+
+### Fixed
+- **Notification icon:** Replaced five density-specific `ic_launcher.png`
+  files with `notification_icon.png`, then reverted to avoid changing the
+  home-screen icon. The custom icon is now injected through flutter_vless's
+  `initializeVless()` parameters.
+
 ## [3.1.0] — 2026-08-06
 
 ### Architecture — domain-free client
@@ -83,7 +117,7 @@ Versions follow [semver](https://semver.org/): MAJOR.MINOR.PATCH
 
 ### Added
 - **Update checker** in sidebar — polls GitHub Releases API.
-- **Website button** in sidebar → opens `https://getrevolt.app`.
+- **Website button** in sidebar → opens `https://userevolt.app`.
 - **Timer syncing indicator** — spinner during handshake.
 - Dependency: `package_info_plus`.
 

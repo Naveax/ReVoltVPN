@@ -64,8 +64,7 @@ class _ConnectButtonState extends State<ConnectButton>
 
     if (vpn.status == VpnStatus.connected || vpn.status == VpnStatus.connecting) {
       _busy = false;
-      timer.stop();
-      await vpn.disconnect();
+      await timer.disconnect();
       if (hapticEnabled) HapticFeedback.lightImpact();
       return;
     }

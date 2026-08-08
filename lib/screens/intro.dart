@@ -90,7 +90,7 @@ class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
           ),
           const SizedBox(height: 4),
           const Text(
-            'REVOLT VPN',
+            'Revolt VPN',
             style: TextStyle(
               color: AppColors.textWhite,
               fontSize: 28,

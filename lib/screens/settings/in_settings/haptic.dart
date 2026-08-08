@@ -2,16 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 
-// ── lib/screens/settings/in_settings/haptic.dart ────────────────────────────
-// Toggle for light haptic feedback on successful connect/disconnect.
-//
-// Top-level bool (hapticEnabled) is read synchronously by connect_button.dart —
-// no await, no SharedPreferences lookup on every tap. The tile loads the
-// persisted value once and keeps the global in sync on every toggle.
-//
-// SharedPreferences key: haptic_feedback_enabled (default: false — off).
-
-// lib/components/connect_button.dart reads this directly. Keep it exported.
 bool hapticEnabled = false;
 
 class HapticFeedbackTile extends StatefulWidget {

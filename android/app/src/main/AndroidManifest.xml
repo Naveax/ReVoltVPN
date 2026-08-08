@@ -14,11 +14,12 @@
    </queries>
 
    <application
-        android:label="REVOLT VPN"
+        android:label="Revolt VPN"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="false"
-        android:allowBackup="false">
+        android:allowBackup="false"
+        android:extractNativeLibs="true">
 
         <!-- AdMob App ID — injected at build time from android/admob.properties -->
         <meta-data

@@ -73,7 +73,32 @@ class AdManager extends ChangeNotifier {
     return _loadCompleter!.future;
   }
 
+  // ── Show ad (or debug bypass) ─────────────────────────────────────
+
   Future<bool> showAd(String adType) async {
+    // Debug bypass: fire fake AdMob callback so support ads work in dev.
+    // The server's ADMOB_BYPASS must be True for this to succeed.
+    if (!adsEnabled && kDebugMode) {
+      final deviceId = await CryptoService.getDeviceId();
+      final nonce = '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
+      HivemindService.setExpectedNonce(nonce);
+      try {
+        final customData = jsonEncode({
+          'device_id': deviceId,
+          'ad_type': adType,
+          'nonce': nonce,
+        });
+        final fakeUrl = Uri.parse(
+            '${AppConfig.hivemindApiPublic}/admob/callback'
+            '?signature=test&key_id=test'
+            '&custom_data=${Uri.encodeComponent(customData)}');
+        await HivemindService.directGet(fakeUrl, timeout: const Duration(seconds: 8));
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
     if (!adsEnabled) return false;
 
     if (!_isAdLoaded || _rewardedAd == null) {
@@ -123,7 +148,6 @@ class AdManager extends ChangeNotifier {
       },
     );
 
-    // Show with SSV options
     _rewardedAd!.setServerSideOptions(ssvOptions);
     await _rewardedAd!.show(
       onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {

@@ -6,7 +6,7 @@ class WebsiteButton extends StatelessWidget {
   const WebsiteButton({super.key});
 
   static Future<void> launchWebsite() async {
-    final Uri url = Uri.parse('https://getrevolt.app');
+    final Uri url = Uri.parse('https://userevolt.app');
     if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
       debugPrint('Could not launch $url');
     }

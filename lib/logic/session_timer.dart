@@ -1,11 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
+import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
-import 'package:revoltvpn/components/notification.dart';
 
 class SessionTimer extends ChangeNotifier {
   Timer? _timer;
@@ -19,15 +18,9 @@ class SessionTimer extends ChangeNotifier {
   bool _hasSyncedOnce       = false;
   int  _consecutiveFailures = 0;
   bool _isDisconnecting     = false;
-  bool _userInitiatedStop   = false;
   bool _syncInProgress      = false;
 
-
-  int? _currentPort;
-  bool _portSwitchInProgress = false;
-
   static const int _maxConsecutiveFailures = 3;
-
   static const int _maxOfflineSeconds = 120;
   int _offlineSeconds = 0;
 
@@ -35,9 +28,6 @@ class SessionTimer extends ChangeNotifier {
 
   int    _lastUsedBytes     = 0;
   double _currentSpeedKBps  = 0.0;
-
-  String _lastNotifTime  = '';
-  String _lastNotifSpeed = '';
 
   SessionTimer({required this.vpnConnection}) {
     vpnConnection.addListener(_onVpnConnectionChanged);
@@ -58,11 +48,8 @@ class SessionTimer extends ChangeNotifier {
     return '$h:$m:$s';
   }
 
-  // Lifecycle
-
-  /// Fires whenever VpnConnection state changes.
   void _onVpnConnectionChanged() {
-
+    // Restore timer if VPN was already running at app launch.
     if (vpnConnection.status == VpnStatus.connected &&
         !isRunning &&
         vpnConnection.isStartupRestoration) {
@@ -70,21 +57,18 @@ class SessionTimer extends ChangeNotifier {
       return;
     }
 
-
-    // The underlying VLESS tunnel may briefly flap.  If we weren't
-    // explicitly stopped by the user, resume where we left off.
+    // Resume after brief tunnel disconnection.
     if (vpnConnection.status == VpnStatus.connected &&
         !isRunning &&
-        !_userInitiatedStop &&
+        !_isDisconnecting &&
         _hasSyncedOnce) {
       debugPrint('[Timer] VPN reconnected after blip — resuming.');
       _resumeTicking();
       return;
     }
 
-
-    if (vpnConnection.status == VpnStatus.disconnected && isRunning) {
-      _stopInternal();
+    if (vpnConnection.status == VpnStatus.disconnected && !_isDisconnecting) {
+      _doDisconnect('VPN tunnel dropped');
     }
   }
 
@@ -98,47 +82,32 @@ class SessionTimer extends ChangeNotifier {
     _consecutiveFailures = 0;
     _offlineSeconds      = 0;
     _isDisconnecting     = false;
-    _userInitiatedStop   = false;
-    _currentPort         = null;
-    _portSwitchInProgress = false;
 
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), _tick);
 
     notifyListeners();
-
-    // Kick off the first sync — the UI will show real data as soon as it lands.
     _syncWithHivemind();
   }
 
   void _tick(Timer t) {
-
-    // Decrement the local clock as long as we're not in a network blackout.
+    if (_isDisconnecting) return;
     if (_hasSyncedOnce && _consecutiveFailures < _maxConsecutiveFailures) {
       if (_remainingSeconds > 0) {
         _remainingSeconds--;
       }
     }
 
-
-    // If the server has been unreachable for too long, kill the VPN.
-    // Don't let an orphaned tunnel keep running forever.
     if (_consecutiveFailures >= _maxConsecutiveFailures) {
       _offlineSeconds++;
       if (_offlineSeconds >= _maxOfflineSeconds) {
-        debugPrint('[Timer] Offline for $_maxOfflineSeconds s — forcing disconnect.');
-        _forceDisconnect('Session lost — server unreachable');
+        _doDisconnect('Server unreachable');
         return;
       }
     }
 
-
-    // When our clock hits zero, disconnect immediately.  Don't wait for the
-    // next server poll — the session is over and the user expects the VPN
-    // to drop right now.
     if (_hasSyncedOnce && _remainingSeconds <= 0) {
-      debugPrint('[Timer] Local countdown expired — disconnecting.');
-      _forceDisconnect('Session expired');
+      _doDisconnect('Session expired');
       return;
     }
 
@@ -147,67 +116,52 @@ class SessionTimer extends ChangeNotifier {
       _syncWithHivemind();
     }
 
-
-    // Uses the locally-decremented time so the notification stays in sync
-    // with the in-app display, not gated behind the 5 s server poll.
-    if (_hasSyncedOnce) {
-      final speedText = _currentSpeedKBps > 0.5
-          ? '${_currentSpeedKBps.toStringAsFixed(1)} KB/s'
-          : 'Idle';
-      if (formatted != _lastNotifTime || speedText != _lastNotifSpeed) {
-        _lastNotifTime  = formatted;
-        _lastNotifSpeed = speedText;
-        VpnNotificationManager.showOrUpdateStatus(
-          timeLeft: formatted,
-          speedKbps: speedText,
-        );
-      }
-    }
-
     notifyListeners();
   }
 
-  void _forceDisconnect(String reason) {
-    if (_isDisconnecting) return; // Already tearing down
-    debugPrint('[Timer] $reason — forcing disconnect.');
+  Future<void> disconnect({String reason = 'User requested'}) async {
+    await _doDisconnect(reason);
+  }
+
+  Future<void> _doDisconnect(String reason) async {
+    if (_isDisconnecting) return;
+    _isDisconnecting = true;
+    debugPrint('[Timer] Disconnecting: $reason');
+
     _timer?.cancel();
     _timer = null;
     _currentSpeedKBps = 0.0;
-    _isDisconnecting = true;
-    VpnNotificationManager.cancel();
+    _remainingSeconds = 0;
+    _hasSyncedOnce = false;
     notifyListeners();
-    // Await the disconnect so the tunnel is confirmed down before we
-    // consider the session fully cleaned up.
-    vpnConnection.disconnect();
+
+    await vpnConnection.disconnect();
+
+    if (!_isDisconnecting) return;
+    _isDisconnecting = false;
+    notifyListeners();
   }
 
-
-
   Future<void> _syncWithHivemind() async {
-    // Never sync while the user is explicitly disconnecting,
-    // or while another sync is already in flight.
     if (_isDisconnecting || _syncInProgress) return;
     _syncInProgress = true;
     try {
       final deviceId = await CryptoService.getDeviceId();
       final url = Uri.parse(
-          '${AppConfig.hivemindApiBase}/session/status?device_id=$deviceId');
-      final response = await http.get(url).timeout(const Duration(seconds: 5));
+          '${AppConfig.hivemindApiPublic}/session/status?device_id=$deviceId');
+      final response = await HivemindService.directGet(url);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
 
         final bool active = data['active'] ?? false;
         if (!active) {
-          // Server killed the session — tear down and wait for it.
-          stop();
-          await vpnConnection.disconnect();
+          await _doDisconnect('Server ended session');
           return;
         }
 
         _remainingSeconds = data['expires_in_seconds'] ?? _remainingSeconds;
         _usedBytes        = data['used_bytes']        ?? _usedBytes;
-
 
         final int deltaBytes = _usedBytes - _lastUsedBytes;
         if (_hasSyncedOnce && deltaBytes > 0) {
@@ -217,32 +171,15 @@ class SessionTimer extends ChangeNotifier {
         }
         _lastUsedBytes = _usedBytes;
 
-
-        // Port change — throttle engaged or disengaged
-        final serverPort = data['vless_port'];
-        if (serverPort != null &&
-            _currentPort != null &&
-            serverPort != _currentPort &&
-            !_portSwitchInProgress) {
-          debugPrint('[Timer] Port changed $_currentPort → $serverPort — reconnecting…');
-          _currentPort = serverPort;
-          _portSwitchInProgress = true;
-
-          _timer?.cancel();
-          _isDisconnecting = true;
-          await vpnConnection.disconnect(skipCleanup: true);
-          await vpnConnection.connect(skipAdBypass: true, quickReconnect: true);
-
-          _resumeTicking();
-          _portSwitchInProgress = false;
+        final capExhausted = data['cap_exhausted'] ?? false;
+        if (capExhausted) {
+          await _doDisconnect('Data cap reached');
           return;
         }
-        _currentPort = serverPort;
 
         _consecutiveFailures = 0;
         _offlineSeconds = 0;
         _hasSyncedOnce = true;
-
         notifyListeners();
       } else {
         _markSyncFailure();
@@ -258,22 +195,8 @@ class SessionTimer extends ChangeNotifier {
   void _markSyncFailure() {
     _consecutiveFailures++;
     if (_consecutiveFailures >= _maxConsecutiveFailures) {
-      notifyListeners(); // let the UI show "Reconnecting…"
+      notifyListeners();
     }
-  }
-
-
-
-  void stop() {
-    _userInitiatedStop = true;
-    _isDisconnecting = true;
-    _timer?.cancel();
-    _timer = null;
-    _currentSpeedKBps = 0.0;
-    _hasSyncedOnce = false;
-    _remainingSeconds = 0;
-    VpnNotificationManager.cancel();
-    notifyListeners();
   }
 
   void _resumeTicking() {
@@ -284,21 +207,10 @@ class SessionTimer extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _stopInternal() {
-    _isDisconnecting = true;
-    _timer?.cancel();
-    _timer = null;
-    _currentSpeedKBps = 0.0;
-    _hasSyncedOnce = false;
-    VpnNotificationManager.cancel();
-    notifyListeners();
-  }
-
   @override
   void dispose() {
     vpnConnection.removeListener(_onVpnConnectionChanged);
     _timer?.cancel();
-    VpnNotificationManager.cancel();
     super.dispose();
   }
 }
