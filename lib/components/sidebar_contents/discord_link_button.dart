@@ -6,7 +6,7 @@ class DiscordLinkButton extends StatelessWidget {
   const DiscordLinkButton({super.key});
 
   static Future<void> launchDiscord() async {
-    final Uri url = Uri.parse('https://discord.gg/revoltvpn');
+    final Uri url = Uri.parse('https://discord.gg/y7SXpjr2ff');
     if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
       debugPrint('Could not launch $url');
     }
