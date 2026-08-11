@@ -4,7 +4,7 @@
 
 # ReVoltVPN
 
-A free VPN app for Android. Open-source client, transparent infrastructure. Watch an ad, get 60 minutes of full-speed traffic — no accounts, no logs, no subscriptions.
+A free VPN app for Android. Open-source client, transparent infrastructure. Watch an ad, get 2 hours of full-speed traffic — no accounts, no logs, no subscriptions.
 
 ---
 
