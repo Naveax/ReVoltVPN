@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_vless/flutter_vless.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
@@ -33,12 +32,24 @@ class VpnConnection extends ChangeNotifier {
 
   late final FlutterVless _vless;
   bool _initialized = false;
+  final Completer<void> _readyCompleter = Completer<void>();
+  Future<void> get ready => _readyCompleter.future;
 
   VpnConnection() {
     _init();
   }
 
   Future<void> _init() async {
+    try {
+      await _startEngine();
+    } catch (e) {
+      debugPrint('[VPN] Engine init failed: $e');
+    } finally {
+      if (!_readyCompleter.isCompleted) _readyCompleter.complete();
+    }
+  }
+
+  Future<void> _startEngine() async {
     if (kIsWeb) return;
 
     _vless = FlutterVless(
@@ -177,22 +188,10 @@ class VpnConnection extends ChangeNotifier {
 
     try {
       final parsed = FlutterVless.parse(realUrl);
-      final configJson =
-          jsonDecode(parsed.getFullConfiguration()) as Map<String, dynamic>;
-
-      // Inject HTTP inbound for tunnel-internal API calls.
-      final inbounds = (configJson['inbounds'] as List?) ?? [];
-      inbounds.add({
-        'tag': 'http-proxy',
-        'port': 10808,
-        'listen': '127.0.0.1',
-        'protocol': 'http',
-      });
-      configJson['inbounds'] = inbounds;
 
       await _vless.startVless(
         remark: parsed.remark.isNotEmpty ? parsed.remark : 'Revolt VPN',
-        config: jsonEncode(configJson),
+        config: parsed.getFullConfiguration(),
       );
     } catch (e) {
       debugPrint('[VPN] Tunnel start error: $e');

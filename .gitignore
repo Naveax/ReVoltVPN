@@ -1,8 +1,15 @@
 # =============================================================================
 #  ReVoltVPN — .gitignore
+#
+#  Type-based by design. This repo ships Dart, Kotlin, XML and image assets;
+#  everything else is excluded by extension or directory rather than by being
+#  listed individually. A new file is therefore ignored by default instead of
+#  needing to be named here, and this file does not enumerate what it protects.
+#
+#  Machine-local exclusions live in .git/info/exclude, which is never committed.
 # =============================================================================
 
-# ── OS & Editor ────────────────────────────────────────────────────────────
+# ── OS & editor ────────────────────────────────────────────────────────────
 *.swp
 .DS_Store
 .atom/
@@ -12,11 +19,7 @@
 .idea/
 .vscode/
 
-# ── Python ─────────────────────────────────────────────────────────────────
-__pycache__/
-*.pyc
-
-# ── Flutter / Dart ─────────────────────────────────────────────────────────
+# ── Flutter / Dart build output ────────────────────────────────────────────
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
@@ -30,7 +33,7 @@ local_packages/*/.dart_tool/
 **/doc/api/
 **/ios/Flutter/.last_build_id
 
-# ── Android ────────────────────────────────────────────────────────────────
+# ── Android build output ───────────────────────────────────────────────────
 **/android/**/gradle-wrapper.jar
 **/android/.gradle
 **/android/captures/
@@ -43,80 +46,45 @@ local_packages/*/.dart_tool/
 **/android/app/build/
 **/android/app/crashlytics-build.properties
 
-# ── Secrets & Keystores ───────────────────────────────────────────────────
+# ── Python bytecode ────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+
+# ── Credentials & machine-local config ─────────────────────────────────────
 *.keystore
 *.jks
 android/key.properties
 android/admob.properties
-
-# App config (contains real IPs/IDs — use example as template)
 lib/logic/app_config.dart
+devtools_options.yaml
 
-# ── Hivemind server (deployed separately, not part of the Flutter repo) ───
-hivemind/
-server_hivemind_5_0.py
-swarm_watch.py
-nginx_hivemind_reality.conf
-xray_config_reality.json
-swarm_total.json
-
-# ── Internal docs (not for public repo) ────────────────────────────────────
-AGENTS.md
-FRONTEND_POLISH_REVIEW.md
-RUNNING.md
-SERVER_DEPLOYMENT.md
-SERVER_NOTES.md
-SERVER_SETUP.md
-REALITY_MIGRATION_PLAN.md
-SECURITY_HARDENING.md
-VLESS_APP_CONTRACT.md
-UI_POSITIONING.md
-
-# ── Technical debt & security audits ───────────────────────────────────────
-technical_debt_*.md
-technical_debt_*_answer.md
-
-# ── Backups & reference files ──────────────────────────────────────────────
-backups/
-backup/
-hivemind_backup.py
-server full picture.txt
-server_full_picture_2.txt
-00-FULL-REPORT.md
-XRAY_CONFIG_REFERENCE.md
-
-# ── Logs & temp ────────────────────────────────────────────────────────────
+# ── File types the shipped app does not contain ────────────────────────────
+#  Server code, infrastructure configs, captures, archives and logs. None of
+#  these extensions are tracked, so a blanket rule is safe and stays safe.
+*.py
+*.json
+*.conf
+*.sh
+*.txt
+*.html
+*.zip
 *.log
 *.class
-server_picture.sh
 
-# ── AI assistant ───────────────────────────────────────────────────────────
-.codewhale/
+# ── Documentation ──────────────────────────────────────────────────────────
+#  The published set is allow-listed; anything else, at any depth, is not.
+#  Leading slashes anchor these to the repo root so a same-named file in a
+#  subdirectory is NOT re-included by the negation.
+*.md
+!/README.md
+!/CHANGELOG.md
+!/CONTRIBUTING.md
+!/PRIVACY_POLICY.md
 
-# ── Dev tool config ────────────────────────────────────────────────────────
-devtools_options.yaml
+# ── Local working directories ──────────────────────────────────────────────
+#  Working material that is not part of the app. Needs a committed rule rather
+#  than a local-only one, because it can hold source-file types the extension
+#  rules above deliberately do not cover.
+.local/
+backup/
 lib/logic/backup/
-scraped
-scraped.zip
-hivemind.zip
-XRAY_AUDIT.md
-TECHNICAL_DEBT.md
-DOCUMENTATION-ARCHITECTURE-V2.md
-config.json
-RESILIENCE_REVIEW.md
-CONFIG_REVIEW.md
-SERVER_SELECTION.md
-THREAT_MODEL.md
-BUSINESS_MODEL.md
-DPI_FINGERPRINT_ANALYSIS.md
-CODE_FINGERPRINT_AUDIT.md
-CONFERENCE_PREP.md
-CONVERSION_CHECKLIST.md
-HIVEMIND_INTERNALS.md
-
-#why are you even looking at this file? it's a secret. go away. 
-SERVER_ARCHITECTURE.md
-turbovpn_play.html
-supervpn_play.html
-hetzner*
-DEPLOYMENT_REPORT_FINAL.md

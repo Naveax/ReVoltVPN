@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -16,66 +15,6 @@ class HivemindService {
 
   static Future<http.Response> directGet(Uri uri, {Duration timeout = const Duration(seconds: 5)}) {
     return http.get(uri, headers: {'User-Agent': _ua}).timeout(timeout);
-  }
-
-  static Future<http.Response> directPost(Uri uri, String body, {Duration timeout = const Duration(seconds: 5)}) {
-    return http.post(uri, headers: {
-      'Content-Type': 'application/json',
-      'User-Agent': _ua,
-    }, body: body).timeout(timeout);
-  }
-
-  static Future<http.Response> proxyGet(Uri uri, {Duration timeout = const Duration(seconds: 5)}) {
-    return _proxyRequest('GET', uri, timeout: timeout);
-  }
-
-  static Future<http.Response> proxyPost(Uri uri, String body, {Duration timeout = const Duration(seconds: 5)}) {
-    return _proxyRequest('POST', uri, body: body, timeout: timeout);
-  }
-
-  static Future<http.Response> _proxyRequest(String method, Uri uri,
-      {String? body, Duration timeout = const Duration(seconds: 5)}) async {
-    final socket = await Socket.connect('127.0.0.1', 10808, timeout: timeout);
-    try {
-      final target = uri.toString();
-      final headers = <String, String>{
-        'Host': '${uri.host}:${uri.port}',
-        'User-Agent': _ua,
-        'Accept': '*/*',
-        'Connection': 'close',
-      };
-      if (body != null) {
-        headers['Content-Type'] = 'application/json';
-        headers['Content-Length'] = body.length.toString();
-      }
-
-      final reqBuf = StringBuffer();
-      reqBuf.write('$method $target HTTP/1.1\r\n');
-      headers.forEach((k, v) => reqBuf.write('$k: $v\r\n'));
-      reqBuf.write('\r\n');
-      if (body != null) reqBuf.write(body);
-
-      socket.write(reqBuf.toString());
-      await socket.flush();
-
-      final response = await socket.fold<String>(
-        '',
-        (prev, chunk) => prev + String.fromCharCodes(chunk),
-      ).timeout(timeout);
-
-      final parts = response.split('\r\n\r\n');
-      if (parts.length < 2) throw Exception('Invalid proxy response');
-      final headerBlock = parts[0];
-      final respBody = parts.sublist(1).join('\r\n\r\n');
-
-      final headerLines = headerBlock.split('\r\n');
-      final statusParts = headerLines[0].split(' ');
-      final statusCode = int.parse(statusParts[1]);
-
-      return http.Response(respBody, statusCode);
-    } finally {
-      socket.destroy();
-    }
   }
 
   static void cancel() {
@@ -166,28 +105,8 @@ class HivemindService {
     }
   }
 
-  static Future<bool> verifySession() async {
-    try {
-      final deviceId = await CryptoService.getDeviceId();
-      final url = _tunnelUrl('/session/status?device_id=$deviceId');
-      final response = await proxyGet(url);
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return data['active'] == true;
-      }
-    } catch (_) {}
-    return false;
-  }
-
-  // Idle sessions are culled server-side by the management loop
-  // after 2 minutes of no /status polls (user disconnected).
-  static void disconnectAndCleanup() {}
-
   // ── URL builders ──────────────────────────────────────────────────
 
   static Uri _publicUrl(String path) =>
       Uri.parse('${AppConfig.hivemindApiPublic}$path');
-
-  static Uri _tunnelUrl(String path) =>
-      Uri.parse('${AppConfig.hivemindApiBase}$path');
 }

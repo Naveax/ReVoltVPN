@@ -6,6 +6,7 @@ import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/app_config.dart';
+import 'package:revoltvpn/logic/consent_manager.dart';
 
 class AdManager extends ChangeNotifier {
   static const bool adsEnabled = false;
@@ -27,8 +28,29 @@ class AdManager extends ChangeNotifier {
     if (adsEnabled) preloadAd();
   }
 
+  static Future<void>? _sdkInit;
+  static Future<void> ensureSdkInitialized() {
+    if (!adsEnabled) return Future.value();
+    return _sdkInit ??= _initSdk();
+  }
+
+  static Future<void> _initSdk() async {
+    try {
+      await ConsentManager.requestConsentIfNeeded()
+          .timeout(const Duration(seconds: 5));
+    } catch (e) {
+      debugPrint('[AdManager] Consent init skipped: $e');
+    }
+    try {
+      await MobileAds.instance.initialize().timeout(const Duration(seconds: 5));
+    } catch (e) {
+      debugPrint('[AdManager] MobileAds init skipped: $e');
+    }
+  }
+
   Future<bool> preloadAd() async {
     if (!adsEnabled) return true;
+    await ensureSdkInitialized();
     if (_isAdLoaded) return true;
     if (_isAdLoading) return _loadCompleter?.future ?? Future.value(false);
 
@@ -100,6 +122,8 @@ class AdManager extends ChangeNotifier {
     }
 
     if (!adsEnabled) return false;
+
+    await ensureSdkInitialized();
 
     if (!_isAdLoaded || _rewardedAd == null) {
       final loaded = await preloadAd();

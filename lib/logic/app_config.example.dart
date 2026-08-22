@@ -9,9 +9,6 @@ abstract final class AppConfig {
   /// Your server's public IP.  The VPN tunnel is pinned to this.
   static const String serverIp = '0.0.0.0';  // ◄── REPLACE
 
-  /// API base — routed through the tunnel to Flask via Xray "api" outbound.
-  static const String hivemindApiBase = 'http://10.254.254.1:5000/api';
-
   // ── Bootstrap (first-connect config fetch) ────────────────────────────
   /// Hardcoded Reality config.  App connects with this, fetches the real
   /// per-session VLESS URL through the tunnel, then reconnects.

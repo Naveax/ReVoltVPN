@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
+import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/screens/main_screen.dart';
 
 class IntroScreen extends StatefulWidget {
@@ -11,11 +13,18 @@ class IntroScreen extends StatefulWidget {
 }
 
 class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
+  static const _minDisplay = Duration(milliseconds: 500);
+  static const _bootTimeout = Duration(seconds: 8);
+
+  String _status = 'Starting secure engine…';
+  bool _bootComplete = false;
+  bool _navigated = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _scheduleNavigation();
+    _boot();
   }
 
   @override
@@ -26,28 +35,43 @@ class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _navigateToMain();
+    if (state == AppLifecycleState.resumed) _navigateIfReady();
+  }
+
+  Future<void> _boot() async {
+    final elapsed = Stopwatch()..start();
+    final vpn = context.read<VpnConnection>();
+
+    try {
+      await vpn.ready.timeout(_bootTimeout);
+    } on TimeoutException {
+      debugPrint('[Boot] Engine init exceeded ${_bootTimeout.inSeconds}s '
+          '— continuing to the main screen anyway.');
+    } catch (e) {
+      debugPrint('[Boot] Engine init error: $e');
     }
-  }
 
-  void _scheduleNavigation() {
-    // Brief natural pause — just long enough to perceive the logo.
-    Timer(const Duration(milliseconds: 1200), () {
-      if (!mounted) return;
-      if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused) {
-        // App is backgrounded — defer navigation until resumed.
-        return;
-      }
-      _navigateToMain();
-    });
-  }
-
-  void _navigateToMain() {
     if (!mounted) return;
+    setState(() => _status = 'Ready');
+
+    final remaining = _minDisplay - elapsed.elapsed;
+    if (remaining > Duration.zero) await Future.delayed(remaining);
+
+    if (!mounted) return;
+    _bootComplete = true;
+    _navigateIfReady();
+  }
+
+  void _navigateIfReady() {
+    if (!mounted || _navigated || !_bootComplete) return;
+    if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused) {
+      return; // resume will call back in
+    }
+    _navigated = true;
+
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(
-        transitionDuration: const Duration(milliseconds: 600),
+        transitionDuration: const Duration(milliseconds: 400),
         pageBuilder: (_, __, ___) => const MainScreen(),
         transitionsBuilder: (_, animation, __, child) {
           return FadeTransition(opacity: animation, child: child);
@@ -96,6 +120,20 @@ class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
               fontSize: 28,
               fontWeight: FontWeight.bold,
               letterSpacing: 2.0,
+            ),
+          ),
+          const SizedBox(height: 10),
+          // Says what the spinner is actually waiting on.
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 250),
+            child: Text(
+              _status,
+              key: ValueKey(_status),
+              style: const TextStyle(
+                color: AppColors.textDim,
+                fontSize: 13,
+                letterSpacing: 0.5,
+              ),
             ),
           ),
           const Spacer(flex: 5),
