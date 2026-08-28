@@ -53,7 +53,6 @@ class AdManager extends ChangeNotifier {
     if (ok) {
       _sdkReady = true;
     } else if (identical(_sdkInit, attempt)) {
-      // Permit a later retry after a transient consent/network failure.
       _sdkInit = null;
     }
     return ok;
@@ -84,11 +83,12 @@ class AdManager extends ChangeNotifier {
     if (!await ensureSdkInitialized()) return false;
     if (_isAdLoaded && _rewardedAd != null) return true;
     if (_isAdLoading) {
-      return _loadCompleter?.future.timeout(
-            _loadTimeout,
-            onTimeout: () => false,
-          ) ??
-          false;
+      final completer = _loadCompleter;
+      if (completer == null) return false;
+      return await completer.future.timeout(
+        _loadTimeout,
+        onTimeout: () => false,
+      );
     }
 
     _isAdLoading = true;
@@ -134,8 +134,6 @@ class AdManager extends ChangeNotifier {
   }
 
   Future<bool> showAd(String adType) async {
-    // No fake callbacks or debug session grants. If ads are disabled, reward
-    // creation is unavailable by design.
     if (!adsEnabled || kIsWeb) return false;
     if (!await ensureSdkInitialized()) return false;
 
