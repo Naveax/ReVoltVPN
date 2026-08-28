@@ -25,9 +25,14 @@ class _ConnectButtonState extends State<ConnectButton>
   @override
   void initState() {
     super.initState();
-    final pulse = AnimationController(vsync: this, duration: const Duration(milliseconds: 2000));
+    final pulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2000),
+    );
     _pulse = pulse;
-    _pulseAnim = Tween(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: pulse, curve: Curves.easeInOut));
+    _pulseAnim = Tween(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: pulse, curve: Curves.easeInOut),
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<VpnConnection>().addListener(_onVpnChanged);
     });
@@ -61,9 +66,6 @@ class _ConnectButtonState extends State<ConnectButton>
 
     if (vpn.status == VpnStatus.disconnecting || _busy) return;
 
-    // Feedback belongs to the accepted tap, not to a later network result.
-    HapticSettings.tap();
-
     if (vpn.status == VpnStatus.connected || vpn.status == VpnStatus.connecting) {
       _busy = false;
       await timer.disconnect();
@@ -74,12 +76,12 @@ class _ConnectButtonState extends State<ConnectButton>
     try {
       final adWatched = await ad.showAd('main');
       if (!adWatched && AdManager.adsEnabled) {
-        setState(() => _busy = false);
         return;
       }
-      final ok = await vpn.connect();
+
+      final ok = await vpn.connect(skipAdBypass: true);
       if (ok) {
-        timer.start();
+        await timer.start();
         HapticSettings.success();
       }
     } finally {
@@ -100,7 +102,8 @@ class _ConnectButtonState extends State<ConnectButton>
           child: _pulseAnim != null
               ? AnimatedBuilder(
                   animation: _pulseAnim!,
-                  builder: (_, __) => _buildCircle(isConnected, spinning, _pulseValue),
+                  builder: (_, __) =>
+                      _buildCircle(isConnected, spinning, _pulseValue),
                 )
               : _buildCircle(isConnected, spinning, 0),
         );
@@ -123,15 +126,25 @@ class _ConnectButtonState extends State<ConnectButton>
           width: isConnected ? 2.5 : 1.5,
         ),
         boxShadow: isConnected
-            ? [BoxShadow(color: Color.fromARGB(glowAlpha, 255, 214, 0), blurRadius: glowRadius, spreadRadius: glowRadius * 0.3)]
+            ? [
+                BoxShadow(
+                  color: Color.fromARGB(glowAlpha, 255, 214, 0),
+                  blurRadius: glowRadius,
+                  spreadRadius: glowRadius * 0.3,
+                ),
+              ]
             : [],
       ),
       clipBehavior: Clip.hardEdge,
       child: spinning
           ? const Center(
               child: SizedBox(
-                width: 36, height: 36,
-                child: CircularProgressIndicator(strokeWidth: 2.5, color: AppColors.accent70),
+                width: 36,
+                height: 36,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.5,
+                  color: AppColors.accent70,
+                ),
               ),
             )
           : Padding(
