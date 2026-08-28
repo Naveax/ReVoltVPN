@@ -1,11 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/logic/session_timer.dart';
 import 'package:revoltvpn/logic/ad_manager.dart';
-import 'package:revoltvpn/screens/settings/in_settings/haptic.dart';
+import 'package:revoltvpn/logic/haptic_settings.dart';
 
 class ConnectButton extends StatefulWidget {
   const ConnectButton({super.key});
@@ -52,7 +51,6 @@ class _ConnectButtonState extends State<ConnectButton>
   }
 
   Future<void> _handleTap() async {
-
     final now = DateTime.now();
     if (now.difference(_lastTap).inMilliseconds < 1000) return;
     _lastTap = now;
@@ -61,19 +59,16 @@ class _ConnectButtonState extends State<ConnectButton>
     final timer = context.read<SessionTimer>();
     final ad = context.read<AdManager>();
 
+    if (vpn.status == VpnStatus.disconnecting || _busy) return;
+
+    // Feedback belongs to the accepted tap, not to a later network result.
+    HapticSettings.tap();
 
     if (vpn.status == VpnStatus.connected || vpn.status == VpnStatus.connecting) {
       _busy = false;
       await timer.disconnect();
-      if (hapticEnabled) HapticFeedback.lightImpact();
       return;
     }
-
-
-    if (vpn.status == VpnStatus.disconnecting) return;
-
-
-    if (_busy) return;
 
     setState(() => _busy = true);
     try {
@@ -85,7 +80,7 @@ class _ConnectButtonState extends State<ConnectButton>
       final ok = await vpn.connect();
       if (ok) {
         timer.start();
-        if (hapticEnabled) HapticFeedback.lightImpact();
+        HapticSettings.success();
       }
     } finally {
       if (mounted) setState(() => _busy = false);
