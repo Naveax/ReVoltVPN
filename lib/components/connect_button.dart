@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:revoltvpn/logic/app_colors.dart';
-import 'package:revoltvpn/logic/vpn_connection.dart';
-import 'package:revoltvpn/logic/session_timer.dart';
 import 'package:revoltvpn/logic/ad_manager.dart';
+import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/logic/haptic_settings.dart';
+import 'package:revoltvpn/logic/session_timer.dart';
+import 'package:revoltvpn/logic/vpn_connection.dart';
 
 class ConnectButton extends StatefulWidget {
   const ConnectButton({super.key});
@@ -67,19 +67,18 @@ class _ConnectButtonState extends State<ConnectButton>
     if (vpn.status == VpnStatus.disconnecting || _busy) return;
 
     if (vpn.status == VpnStatus.connected || vpn.status == VpnStatus.connecting) {
-      _busy = false;
       await timer.disconnect();
       return;
     }
 
     setState(() => _busy = true);
     try {
-      final adWatched = await ad.showAd('main');
-      if (!adWatched && AdManager.adsEnabled) {
-        return;
-      }
+      // The rewarded flow returns true only after the backend has verified the
+      // exact SSV/debug nonce. Never start the VPN with an unverified session.
+      final sessionReady = await ad.showAd('main');
+      if (!sessionReady) return;
 
-      final ok = await vpn.connect(skipAdBypass: true);
+      final ok = await vpn.connect();
       if (ok) {
         await timer.start();
         HapticSettings.success();
