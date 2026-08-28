@@ -1,0 +1,122 @@
+name: Build sidebar haptics debug APK
+
+on:
+  push:
+    branches:
+      - fix/sidebar-lifecycle-haptics
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sidebar-haptics-debug-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Set up Gradle 8.14
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+
+      - name: Generate debug-only local config
+        shell: bash
+        run: |
+          cat > lib/logic/app_config.dart <<'DART'
+          abstract final class AppConfig {
+            AppConfig._();
+
+            static const String serverIp = '204.168.246.88';
+            static const String hivemindApiPublic = 'https://example.invalid';
+            static const String bootstrapUuid = '00000000-0000-0000-0000-000000000000';
+            static const String realityPbk = 'DEBUG_PLACEHOLDER_PUBLIC_KEY';
+            static const String realitySid = 'abc123';
+            static const String realityFp = 'chrome';
+            static const String vlessSecurity = 'reality';
+            static const String vlessType = 'xhttp';
+            static const String vlessPath = '/revolt';
+
+            static String get bootstrapVlessUrl =>
+                'vless://$bootstrapUuid@$serverIp:8443'
+                '?security=$vlessSecurity&type=$vlessType&path=$vlessPath'
+                '&pbk=$realityPbk&sni=www.github.com&sid=$realitySid&fp=$realityFp'
+                '#ReVoltVPN';
+
+            static const String applicationId = 'com.paladinvpn.app';
+            static const String githubOwner = 'esefxdz';
+            static const String githubRepo = 'ReVoltVPN';
+            static const String githubReleasesUrl =
+                'https://github.com/$githubOwner/$githubRepo/releases/latest';
+            static const String adUnitId =
+                'ca-app-pub-3940256099942544/5224354917';
+          }
+          DART
+
+          cat > android/admob.properties <<'PROPS'
+          ADMOB_APP_ID=ca-app-pub-3940256099942544~3347511713
+          PROPS
+
+          {
+            printf 'flutter.sdk=%s\n' "$FLUTTER_ROOT"
+            printf 'sdk.dir=%s\n' "$ANDROID_HOME"
+          } > android/local.properties
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('android/gradle.properties')
+          lines = p.read_text().splitlines()
+          lines = [line for line in lines if not line.startswith('org.gradle.jvmargs=') and not line.startswith('org.gradle.workers.max=')]
+          lines.insert(0, 'org.gradle.workers.max=2')
+          lines.insert(0, 'org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8')
+          p.write_text('\n'.join(lines) + '\n')
+          PY
+
+      - name: Restore Gradle wrapper files
+        shell: bash
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.14 --distribution-type all
+          chmod +x gradlew
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Flutter analyze
+        run: flutter analyze
+
+      - name: Build debug APK
+        run: flutter build apk --debug --dart-define=ADS_ENABLED=false
+
+      - name: Rename APK
+        shell: bash
+        run: |
+          cp build/app/outputs/flutter-apk/app-debug.apk ReVoltVPN-sidebar-haptics-debug.apk
+          sha256sum ReVoltVPN-sidebar-haptics-debug.apk > ReVoltVPN-sidebar-haptics-debug.apk.sha256
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReVoltVPN-sidebar-haptics-debug
+          path: |
+            ReVoltVPN-sidebar-haptics-debug.apk
+            ReVoltVPN-sidebar-haptics-debug.apk.sha256
+          if-no-files-found: error
+          retention-days: 7
