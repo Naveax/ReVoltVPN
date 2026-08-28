@@ -33,13 +33,32 @@ android {
         admobProperties.load(FileInputStream(admobPropertiesFile))
     }
 
+    val configuredAdMobAppId = admobProperties
+        .getProperty("ADMOB_APP_ID")
+        ?.trim()
+        .orEmpty()
+    val releaseRequested = gradle.startParameter.taskNames.any {
+        it.contains("release", ignoreCase = true)
+    }
+    val placeholderAdMobAppId = "ca-app-pub-0000000000000000~0000000000"
+    val googleSampleAdMobAppId = "ca-app-pub-3940256099942544~3347511713"
+
+    if (releaseRequested &&
+        (configuredAdMobAppId.isBlank() || configuredAdMobAppId == placeholderAdMobAppId)
+    ) {
+        throw GradleException(
+            "Release build blocked: android/admob.properties must define a real ADMOB_APP_ID."
+        )
+    }
+
     defaultConfig {
         applicationId = "com.paladinvpn.app"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        manifestPlaceholders["ADMOB_APP_ID"] = admobProperties.getProperty("ADMOB_APP_ID", "ca-app-pub-0000000000000000~0000000000")
+        manifestPlaceholders["ADMOB_APP_ID"] =
+            configuredAdMobAppId.ifBlank { googleSampleAdMobAppId }
     }
 
     signingConfigs {
