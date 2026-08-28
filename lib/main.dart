@@ -1,18 +1,23 @@
-import 'package:flutter/material.dart';
 import 'dart:ui';
+
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
-import 'package:revoltvpn/logic/vpn_connection.dart';
-import 'package:revoltvpn/logic/session_timer.dart';
 import 'package:revoltvpn/logic/ad_manager.dart';
-import 'package:revoltvpn/logic/server_list.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
+import 'package:revoltvpn/logic/haptic_settings.dart';
+import 'package:revoltvpn/logic/server_list.dart';
+import 'package:revoltvpn/logic/session_timer.dart';
+import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/screens/intro.dart';
-void main() {
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  // Load persisted interaction settings before any tappable UI is shown.
+  await HapticSettings.initialize();
+  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
@@ -40,18 +45,18 @@ class ReVoltApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        // lazy: false — the native VLESS engine takes real time to start, and
-        // providers are lazy by default, so it used to begin initialising only
-        // once MainScreen first read it, i.e. *after* the loading screen was
-        // gone. Constructing it eagerly moves that work under the intro, which
-        // now awaits VpnConnection.ready before navigating.
         ChangeNotifierProvider(create: (_) => VpnConnection(), lazy: false),
         ChangeNotifierProxyProvider<VpnConnection, SessionTimer>(
-          create: (ctx) => SessionTimer(vpnConnection: ctx.read<VpnConnection>()),
-          update: (_, vpn, prev) => prev ?? SessionTimer(vpnConnection: vpn),
+          create: (ctx) =>
+              SessionTimer(vpnConnection: ctx.read<VpnConnection>()),
+          update: (_, vpn, prev) =>
+              prev ?? SessionTimer(vpnConnection: vpn),
         ),
         ChangeNotifierProvider(create: (_) => AdManager()),
-        ChangeNotifierProvider(create: (_) => ServerList()..init(), lazy: false),
+        ChangeNotifierProvider(
+          create: (_) => ServerList()..init(),
+          lazy: false,
+        ),
       ],
       child: MaterialApp(
         title: 'ReVolt VPN',

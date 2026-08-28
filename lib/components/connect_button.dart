@@ -1,11 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'package:revoltvpn/logic/app_colors.dart';
-import 'package:revoltvpn/logic/vpn_connection.dart';
-import 'package:revoltvpn/logic/session_timer.dart';
 import 'package:revoltvpn/logic/ad_manager.dart';
-import 'package:revoltvpn/screens/settings/in_settings/haptic.dart';
+import 'package:revoltvpn/logic/app_colors.dart';
+import 'package:revoltvpn/logic/haptic_settings.dart';
+import 'package:revoltvpn/logic/session_timer.dart';
+import 'package:revoltvpn/logic/vpn_connection.dart';
 
 class ConnectButton extends StatefulWidget {
   const ConnectButton({super.key});
@@ -26,11 +27,16 @@ class _ConnectButtonState extends State<ConnectButton>
   @override
   void initState() {
     super.initState();
-    final pulse = AnimationController(vsync: this, duration: const Duration(milliseconds: 2000));
+    final pulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2000),
+    );
     _pulse = pulse;
-    _pulseAnim = Tween(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: pulse, curve: Curves.easeInOut));
+    _pulseAnim = Tween(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: pulse, curve: Curves.easeInOut),
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<VpnConnection>().addListener(_onVpnChanged);
+      if (mounted) context.read<VpnConnection>().addListener(_onVpnChanged);
     });
   }
 
@@ -52,7 +58,6 @@ class _ConnectButtonState extends State<ConnectButton>
   }
 
   Future<void> _handleTap() async {
-
     final now = DateTime.now();
     if (now.difference(_lastTap).inMilliseconds < 1000) return;
     _lastTap = now;
@@ -61,32 +66,46 @@ class _ConnectButtonState extends State<ConnectButton>
     final timer = context.read<SessionTimer>();
     final ad = context.read<AdManager>();
 
+    if (vpn.status == VpnStatus.disconnecting || _busy) return;
+
+    // Feedback belongs to the accepted tap, not to a later network result.
+    // Otherwise a failed/disabled backend makes haptics appear broken.
+    unawaited(HapticSettings.lightImpact());
 
     if (vpn.status == VpnStatus.connected || vpn.status == VpnStatus.connecting) {
-      _busy = false;
       await timer.disconnect();
-      if (hapticEnabled) HapticFeedback.lightImpact();
       return;
     }
 
-
-    if (vpn.status == VpnStatus.disconnecting) return;
-
-
-    if (_busy) return;
+    if (!AdManager.adsEnabled) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Rewarded sessions are disabled in this build. '
+            'Production builds must enable real AdMob verification.',
+          ),
+        ),
+      );
+      return;
+    }
 
     setState(() => _busy = true);
     try {
       final adWatched = await ad.showAd('main');
-      if (!adWatched && AdManager.adsEnabled) {
-        setState(() => _busy = false);
+      if (!adWatched) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Reward was not verified. VPN session was not opened.'),
+            ),
+          );
+        }
         return;
       }
+
       final ok = await vpn.connect();
-      if (ok) {
-        timer.start();
-        if (hapticEnabled) HapticFeedback.lightImpact();
-      }
+      if (ok) await timer.start();
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -105,7 +124,8 @@ class _ConnectButtonState extends State<ConnectButton>
           child: _pulseAnim != null
               ? AnimatedBuilder(
                   animation: _pulseAnim!,
-                  builder: (_, __) => _buildCircle(isConnected, spinning, _pulseValue),
+                  builder: (_, __) =>
+                      _buildCircle(isConnected, spinning, _pulseValue),
                 )
               : _buildCircle(isConnected, spinning, 0),
         );
@@ -114,7 +134,8 @@ class _ConnectButtonState extends State<ConnectButton>
   }
 
   Widget _buildCircle(bool isConnected, bool spinning, double pulse) {
-    final glowAlpha = isConnected ? ((0.3 + pulse * 0.25) * 255).round() : 0;
+    final glowAlpha =
+        isConnected ? ((0.3 + pulse * 0.25) * 255).round() : 0;
     final glowRadius = isConnected ? 18.0 + (pulse * 14) : 0.0;
 
     return Container(
@@ -128,15 +149,25 @@ class _ConnectButtonState extends State<ConnectButton>
           width: isConnected ? 2.5 : 1.5,
         ),
         boxShadow: isConnected
-            ? [BoxShadow(color: Color.fromARGB(glowAlpha, 255, 214, 0), blurRadius: glowRadius, spreadRadius: glowRadius * 0.3)]
+            ? [
+                BoxShadow(
+                  color: Color.fromARGB(glowAlpha, 255, 214, 0),
+                  blurRadius: glowRadius,
+                  spreadRadius: glowRadius * 0.3,
+                ),
+              ]
             : [],
       ),
       clipBehavior: Clip.hardEdge,
       child: spinning
           ? const Center(
               child: SizedBox(
-                width: 36, height: 36,
-                child: CircularProgressIndicator(strokeWidth: 2.5, color: AppColors.accent70),
+                width: 36,
+                height: 36,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.5,
+                  color: AppColors.accent70,
+                ),
               ),
             )
           : Padding(

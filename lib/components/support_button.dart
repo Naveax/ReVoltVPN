@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:revoltvpn/logic/ad_manager.dart';
-import 'package:revoltvpn/logic/session_timer.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
+import 'package:revoltvpn/logic/session_timer.dart';
 
 class SupportButton extends StatefulWidget {
   const SupportButton({super.key});
@@ -15,16 +15,14 @@ class _SupportButtonState extends State<SupportButton> {
   bool _busy = false;
 
   Future<void> _handleTap() async {
-    if (_busy) return;
+    if (_busy || !AdManager.adsEnabled) return;
 
     final ad = context.read<AdManager>();
     final timer = context.read<SessionTimer>();
 
-    // Only available when there's an active session.
     if (!timer.isRunning && !timer.hasSyncedOnce) return;
 
     setState(() => _busy = true);
-
     try {
       await ad.showAd('support');
     } finally {
@@ -36,7 +34,8 @@ class _SupportButtonState extends State<SupportButton> {
   Widget build(BuildContext context) {
     return Consumer<SessionTimer>(
       builder: (context, timer, _) {
-        if (!timer.isRunning && !timer.hasSyncedOnce) {
+        if (!AdManager.adsEnabled ||
+            (!timer.isRunning && !timer.hasSyncedOnce)) {
           return const SizedBox.shrink();
         }
 
@@ -55,7 +54,11 @@ class _SupportButtonState extends State<SupportButton> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.favorite_border, color: AppColors.accent, size: 20),
+                const Icon(
+                  Icons.favorite_border,
+                  color: AppColors.accent,
+                  size: 20,
+                ),
                 const SizedBox(width: 8),
                 _busy
                     ? const SizedBox(
@@ -67,7 +70,7 @@ class _SupportButtonState extends State<SupportButton> {
                         ),
                       )
                     : const Text(
-                        'Support us \u2014 30 min!',
+                        'Support us — 30 min!',
                         style: TextStyle(
                           color: AppColors.textWhite,
                           fontSize: 14,

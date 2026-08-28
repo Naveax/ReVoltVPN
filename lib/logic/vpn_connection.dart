@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_vless/flutter_vless.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
@@ -112,18 +113,7 @@ class VpnConnection extends ChangeNotifier {
     }
   }
 
-  // ── Connect ────────────────────────────────────────────────────────
-  //
-  // 1. Direct HTTPS to the public API → get per-user VLESS URL
-  // 2. Start tunnel directly with that URL (no bootstrap, no switch)
-  //
-  // The only hardcoded data in the APK is the Reality public key and
-  // shortId (needed for every Reality handshake — unavoidable).
-  // The tunnel UUID is per-user, assigned by Hivemind via AdMob SSV.
-
-  Future<bool> connect({
-    bool skipAdBypass = false,
-  }) async {
+  Future<bool> connect() async {
     if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
       return false;
     }
@@ -153,27 +143,29 @@ class VpnConnection extends ChangeNotifier {
       return true;
     }
 
-    _setStatus(VpnStatus.connecting, 'Fetching config…');
+    _setStatus(VpnStatus.connecting, 'Waiting for verified session…');
 
     String realUrl;
     try {
       realUrl = await HivemindService.fetchConfigDirectly(
-        skipAdBypass: skipAdBypass,
         onAttempt: (attempt, total) {
           _setStatus(
-              VpnStatus.connecting, 'Contacting server ($attempt/$total)…');
+            VpnStatus.connecting,
+            'Verifying reward ($attempt/$total)…',
+          );
         },
       );
     } catch (e) {
       debugPrint('[VPN] Config fetch error: $e');
       final raw = e.toString().replaceAll('Exception: ', '');
       if (raw.contains('Cancelled')) return false;
+
       if (raw.contains('timed out') || raw.contains('Session not activated')) {
         _errorMessage =
-            'The server did not respond in time.\nCheck your connection and try again.';
-        _setStatus(VpnStatus.error, 'Server unreachable');
+            'The rewarded session was not verified in time.\nTry again.';
+        _setStatus(VpnStatus.error, 'Verification failed');
       } else {
-        _errorMessage = e.toString().replaceAll('Exception: ', '');
+        _errorMessage = raw;
         _setStatus(VpnStatus.error, 'Config fetch error');
       }
       return false;
@@ -234,10 +226,9 @@ class VpnConnection extends ChangeNotifier {
     }
 
     if (timedOut) {
-      debugPrint('[VPN] stopVless() timed out after 5 s — '
+      debugPrint('[VPN] stopVless() timed out after 5 s; '
           'tunnel may still be active.');
-      _errorMessage = 'VPN did not shut down cleanly.\n'
-          'Please restart the app.';
+      _errorMessage = 'VPN did not shut down cleanly.\nPlease restart the app.';
       _setStatus(VpnStatus.error, 'Shutdown failed');
       return;
     }
