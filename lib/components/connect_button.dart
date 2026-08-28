@@ -17,7 +17,7 @@ class ConnectButton extends StatefulWidget {
 class _ConnectButtonState extends State<ConnectButton>
     with SingleTickerProviderStateMixin {
   bool _busy = false;
-  DateTime _lastTap = DateTime.now();
+  DateTime _lastTap = DateTime.fromMillisecondsSinceEpoch(0);
   AnimationController? _pulse;
   Animation<double>? _pulseAnim;
 
@@ -26,9 +26,14 @@ class _ConnectButtonState extends State<ConnectButton>
   @override
   void initState() {
     super.initState();
-    final pulse = AnimationController(vsync: this, duration: const Duration(milliseconds: 2000));
+    final pulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2000),
+    );
     _pulse = pulse;
-    _pulseAnim = Tween(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: pulse, curve: Curves.easeInOut));
+    _pulseAnim = Tween(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: pulse, curve: Curves.easeInOut),
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<VpnConnection>().addListener(_onVpnChanged);
     });
@@ -52,7 +57,6 @@ class _ConnectButtonState extends State<ConnectButton>
   }
 
   Future<void> _handleTap() async {
-
     final now = DateTime.now();
     if (now.difference(_lastTap).inMilliseconds < 1000) return;
     _lastTap = now;
@@ -61,27 +65,23 @@ class _ConnectButtonState extends State<ConnectButton>
     final timer = context.read<SessionTimer>();
     final ad = context.read<AdManager>();
 
-
-    if (vpn.status == VpnStatus.connected || vpn.status == VpnStatus.connecting) {
+    if (vpn.status == VpnStatus.connected ||
+        vpn.status == VpnStatus.connecting) {
       _busy = false;
       await timer.disconnect();
       if (hapticEnabled) HapticFeedback.lightImpact();
       return;
     }
 
-
-    if (vpn.status == VpnStatus.disconnecting) return;
-
-
-    if (_busy) return;
+    if (vpn.status == VpnStatus.disconnecting || _busy) return;
 
     setState(() => _busy = true);
     try {
-      final adWatched = await ad.showAd('main');
-      if (!adWatched && AdManager.adsEnabled) {
-        setState(() => _busy = false);
-        return;
-      }
+      // showAd() returns true only after Hivemind confirms the exact SSV nonce.
+      // Never grant a VPN session from the client-side reward callback alone.
+      final rewardVerified = await ad.showAd('main');
+      if (!rewardVerified) return;
+
       final ok = await vpn.connect();
       if (ok) {
         timer.start();
@@ -105,7 +105,8 @@ class _ConnectButtonState extends State<ConnectButton>
           child: _pulseAnim != null
               ? AnimatedBuilder(
                   animation: _pulseAnim!,
-                  builder: (_, __) => _buildCircle(isConnected, spinning, _pulseValue),
+                  builder: (_, __) =>
+                      _buildCircle(isConnected, spinning, _pulseValue),
                 )
               : _buildCircle(isConnected, spinning, 0),
         );
@@ -114,7 +115,8 @@ class _ConnectButtonState extends State<ConnectButton>
   }
 
   Widget _buildCircle(bool isConnected, bool spinning, double pulse) {
-    final glowAlpha = isConnected ? ((0.3 + pulse * 0.25) * 255).round() : 0;
+    final glowAlpha =
+        isConnected ? ((0.3 + pulse * 0.25) * 255).round() : 0;
     final glowRadius = isConnected ? 18.0 + (pulse * 14) : 0.0;
 
     return Container(
@@ -128,15 +130,25 @@ class _ConnectButtonState extends State<ConnectButton>
           width: isConnected ? 2.5 : 1.5,
         ),
         boxShadow: isConnected
-            ? [BoxShadow(color: Color.fromARGB(glowAlpha, 255, 214, 0), blurRadius: glowRadius, spreadRadius: glowRadius * 0.3)]
+            ? [
+                BoxShadow(
+                  color: Color.fromARGB(glowAlpha, 255, 214, 0),
+                  blurRadius: glowRadius,
+                  spreadRadius: glowRadius * 0.3,
+                ),
+              ]
             : [],
       ),
       clipBehavior: Clip.hardEdge,
       child: spinning
           ? const Center(
               child: SizedBox(
-                width: 36, height: 36,
-                child: CircularProgressIndicator(strokeWidth: 2.5, color: AppColors.accent70),
+                width: 36,
+                height: 36,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.5,
+                  color: AppColors.accent70,
+                ),
               ),
             )
           : Padding(
