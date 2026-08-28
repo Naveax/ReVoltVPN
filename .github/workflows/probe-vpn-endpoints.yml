@@ -1,0 +1,37 @@
+name: Probe VPN endpoints
+
+on:
+  push:
+    branches:
+      - fix/sidebar-lifecycle-haptics
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-vpn-endpoints-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe historical API candidates
+        shell: bash
+        run: |
+          set +e
+          urls=(
+            "https://userevolt.app/health"
+            "https://userevolt.app/api/v2/health"
+            "https://api.userevolt.app/health"
+            "https://api.userevolt.app/api/v2/health"
+            "https://hivemind.userevolt.app/health"
+            "https://getrevolt.app/health"
+          )
+          for url in "${urls[@]}"; do
+            echo "=== $url ==="
+            curl -L -sS --max-time 10 -D /tmp/headers -o /tmp/body -w 'HTTP=%{http_code} IP=%{remote_ip}\n' "$url"
+            head -c 400 /tmp/body || true
+            echo
+          done
