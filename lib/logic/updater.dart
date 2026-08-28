@@ -115,32 +115,45 @@ class Updater {
     return '$prefix$v${isLocal ? ' (installed)' : ''}';
   }
 
-  static Future<void> check(BuildContext context) async {
+  static Future<void> check(BuildContext context) {
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final messenger = ScaffoldMessenger.of(context);
+    return checkWithHandles(
+      navigator: navigator,
+      messenger: messenger,
+    );
+  }
+
+  static Future<void> checkWithHandles({
+    required NavigatorState navigator,
+    required ScaffoldMessengerState messenger,
+  }) async {
     final info = await PackageInfo.fromPlatform();
     final localVersion = info.version;
     if (localVersion.isEmpty) {
-      _showSnackBar(context, 'Could not determine app version',
+      _showSnackBar(messenger, 'Could not determine app version',
           isError: true);
       return;
     }
 
     final latestVersion = await GitHubUpdater.fetchLatestVersion();
     if (latestVersion == null) {
-      _showSnackBar(context, 'Could not reach GitHub', isError: true);
+      _showSnackBar(messenger, 'Could not reach GitHub', isError: true);
       return;
     }
 
     if (_compareVersions(localVersion, latestVersion) >= 0) {
-      _showSnackBar(context, 'Up to date');
+      _showSnackBar(messenger, 'Up to date');
       return;
     }
 
     final source = await installSource;
-    final storeName = source == InstallSource.playStore ? 'Play Store' : 'GitHub';
-    if (!context.mounted) return;
+    final storeName =
+        source == InstallSource.playStore ? 'Play Store' : 'GitHub';
+    if (!navigator.mounted) return;
 
     showDialog(
-      context: context,
+      context: navigator.context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.bgCard,
         title: const Text('Update available',
@@ -171,9 +184,13 @@ class Updater {
     );
   }
 
-  static void _showSnackBar(BuildContext context, String message,
-      {bool isError = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(
+  static void _showSnackBar(
+    ScaffoldMessengerState messenger,
+    String message, {
+    bool isError = false,
+  }) {
+    if (!messenger.mounted) return;
+    messenger.showSnackBar(
       SnackBar(
         content: Row(
           children: [
