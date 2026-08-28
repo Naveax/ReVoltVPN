@@ -84,11 +84,12 @@ class AdManager extends ChangeNotifier {
     if (!await ensureSdkInitialized()) return false;
     if (_isAdLoaded && _rewardedAd != null) return true;
     if (_isAdLoading) {
-      return _loadCompleter?.future.timeout(
-            _loadTimeout,
-            onTimeout: () => false,
-          ) ??
-          false;
+      final completer = _loadCompleter;
+      if (completer == null) return false;
+      return await completer.future.timeout(
+        _loadTimeout,
+        onTimeout: () => false,
+      );
     }
 
     _isAdLoading = true;
