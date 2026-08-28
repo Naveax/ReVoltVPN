@@ -55,35 +55,41 @@ class MainActivity : FlutterActivity() {
         null
     }
 
-    private fun performHaptic(kind: String): Boolean = try {
-        val vibrator: Vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val manager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
-            manager.defaultVibrator
-        } else {
-            @Suppress("DEPRECATION")
-            getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-        }
-
-        if (!vibrator.hasVibrator()) return false
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val effect = when (kind) {
-                "selection" -> VibrationEffect.EFFECT_TICK
-                "success" -> VibrationEffect.EFFECT_HEAVY_CLICK
-                else -> VibrationEffect.EFFECT_CLICK
+    private fun performHaptic(kind: String): Boolean {
+        return try {
+            val vibrator: Vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val manager =
+                    getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                manager.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
             }
-            vibrator.vibrate(VibrationEffect.createPredefined(effect))
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val durationMs = if (kind == "success") 24L else 14L
-            val amplitude = if (kind == "success") 110 else 70
-            vibrator.vibrate(VibrationEffect.createOneShot(durationMs, amplitude))
-        } else {
-            @Suppress("DEPRECATION")
-            vibrator.vibrate(if (kind == "success") 24L else 14L)
-        }
 
-        true
-    } catch (e: Exception) {
-        false
+            if (!vibrator.hasVibrator()) {
+                false
+            } else {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val effect = when (kind) {
+                        "selection" -> VibrationEffect.EFFECT_TICK
+                        "success" -> VibrationEffect.EFFECT_HEAVY_CLICK
+                        else -> VibrationEffect.EFFECT_CLICK
+                    }
+                    vibrator.vibrate(VibrationEffect.createPredefined(effect))
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    val durationMs = if (kind == "success") 24L else 14L
+                    val amplitude = if (kind == "success") 110 else 70
+                    vibrator.vibrate(
+                        VibrationEffect.createOneShot(durationMs, amplitude)
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    vibrator.vibrate(if (kind == "success") 24L else 14L)
+                }
+                true
+            }
+        } catch (e: Exception) {
+            false
+        }
     }
 }
