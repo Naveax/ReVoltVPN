@@ -2,35 +2,29 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 
-/// ConsentManager wraps Google's UMP (User Messaging Platform) SDK.
+/// Handles Google UMP consent before the Mobile Ads SDK is initialized.
 ///
-/// What it does:
-/// - Checks whether the user is in the EEA, UK, or another region requiring
-///   GDPR-style consent.
-/// - If consent is required and hasn't been collected yet, shows Google's
-///   standard consent form (handles all the legal wording automatically).
-/// - Communicates the user's choices to AdMob so ads respect their preferences.
-///
-/// This satisfies both Google Play's ad policy requirement AND the EU GDPR
-/// requirement for informed consent before personalized ads.
-///
-/// Usage — call once at app startup before anything else:
-/// ```dart
-/// await ConsentManager.requestConsentIfNeeded();
-/// ```
+/// This implementation intentionally fails closed: if consent information
+/// cannot be refreshed, the form cannot be completed, or the final consent
+/// status is unresolved, callers must not request ads.
 class ConsentManager {
   ConsentManager._();
 
-  /// Whether the consent flow has completed (consent gathered or not needed).
   static bool _isComplete = false;
-  static bool get isComplete => _isComplete;
+  static bool _canRequestAds = false;
 
-  /// Run the full consent flow.
+  static bool get isComplete => _isComplete;
+  static bool get canRequestAds => _isComplete && _canRequestAds;
+
+  /// Resolves the UMP consent state.
   ///
-  /// Returns `true` when consent is resolved (or wasn't needed), so the app
-  /// can safely proceed to initialize ads and the VPN.
+  /// google_mobile_ads 4.0.0 does not expose UMP's newer canRequestAds API, so
+  /// the compatible safe gate is the final [ConsentStatus]. Ads are allowed
+  /// only when consent is obtained or consent is not required.
   static Future<bool> requestConsentIfNeeded() async {
-    if (_isComplete) return true;
+    if (_isComplete) return _canRequestAds;
+
+    _canRequestAds = false;
 
     try {
       final params = ConsentRequestParameters(
@@ -42,76 +36,95 @@ class ConsentManager {
             : null,
       );
 
-      // Request consent info update from Google's servers.
-      // In google_mobile_ads 4.0.0 this uses a callback pattern.
-      await _requestConsentInfo(params);
+      await _requestConsentInfo(params)
+          .timeout(const Duration(seconds: 10));
 
-      // Check if a consent form is available and needed.
       if (await ConsentInformation.instance.isConsentFormAvailable()) {
-        await _loadAndShowForm();
-        debugPrint('[Consent] Form shown and dismissed by user.');
-      } else {
-        debugPrint('[Consent] No consent form needed for this user.');
+        await _loadAndShowForm().timeout(const Duration(minutes: 2));
       }
+
+      final status = await ConsentInformation.instance
+          .getConsentStatus()
+          .timeout(const Duration(seconds: 5));
+
+      _canRequestAds = status == ConsentStatus.obtained ||
+          status == ConsentStatus.notRequired;
+      _isComplete = true;
+
+      if (!_canRequestAds) {
+        debugPrint('[Consent] Ads blocked; unresolved consent status: $status');
+      }
+
+      return _canRequestAds;
+    } on TimeoutException catch (e) {
+      debugPrint('[Consent] Consent flow timed out: $e');
     } catch (e) {
-      // If anything goes wrong, fail open — the app still works, ads just
-      // default to non-personalized.
-      debugPrint('[Consent] Unexpected error in consent flow: $e');
+      debugPrint('[Consent] Consent flow failed closed: $e');
     }
 
-    _isComplete = true;
-    return true;
+    // Do not cache failures as a successful/complete consent state. A later
+    // attempt may succeed after connectivity or UMP recovers.
+    _isComplete = false;
+    _canRequestAds = false;
+    return false;
   }
 
-  /// Wraps the callback-based requestConsentInfoUpdate in a Future.
-  static Future<void> _requestConsentInfo(ConsentRequestParameters params) {
+  static Future<void> _requestConsentInfo(
+    ConsentRequestParameters params,
+  ) {
     final completer = Completer<void>();
+
     ConsentInformation.instance.requestConsentInfoUpdate(
       params,
       () {
-        debugPrint('[Consent] Consent info updated successfully.');
-        completer.complete();
+        if (!completer.isCompleted) completer.complete();
       },
       (FormError error) {
-        debugPrint('[Consent] Failed to update consent info: ${error.message}');
-        completer.complete(); // Proceed anyway
+        if (!completer.isCompleted) {
+          completer.completeError(
+            StateError('Consent info update failed: ${error.message}'),
+          );
+        }
       },
     );
-    return completer.future.timeout(
-      const Duration(seconds: 10),
-      onTimeout: () => debugPrint('[Consent] Consent info request timed out.'),
-    );
+
+    return completer.future;
   }
 
-  /// Loads and shows the consent form with a timeout.
   static Future<void> _loadAndShowForm() {
     final completer = Completer<void>();
 
     ConsentForm.loadConsentForm(
       (ConsentForm form) {
-        debugPrint('[Consent] Form loaded — showing.');
         form.show((FormError? dismissError) {
+          if (completer.isCompleted) return;
+
           if (dismissError != null) {
-            debugPrint('[Consent] Form dismissed with error: ${dismissError.message}');
+            completer.completeError(
+              StateError('Consent form failed: ${dismissError.message}'),
+            );
+            return;
           }
+
           completer.complete();
         });
       },
       (FormError loadError) {
-        debugPrint('[Consent] Form load error: ${loadError.message}');
-        completer.complete(); // Proceed anyway
+        if (!completer.isCompleted) {
+          completer.completeError(
+            StateError('Consent form load failed: ${loadError.message}'),
+          );
+        }
       },
     );
 
-    return completer.future.timeout(
-      const Duration(seconds: 120),
-      onTimeout: () => debugPrint('[Consent] Form show timed out.'),
-    );
+    return completer.future;
   }
 
-  /// Resets consent state. Useful for testing; NOT for production.
+  /// Testing helper. Do not expose this from production UI.
   static Future<void> resetForTesting() async {
     await ConsentInformation.instance.reset();
     _isComplete = false;
+    _canRequestAds = false;
   }
 }
