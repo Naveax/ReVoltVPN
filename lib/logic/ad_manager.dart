@@ -9,7 +9,8 @@ import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/consent_manager.dart';
 
 class AdManager extends ChangeNotifier {
-  static const bool adsEnabled = false;
+  static const bool adsEnabled =
+      bool.fromEnvironment('ADS_ENABLED', defaultValue: false);
 
   RewardedAd? _rewardedAd;
 
@@ -21,7 +22,6 @@ class AdManager extends ChangeNotifier {
 
   Completer<bool>? _loadCompleter;
 
-  // Google-provided test ad unit
   static String get _adUnitId => AppConfig.adUnitId;
 
   AdManager() {
@@ -95,14 +95,13 @@ class AdManager extends ChangeNotifier {
     return _loadCompleter!.future;
   }
 
-  // ── Show ad (or debug bypass) ─────────────────────────────────────
-
   Future<bool> showAd(String adType) async {
-    // Debug bypass: fire fake AdMob callback so support ads work in dev.
-    // The server's ADMOB_BYPASS must be True for this to succeed.
+    // Development-only bypass. The server still decides whether the test
+    // callback is accepted, so a production backend can keep this fail-closed.
     if (!adsEnabled && kDebugMode) {
       final deviceId = await CryptoService.getDeviceId();
-      final nonce = '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
+      final nonce =
+          '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
       HivemindService.setExpectedNonce(nonce);
       try {
         final customData = jsonEncode({
@@ -114,9 +113,13 @@ class AdManager extends ChangeNotifier {
             '${AppConfig.hivemindApiPublic}/admob/callback'
             '?signature=test&key_id=test'
             '&custom_data=${Uri.encodeComponent(customData)}');
-        await HivemindService.directGet(fakeUrl, timeout: const Duration(seconds: 8));
-        return true;
-      } catch (_) {
+        final response = await HivemindService.directGet(
+          fakeUrl,
+          timeout: const Duration(seconds: 8),
+        );
+        return response.statusCode >= 200 && response.statusCode < 300;
+      } catch (e) {
+        debugPrint('[AdManager] Debug reward callback failed: $e');
         return false;
       }
     }
@@ -135,7 +138,8 @@ class AdManager extends ChangeNotifier {
 
     final deviceId = await CryptoService.getDeviceId();
 
-    final nonce = '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
+    final nonce =
+        '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
     HivemindService.setExpectedNonce(nonce);
     debugPrint('[AdManager] Ad nonce: $nonce');
 
@@ -147,7 +151,7 @@ class AdManager extends ChangeNotifier {
       }),
     );
 
-    Completer<bool> rewardCompleter = Completer<bool>();
+    final rewardCompleter = Completer<bool>();
 
     _rewardedAd!.fullScreenContentCallback = FullScreenContentCallback(
       onAdShowedFullScreenContent: (ad) => debugPrint('[AdManager] Ad showing.'),
