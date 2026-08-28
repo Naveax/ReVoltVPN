@@ -1,0 +1,51 @@
+name: Probe VPN server
+
+on:
+  push:
+    branches:
+      - probe/vpn-server-204
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-vpn-server-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe server and historical SNI
+        shell: bash
+        run: |
+          set +e
+          ip=204.168.246.88
+          echo '=== TCP ports ==='
+          for port in 80 443 8080 8443; do
+            timeout 4 bash -c "</dev/tcp/$ip/$port" >/dev/null 2>&1
+            echo "$ip:$port exit=$?"
+          done
+
+          echo '=== Direct HTTP/HTTPS ==='
+          for url in \
+            "http://$ip/health" \
+            "http://$ip:8080/health" \
+            "https://$ip/health" \
+            "https://$ip/api/v2/health"; do
+            echo "--- $url"
+            curl -k -L -sS --max-time 8 -o /tmp/body -w 'HTTP=%{http_code} IP=%{remote_ip}\n' "$url"
+            head -c 500 /tmp/body || true
+            echo
+          done
+
+          echo '=== Historical host forced to server IP ==='
+          for path in /health /api/v2/health /session/status; do
+            echo "--- https://userevolt.app$path via $ip"
+            curl --resolve "userevolt.app:443:$ip" -k -L -sS --max-time 8 \
+              -o /tmp/body -w 'HTTP=%{http_code} IP=%{remote_ip}\n' \
+              "https://userevolt.app$path"
+            head -c 500 /tmp/body || true
+            echo
+          done
