@@ -68,8 +68,6 @@ jobs:
             static const String githubReleasesUrl =
                 'https://github.com/$githubOwner/$githubRepo/releases/latest';
 
-            // Google's official Android rewarded-ad test unit. ADS_ENABLED stays false
-            // in this haptics-only debug build, so no rewarded session is granted.
             static const String adUnitId =
                 'ca-app-pub-3940256099942544/5224354917';
           }
@@ -78,6 +76,11 @@ jobs:
           cat > android/admob.properties <<'PROPS'
           ADMOB_APP_ID=ca-app-pub-3940256099942544~3347511713
           PROPS
+
+          {
+            printf 'flutter.sdk=%s\n' "$FLUTTER_ROOT"
+            printf 'sdk.dir=%s\n' "$ANDROID_HOME"
+          } > android/local.properties
 
       - name: Restore Gradle wrapper files
         shell: bash
