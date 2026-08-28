@@ -82,6 +82,18 @@ jobs:
             printf 'sdk.dir=%s\n' "$ANDROID_HOME"
           } > android/local.properties
 
+          # Hosted runners have enough RAM, but the repo's 1536M Gradle heap is
+          # too small for Flutter's multi-ABI Jetify transforms.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('android/gradle.properties')
+          lines = p.read_text().splitlines()
+          lines = [line for line in lines if not line.startswith('org.gradle.jvmargs=') and not line.startswith('org.gradle.workers.max=')]
+          lines.insert(0, 'org.gradle.workers.max=2')
+          lines.insert(0, 'org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8')
+          p.write_text('\n'.join(lines) + '\n')
+          PY
+
       - name: Restore Gradle wrapper files
         shell: bash
         run: |
