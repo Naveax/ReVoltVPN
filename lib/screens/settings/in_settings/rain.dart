@@ -1,14 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
+import 'package:revoltvpn/logic/haptic_settings.dart';
 
-// ── lib/screens/settings/in_settings/rain.dart ──────────────────────────────
-// Toggle for the animated rain overlay on the main screen.
-//
-// Same architecture as haptic.dart: exports a top-level bool read synchronously
-// by lib/components/rain.dart. Default: true (rain is on — opt-out).
-
-// lib/components/rain.dart reads this in its build method.
 bool rainEnabled = true;
 
 class RainToggleTile extends StatefulWidget {
@@ -35,10 +29,11 @@ class _RainToggleTileState extends State<RainToggleTile> {
   }
 
   Future<void> _toggle(bool value) async {
+    HapticSettings.selection();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('rain_effect_enabled', value);
     rainEnabled = value;
-    setState(() => _on = value);
+    if (mounted) setState(() => _on = value);
   }
 
   @override

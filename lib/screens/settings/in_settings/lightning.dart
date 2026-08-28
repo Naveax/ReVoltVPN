@@ -1,14 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
+import 'package:revoltvpn/logic/haptic_settings.dart';
 
-// ── lib/screens/settings/in_settings/lightning.dart ─────────────────────────
-// Toggle for the lightning strike overlay on the main screen.
-//
-// Same architecture as haptic.dart: exports a top-level bool read synchronously
-// by lib/components/lightning.dart. Default: true (lightning is on — opt-out).
-
-// lib/components/lightning.dart reads this in its build method.
 bool lightningEnabled = true;
 
 class LightningToggleTile extends StatefulWidget {
@@ -35,10 +29,11 @@ class _LightningToggleTileState extends State<LightningToggleTile> {
   }
 
   Future<void> _toggle(bool value) async {
+    HapticSettings.selection();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('lightning_effect_enabled', value);
     lightningEnabled = value;
-    setState(() => _on = value);
+    if (mounted) setState(() => _on = value);
   }
 
   @override

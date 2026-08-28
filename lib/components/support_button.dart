@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:revoltvpn/logic/ad_manager.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
+import 'package:revoltvpn/logic/haptic_settings.dart';
 import 'package:revoltvpn/logic/session_timer.dart';
 
 class SupportButton extends StatefulWidget {
@@ -22,9 +23,11 @@ class _SupportButtonState extends State<SupportButton> {
 
     if (!timer.isRunning && !timer.hasSyncedOnce) return;
 
+    HapticSettings.tap();
     setState(() => _busy = true);
     try {
-      await ad.showAd('support');
+      final rewarded = await ad.showAd('support');
+      if (rewarded) HapticSettings.success();
     } finally {
       if (mounted) setState(() => _busy = false);
     }

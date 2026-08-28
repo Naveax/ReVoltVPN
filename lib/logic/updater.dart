@@ -1,13 +1,15 @@
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:url_launcher/url_launcher.dart';
-import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
+import 'package:revoltvpn/logic/app_config.dart';
+import 'package:revoltvpn/logic/haptic_settings.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 enum UpdateStatus { upToDate, updateAvailable, checkFailed }
 
@@ -21,8 +23,10 @@ class PlayStoreUpdater {
 
   static Future<bool> open() async {
     try {
-      return await launchUrl(Uri.parse(_url),
-          mode: LaunchMode.externalApplication);
+      return await launchUrl(
+        Uri.parse(_url),
+        mode: LaunchMode.externalApplication,
+      );
     } catch (e) {
       debugPrint('[Updater] Failed to open Play Store: $e');
       return false;
@@ -41,8 +45,10 @@ class GitHubUpdater {
 
     try {
       final response = await http
-          .get(Uri.parse(url),
-              headers: {'Accept': 'application/vnd.github+json'})
+          .get(
+            Uri.parse(url),
+            headers: {'Accept': 'application/vnd.github+json'},
+          )
           .timeout(const Duration(seconds: 8));
 
       if (response.statusCode != 200) {
@@ -64,8 +70,10 @@ class GitHubUpdater {
   static Future<bool> open() async {
     final url = _cachedDownloadUrl ?? AppConfig.githubReleasesUrl;
     try {
-      return await launchUrl(Uri.parse(url),
-          mode: LaunchMode.externalApplication);
+      return await launchUrl(
+        Uri.parse(url),
+        mode: LaunchMode.externalApplication,
+      );
     } catch (e) {
       debugPrint('[Updater] Failed to open GitHub: $e');
       return false;
@@ -86,7 +94,7 @@ class Updater {
     }
 
     try {
-      final result = await MethodChannel('com.revoltvpn.app/installer')
+      final result = await const MethodChannel('com.revoltvpn.app/installer')
           .invokeMethod<String>('getInstallerPackage');
       _cachedSource = (result == 'com.android.vending')
           ? InstallSource.playStore
@@ -119,8 +127,11 @@ class Updater {
     final info = await PackageInfo.fromPlatform();
     final localVersion = info.version;
     if (localVersion.isEmpty) {
-      _showSnackBar(context, 'Could not determine app version',
-          isError: true);
+      _showSnackBar(
+        context,
+        'Could not determine app version',
+        isError: true,
+      );
       return;
     }
 
@@ -136,15 +147,18 @@ class Updater {
     }
 
     final source = await installSource;
-    final storeName = source == InstallSource.playStore ? 'Play Store' : 'GitHub';
+    final storeName =
+        source == InstallSource.playStore ? 'Play Store' : 'GitHub';
     if (!context.mounted) return;
 
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.bgCard,
-        title: const Text('Update available',
-            style: TextStyle(color: AppColors.textWhite)),
+        title: const Text(
+          'Update available',
+          style: TextStyle(color: AppColors.textWhite),
+        ),
         content: Text(
           '${_versionLabel(latestVersion, false)} is available on $storeName.\n'
           'You have ${_versionLabel(localVersion, true)}.',
@@ -152,34 +166,47 @@ class Updater {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Later',
-                style: TextStyle(color: AppColors.slate70)),
+            onPressed: () {
+              HapticSettings.tap();
+              Navigator.pop(ctx);
+            },
+            child: const Text(
+              'Later',
+              style: TextStyle(color: AppColors.slate70),
+            ),
           ),
           TextButton(
             onPressed: () {
+              HapticSettings.tap();
               Navigator.pop(ctx);
               source == InstallSource.playStore
                   ? PlayStoreUpdater.open()
                   : GitHubUpdater.open();
             },
-            child: Text('Open $storeName',
-                style: const TextStyle(color: AppColors.accent)),
+            child: Text(
+              'Open $storeName',
+              style: const TextStyle(color: AppColors.accent),
+            ),
           ),
         ],
       ),
     );
   }
 
-  static void _showSnackBar(BuildContext context, String message,
-      {bool isError = false}) {
+  static void _showSnackBar(
+    BuildContext context,
+    String message, {
+    bool isError = false,
+  }) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Row(
           children: [
-            Icon(isError ? Icons.error_outline : Icons.check_circle,
-                color: isError ? AppColors.red : AppColors.green,
-                size: 18),
+            Icon(
+              isError ? Icons.error_outline : Icons.check_circle,
+              color: isError ? AppColors.red : AppColors.green,
+              size: 18,
+            ),
             const SizedBox(width: 8),
             Text(message),
           ],

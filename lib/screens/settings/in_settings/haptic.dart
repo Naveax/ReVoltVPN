@@ -24,11 +24,12 @@ class _HapticFeedbackTileState extends State<HapticFeedbackTile> {
   }
 
   Future<void> _toggle(bool value) async {
+    if (!value) HapticSettings.selection();
     if (mounted) setState(() => _on = value);
 
     try {
       await HapticSettings.setEnabled(value);
-      if (value) await HapticSettings.lightImpact();
+      if (value) HapticSettings.selection();
     } catch (_) {
       if (mounted) setState(() => _on = HapticSettings.enabled);
     }

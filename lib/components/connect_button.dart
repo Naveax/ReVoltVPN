@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:revoltvpn/logic/ad_manager.dart';
@@ -68,9 +66,7 @@ class _ConnectButtonState extends State<ConnectButton>
 
     if (vpn.status == VpnStatus.disconnecting || _busy) return;
 
-    // Feedback belongs to the accepted tap, not to a later network result.
-    // Otherwise a failed/disabled backend makes haptics appear broken.
-    unawaited(HapticSettings.lightImpact());
+    HapticSettings.tap();
 
     if (vpn.status == VpnStatus.connected || vpn.status == VpnStatus.connecting) {
       await timer.disconnect();
@@ -105,7 +101,10 @@ class _ConnectButtonState extends State<ConnectButton>
       }
 
       final ok = await vpn.connect();
-      if (ok) await timer.start();
+      if (ok) {
+        await timer.start();
+        HapticSettings.success();
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
