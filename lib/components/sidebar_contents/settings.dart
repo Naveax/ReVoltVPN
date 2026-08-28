@@ -13,7 +13,12 @@ class SettingsButton extends StatelessWidget {
   // Opens the settings page sliding in from the right — matches the
   // sidebar end-drawer animation so it feels like one continuous motion.
   static void open(BuildContext context) {
-    Navigator.of(context).push(
+    openWithNavigator(Navigator.of(context, rootNavigator: true));
+  }
+
+  static void openWithNavigator(NavigatorState navigator) {
+    if (!navigator.mounted) return;
+    navigator.push(
       PageRouteBuilder(
         transitionDuration: const Duration(milliseconds: 300),
         reverseTransitionDuration: const Duration(milliseconds: 250),
