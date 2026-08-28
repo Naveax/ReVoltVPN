@@ -126,8 +126,11 @@ class _SidebarDrawerState extends State<SidebarDrawer> {
               icon: Icons.settings,
               label: 'Settings',
               onTap: () {
-                Navigator.of(context).pop();
-                SettingsButton.open(context);
+                final drawerNavigator = Navigator.of(context);
+                final rootNavigator =
+                    Navigator.of(context, rootNavigator: true);
+                drawerNavigator.pop();
+                SettingsButton.openWithNavigator(rootNavigator);
               },
             ),
 
@@ -135,8 +138,15 @@ class _SidebarDrawerState extends State<SidebarDrawer> {
               icon: Icons.system_update_alt,
               label: 'Check for updates',
               onTap: () {
-                Navigator.of(context).pop();
-                Updater.check(context);
+                final drawerNavigator = Navigator.of(context);
+                final rootNavigator =
+                    Navigator.of(context, rootNavigator: true);
+                final messenger = ScaffoldMessenger.of(context);
+                drawerNavigator.pop();
+                Updater.checkWithHandles(
+                  navigator: rootNavigator,
+                  messenger: messenger,
+                );
               },
             ),
 
