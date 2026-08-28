@@ -13,7 +13,9 @@ abstract final class HapticSettings {
   static const MethodChannel _channel =
       MethodChannel('com.revoltvpn.app/haptics');
 
-  static bool _enabled = false;
+  // Haptics are enabled by default on a fresh install. The setting remains
+  // user-controlled and is persisted immediately when changed.
+  static bool _enabled = true;
   static bool _initialized = false;
 
   static bool get enabled => _enabled;
@@ -23,10 +25,10 @@ abstract final class HapticSettings {
 
     try {
       final prefs = await SharedPreferences.getInstance();
-      _enabled = prefs.getBool(_prefKey) ?? false;
+      _enabled = prefs.getBool(_prefKey) ?? true;
     } catch (e) {
       debugPrint('[Haptics] Failed to load preference: $e');
-      _enabled = false;
+      _enabled = true;
     } finally {
       _initialized = true;
     }
