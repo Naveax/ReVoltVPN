@@ -25,6 +25,7 @@ class MainActivity : FlutterActivity() {
     private val installerChannel = "com.revoltvpn.app/installer"
     private val hapticsChannel = "com.revoltvpn.app/haptics"
     private val appsChannel = "com.revoltvpn.app/apps"
+    private val routingChannel = "com.revoltvpn.app/app_routing"
     private val networkChannel = "com.revoltvpn.app/network"
 
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -58,6 +59,45 @@ class MainActivity : FlutterActivity() {
                     result.success(launchableApps())
                 } else {
                     result.notImplemented()
+                }
+            }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, routingChannel)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "start" -> {
+                        val requested = call.argument<List<String>>("packages").orEmpty()
+                        val packages = installedPackages(requested)
+                        if (packages.isEmpty()) {
+                            result.error(
+                                "NO_APPS",
+                                "No selected applications are installed.",
+                                null,
+                            )
+                            return@setMethodCallHandler
+                        }
+
+                        val intent = Intent(this, AppRoutingVpnService::class.java).apply {
+                            action = AppRoutingVpnService.ACTION_START
+                            putStringArrayListExtra(
+                                AppRoutingVpnService.EXTRA_PACKAGES,
+                                ArrayList(packages),
+                            )
+                        }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(intent)
+                        } else {
+                            startService(intent)
+                        }
+                        result.success(null)
+                    }
+
+                    "stop" -> {
+                        stopService(Intent(this, AppRoutingVpnService::class.java))
+                        result.success(null)
+                    }
+
+                    else -> result.notImplemented()
                 }
             }
 
@@ -234,6 +274,23 @@ class MainActivity : FlutterActivity() {
             }
             .distinctBy { it["packageName"] as String }
             .sortedBy { (it["label"] as String).lowercase() }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun installedPackages(requested: List<String>): List<String> {
+        return requested
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .distinct()
+            .filter { appPackage ->
+                if (appPackage == packageName) return@filter false
+                try {
+                    packageManager.getApplicationInfo(appPackage, 0)
+                    true
+                } catch (_: PackageManager.NameNotFoundException) {
+                    false
+                }
+            }
     }
 
     private fun appIconPng(info: ResolveInfo): ByteArray? = try {
