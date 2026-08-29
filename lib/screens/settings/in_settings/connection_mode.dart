@@ -14,6 +14,8 @@ class ConnectionModeTile extends StatefulWidget {
 }
 
 class _ConnectionModeTileState extends State<ConnectionModeTile> {
+  static const String localSocksAddress = '127.0.0.1:10807';
+
   ConnectionMode _mode = ConnectionSettings.mode;
 
   @override
@@ -24,7 +26,9 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
 
   Future<void> _load() async {
     await ConnectionSettings.initialize();
-    if (mounted) setState(() => _mode = ConnectionSettings.mode);
+    if (mounted) {
+      setState(() => _mode = ConnectionSettings.mode);
+    }
   }
 
   bool _isTunnelBusy(VpnStatus status) {
@@ -33,21 +37,43 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
         status == VpnStatus.disconnecting;
   }
 
-  Future<void> _changeMode(ConnectionMode? next) async {
-    if (next == null || next == _mode) return;
+  Future<bool> _setMode(ConnectionMode next) async {
+    if (next == _mode) return true;
 
     final vpn = context.read<VpnConnection>();
     if (_isTunnelBusy(vpn.status)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Disconnect before changing connection mode.')),
+        const SnackBar(
+          content: Text('Disconnect before changing connection mode.'),
+        ),
       );
-      return;
+      return false;
     }
 
     await ConnectionSettings.setMode(next);
-    if (!mounted) return;
+    if (!mounted) return false;
+
     setState(() => _mode = next);
     widget.onChanged?.call(next);
+    return true;
+  }
+
+  Future<void> _changeMode(ConnectionMode? next) async {
+    if (next == null) return;
+    await _setMode(next);
+  }
+
+  Future<void> _selectLocalServer() async {
+    final changed = await _setMode(ConnectionMode.proxy);
+    if (!changed || !mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Server Local selected. Connect to start SOCKS5 on 127.0.0.1:10807.',
+        ),
+      ),
+    );
   }
 
   @override
@@ -64,7 +90,7 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
           ),
           subtitle: Text(
             proxyMode
-                ? 'Local SOCKS5/HTTP proxy. Traffic still exits through the same ReVolt VLESS/Reality server.'
+                ? 'Local SOCKS5 mode. Traffic still exits through the same ReVolt VLESS/Reality server.'
                 : 'TUN mode. Device traffic uses the Android VPN tunnel.',
             style: const TextStyle(color: AppColors.textDim, fontSize: 12),
           ),
@@ -80,17 +106,25 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
                 ),
                 DropdownMenuItem(
                   value: ConnectionMode.proxy,
-                  child: Text('SOCKS5 / HTTP'),
+                  child: Text('Local SOCKS5'),
                 ),
               ],
             ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+          child: OutlinedButton.icon(
+            onPressed: _selectLocalServer,
+            icon: const Icon(Icons.dns_outlined),
+            label: const Text('Server Local'),
           ),
         ),
         if (proxyMode)
           const Padding(
             padding: EdgeInsets.fromLTRB(20, 0, 20, 12),
             child: Text(
-              'SOCKS5: 127.0.0.1:10807\nHTTP: 127.0.0.1:10808',
+              'SOCKS5: $localSocksAddress\nUse the main Connect button to start the local proxy.',
               style: TextStyle(color: AppColors.textMuted, fontSize: 12),
             ),
           ),
