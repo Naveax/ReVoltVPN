@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
@@ -26,6 +26,7 @@ class SessionTimer extends ChangeNotifier {
 
   static const String _supportRewardClaimKey =
       'support_reward_claimed_active_session';
+  static const FlutterSecureStorage _supportStorage = FlutterSecureStorage();
 
   static const int _maxConsecutiveFailures = 3;
   static const int _maxOfflineSeconds = 120;
@@ -62,8 +63,8 @@ class SessionTimer extends ChangeNotifier {
     final epoch = _supportStateEpoch;
     bool claimed = false;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      claimed = prefs.getBool(_supportRewardClaimKey) ?? false;
+      claimed =
+          (await _supportStorage.read(key: _supportRewardClaimKey)) == '1';
     } catch (e) {
       debugPrint('[Timer] Failed to load support reward state: $e');
     }
@@ -76,11 +77,10 @@ class SessionTimer extends ChangeNotifier {
 
   Future<void> _persistSupportRewardState(bool value) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final saved = await prefs.setBool(_supportRewardClaimKey, value);
-      if (!saved) {
-        debugPrint('[Timer] Support reward state was not persisted.');
-      }
+      await _supportStorage.write(
+        key: _supportRewardClaimKey,
+        value: value ? '1' : '0',
+      );
     } catch (e) {
       debugPrint('[Timer] Failed to persist support reward state: $e');
     }
@@ -130,8 +130,8 @@ class SessionTimer extends ChangeNotifier {
     _isDisconnecting = false;
 
     // This is a genuinely new VPN session, so the one-support-reward allowance
-    // starts fresh. Increment the epoch so a stale async preference load from
-    // app startup cannot overwrite the new-session state.
+    // starts fresh. Increment the epoch so a stale async storage load from app
+    // startup cannot overwrite the new-session state.
     _supportStateEpoch++;
     _supportRewardClaimed = false;
     _supportRewardStateLoaded = true;
