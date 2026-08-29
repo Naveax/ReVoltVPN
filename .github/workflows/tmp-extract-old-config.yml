@@ -1,0 +1,35 @@
+name: tmp-extract-old-config
+
+on:
+  push:
+    branches:
+      - fix/main-sidebar-haptics-only-v2
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download old working release APK
+        run: curl -fL --retry 3 -o old.apk https://github.com/esefxdz/ReVoltVPN/releases/download/v3.2.2/app-release.apk
+      - name: Extract public client strings
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/apk
+          unzip -j old.apk 'lib/arm64-v8a/libapp.so' -d out/apk
+          strings -a out/apk/libapp.so > out/all-strings.txt
+          grep -E -i 'userevolt|getrevolt|hivemind|/api|/session/status|/admob/callback|204\.168\.|vless://|/revolt|ca-app-pub-|github\.com/esefxdz|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' out/all-strings.txt | sort -u > out/public-config-candidates.txt || true
+          if command -v apkanalyzer >/dev/null 2>&1; then
+            apkanalyzer manifest print old.apk > out/manifest.xml || true
+          fi
+          cat out/public-config-candidates.txt
+      - name: Upload extraction
+        uses: actions/upload-artifact@v4
+        with:
+          name: old-public-config
+          path: |
+            out/public-config-candidates.txt
+            out/manifest.xml
+          if-no-files-found: warn
+          retention-days: 1
