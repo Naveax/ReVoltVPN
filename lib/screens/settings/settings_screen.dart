@@ -55,7 +55,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onChanged: (mode) => setState(() => _mode = mode),
           ),
           const ResilienceModeTile(),
-          AppRoutingTile(enabled: _mode == ConnectionMode.tun),
+          AppRoutingTile(tunMode: _mode == ConnectionMode.tun),
           const HapticFeedbackTile(),
           const RainToggleTile(),
           const LightningToggleTile(),
