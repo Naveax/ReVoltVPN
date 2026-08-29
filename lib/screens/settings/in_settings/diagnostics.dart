@@ -46,7 +46,8 @@ class _ConnectionDiagnosticsScreenState
       'Status: ${vpn.status.name}',
       'Message: ${vpn.statusMessage}',
       'Mode: ${vpn.activeMode.name}',
-      'Hybrid app routing: ${vpn.hybridAppRoutingActive}',
+      'App Specific routing: ${vpn.appSpecificRoutingActive}',
+      'Active routing: ${vpn.activeRoutingDescription}',
       'Resilience: ${vpn.activeResilienceMode.name}',
       'Transport profile: ${vpn.activeTransportProfile}',
       'Network: ${vpn.networkTransport}',
@@ -56,7 +57,7 @@ class _ConnectionDiagnosticsScreenState
       'Reconnects: ${vpn.reconnectCount}',
       'Fallbacks: ${vpn.fallbackCount}',
       'Last recovery: $recovery',
-      'App routing: ${ConnectionSettings.routingMode.name}',
+      'Saved app routing: ${ConnectionSettings.routingMode.name}',
       'Selected packages: ${ConnectionSettings.appPackages.length}',
       'Local SOCKS5: $socks',
     ].join('\n');
@@ -75,9 +76,10 @@ class _ConnectionDiagnosticsScreenState
           final rows = <MapEntry<String, String>>[
             MapEntry('Status', vpn.status.name),
             MapEntry('Connection mode', vpn.activeMode.name),
+            MapEntry('Active routing', vpn.activeRoutingDescription),
             MapEntry(
-              'Hybrid app routing',
-              vpn.hybridAppRoutingActive ? 'active' : 'off',
+              'App Specific wrapper',
+              vpn.appSpecificRoutingActive ? 'active' : 'off',
             ),
             MapEntry('Resilience', vpn.activeResilienceMode.name),
             MapEntry('Active profile', vpn.activeTransportProfile),
@@ -93,7 +95,7 @@ class _ConnectionDiagnosticsScreenState
             MapEntry('Reconnects', '${vpn.reconnectCount}'),
             MapEntry('Fallbacks', '${vpn.fallbackCount}'),
             MapEntry('Last recovery', vpn.lastRecoveryReason ?? 'none'),
-            MapEntry('App routing', ConnectionSettings.routingMode.name),
+            MapEntry('Saved app routing', ConnectionSettings.routingMode.name),
             MapEntry(
               'Selected apps',
               '${ConnectionSettings.appPackages.length}',
