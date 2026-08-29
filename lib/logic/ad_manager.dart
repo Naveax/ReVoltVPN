@@ -114,8 +114,16 @@ class AdManager extends ChangeNotifier {
             '${AppConfig.hivemindApiPublic}/admob/callback'
             '?signature=test&key_id=test'
             '&custom_data=${Uri.encodeComponent(customData)}');
-        await HivemindService.directGet(fakeUrl, timeout: const Duration(seconds: 8));
-        return true;
+        final response = await HivemindService.directGet(
+          fakeUrl,
+          timeout: const Duration(seconds: 8),
+        );
+        final ok = response.statusCode >= 200 && response.statusCode < 300;
+        if (!ok) {
+          debugPrint(
+              '[AdManager] Debug callback rejected: HTTP ${response.statusCode}');
+        }
+        return ok;
       } catch (_) {
         return false;
       }
