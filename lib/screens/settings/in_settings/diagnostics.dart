@@ -46,6 +46,7 @@ class _ConnectionDiagnosticsScreenState
       'Status: ${vpn.status.name}',
       'Message: ${vpn.statusMessage}',
       'Mode: ${vpn.activeMode.name}',
+      'Hybrid app routing: ${vpn.hybridAppRoutingActive}',
       'Resilience: ${vpn.activeResilienceMode.name}',
       'Transport profile: ${vpn.activeTransportProfile}',
       'Network: ${vpn.networkTransport}',
@@ -74,6 +75,10 @@ class _ConnectionDiagnosticsScreenState
           final rows = <MapEntry<String, String>>[
             MapEntry('Status', vpn.status.name),
             MapEntry('Connection mode', vpn.activeMode.name),
+            MapEntry(
+              'Hybrid app routing',
+              vpn.hybridAppRoutingActive ? 'active' : 'off',
+            ),
             MapEntry('Resilience', vpn.activeResilienceMode.name),
             MapEntry('Active profile', vpn.activeTransportProfile),
             MapEntry('Network', vpn.networkTransport),
