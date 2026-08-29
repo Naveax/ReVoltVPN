@@ -1,8 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_vless/flutter_vless.dart';
+import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/connection_settings.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
+import 'package:revoltvpn/logic/installed_apps_service.dart';
 
 enum VpnStatus {
   disconnected,
@@ -32,7 +36,20 @@ class VpnConnection extends ChangeNotifier {
   ConnectionMode _activeMode = ConnectionMode.tun;
   ConnectionMode get activeMode => _activeMode;
 
+  ResilienceMode _activeResilienceMode = ResilienceMode.standard;
+  ResilienceMode get activeResilienceMode => _activeResilienceMode;
+
   Timer? _healthTimer;
+  Timer? _restartTimer;
+
+  String? _lastBaseConfig;
+  String _lastRemark = 'Revolt VPN';
+  List<String>? _lastBlockedApps;
+  bool _lastProxyOnly = false;
+  int _activeTransportIndex = 0;
+  int _runtimeFailures = 0;
+  bool _restartInProgress = false;
+  bool _userDisconnecting = false;
 
   late final FlutterVless _vless;
   bool _initialized = false;
@@ -41,6 +58,7 @@ class VpnConnection extends ChangeNotifier {
 
   VpnConnection() {
     _activeMode = ConnectionSettings.mode;
+    _activeResilienceMode = ConnectionSettings.resilienceMode;
     _init();
   }
 
@@ -76,9 +94,11 @@ class VpnConnection extends ChangeNotifier {
       debugPrint('[VPN] VLESS init error (expected on emulator): $e');
     }
 
-    _checkHealth();
-    _healthTimer =
-        Timer.periodic(const Duration(seconds: 30), (_) => _checkHealth());
+    unawaited(_checkHealth());
+    _healthTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      unawaited(_checkHealth());
+      unawaited(_checkActiveRuntime());
+    });
 
     try {
       final coreVersion = await _vless.getCoreVersion();
@@ -98,22 +118,38 @@ class VpnConnection extends ChangeNotifier {
   void _mapStatus(VlessStatus status) {
     switch (status.connectionState) {
       case VlessConnectionState.connected:
+        _runtimeFailures = 0;
         _setStatus(VpnStatus.connected, _connectedLabel);
         break;
       case VlessConnectionState.disconnected:
+        if (_restartInProgress) return;
+
+        final shouldRecover = !_userDisconnecting &&
+            _lastBaseConfig != null &&
+            _status == VpnStatus.connected;
+        if (shouldRecover) {
+          _scheduleRuntimeRestart('Network changed');
+          return;
+        }
+
         _isStartupRestoration = false;
         _setStatus(VpnStatus.disconnected, 'Tap to connect');
         break;
       case VlessConnectionState.connecting:
-        _setStatus(VpnStatus.connecting, 'Establishing tunnel…');
+        if (!_restartInProgress) {
+          _setStatus(VpnStatus.connecting, 'Establishing tunnel…');
+        }
         break;
       case VlessConnectionState.disconnecting:
         _isStartupRestoration = false;
-        _setStatus(VpnStatus.disconnecting, 'Tearing down…');
+        if (!_restartInProgress) {
+          _setStatus(VpnStatus.disconnecting, 'Tearing down…');
+        }
         break;
       case VlessConnectionState.unknown:
         if (_status != VpnStatus.connected &&
-            _status != VpnStatus.disconnected) {
+            _status != VpnStatus.disconnected &&
+            !_restartInProgress) {
           _setStatus(VpnStatus.error, 'Connection failed');
         }
         break;
@@ -126,10 +162,14 @@ class VpnConnection extends ChangeNotifier {
     if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
       return false;
     }
+
     _cancelled = false;
+    _userDisconnecting = false;
+    _restartTimer?.cancel();
 
     await ConnectionSettings.initialize();
     _activeMode = ConnectionSettings.mode;
+    _activeResilienceMode = ConnectionSettings.resilienceMode;
     final proxyOnly = _activeMode == ConnectionMode.proxy;
 
     if (!kIsWeb && !_initialized) {
@@ -167,7 +207,9 @@ class VpnConnection extends ChangeNotifier {
         skipAdBypass: skipAdBypass,
         onAttempt: (attempt, total) {
           _setStatus(
-              VpnStatus.connecting, 'Contacting server ($attempt/$total)…');
+            VpnStatus.connecting,
+            'Contacting server ($attempt/$total)…',
+          );
         },
       );
     } catch (e) {
@@ -179,7 +221,7 @@ class VpnConnection extends ChangeNotifier {
             'The server did not respond in time.\nCheck your connection and try again.';
         _setStatus(VpnStatus.error, 'Server unreachable');
       } else {
-        _errorMessage = e.toString().replaceAll('Exception: ', '');
+        _errorMessage = raw;
         _setStatus(VpnStatus.error, 'Config fetch error');
       }
       return false;
@@ -197,18 +239,32 @@ class VpnConnection extends ChangeNotifier {
 
     try {
       final parsed = FlutterVless.parse(realUrl);
-      final blockedApps = !proxyOnly && ConnectionSettings.blockedApps.isNotEmpty
-          ? ConnectionSettings.blockedApps
-          : null;
+      final baseConfig = parsed.getFullConfiguration();
+      final remark = parsed.remark.isNotEmpty ? parsed.remark : 'Revolt VPN';
+      final blockedApps = await _resolveBlockedApps(proxyOnly);
+      final configs = _transportConfigs(baseConfig, _activeResilienceMode);
 
-      await _vless.startVless(
-        remark: parsed.remark.isNotEmpty ? parsed.remark : 'Revolt VPN',
-        config: parsed.getFullConfiguration(),
+      final transportIndex = await _startRuntime(
+        configs: configs,
+        remark: remark,
         blockedApps: blockedApps,
         proxyOnly: proxyOnly,
+        validate: _activeResilienceMode == ResilienceMode.extreme,
       );
+
+      if (transportIndex == null) {
+        throw StateError('No working runtime profile');
+      }
+
+      _lastBaseConfig = baseConfig;
+      _lastRemark = remark;
+      _lastBlockedApps = blockedApps == null ? null : List.of(blockedApps);
+      _lastProxyOnly = proxyOnly;
+      _activeTransportIndex = transportIndex;
+      _runtimeFailures = 0;
     } catch (e) {
       debugPrint('[VPN] Tunnel start error: $e');
+      _clearRuntimeSnapshot();
       _errorMessage = proxyOnly
           ? 'Proxy failed to start.\nTry reconnecting.'
           : 'Tunnel failed to start.\nTry reconnecting.';
@@ -220,11 +276,226 @@ class VpnConnection extends ChangeNotifier {
     return true;
   }
 
+  Future<List<String>?> _resolveBlockedApps(bool proxyOnly) async {
+    if (proxyOnly) return null;
+
+    final selected = ConnectionSettings.appPackages;
+    switch (ConnectionSettings.routingMode) {
+      case AppRoutingMode.all:
+        return null;
+      case AppRoutingMode.exclude:
+        return selected.isEmpty ? null : selected;
+      case AppRoutingMode.selected:
+        if (selected.isEmpty) {
+          throw StateError('Select at least one app for Selected only mode.');
+        }
+
+        final apps = await InstalledAppsService.loadLaunchableApps();
+        final selectedSet = selected.toSet();
+        final availableSelected =
+            apps.where((app) => selectedSet.contains(app.packageName)).toList();
+        if (availableSelected.isEmpty) {
+          throw StateError('None of the selected apps are installed.');
+        }
+
+        final blocked = apps
+            .where((app) => !selectedSet.contains(app.packageName))
+            .map((app) => app.packageName)
+            .toList();
+        return blocked.isEmpty ? null : blocked;
+    }
+  }
+
+  List<String> _transportConfigs(
+    String baseConfig,
+    ResilienceMode resilienceMode,
+  ) {
+    if (resilienceMode == ResilienceMode.standard) {
+      return <String>[baseConfig];
+    }
+
+    final configs = <String>[baseConfig];
+    for (final mode in const <String>['stream-up', 'packet-up']) {
+      final variant = _withXhttpMode(baseConfig, mode);
+      if (variant != null && !configs.contains(variant)) {
+        configs.add(variant);
+      }
+    }
+    return configs;
+  }
+
+  String? _withXhttpMode(String config, String mode) {
+    try {
+      final decoded = jsonDecode(config);
+      if (decoded is! Map<String, dynamic>) return null;
+
+      final outbounds = decoded['outbounds'];
+      if (outbounds is! List) return null;
+
+      var changed = false;
+      for (final item in outbounds) {
+        if (item is! Map<String, dynamic>) continue;
+        final streamSettings = item['streamSettings'];
+        if (streamSettings is! Map<String, dynamic>) continue;
+        if (streamSettings['network'] != 'xhttp') continue;
+
+        final current = streamSettings['xhttpSettings'];
+        final xhttpSettings = current is Map<String, dynamic>
+            ? Map<String, dynamic>.from(current)
+            : <String, dynamic>{};
+        xhttpSettings['mode'] = mode;
+        streamSettings['xhttpSettings'] = xhttpSettings;
+        changed = true;
+      }
+
+      return changed ? jsonEncode(decoded) : null;
+    } catch (e) {
+      debugPrint('[VPN] Could not build XHTTP fallback: $e');
+      return null;
+    }
+  }
+
+  Future<int?> _startRuntime({
+    required List<String> configs,
+    required String remark,
+    required List<String>? blockedApps,
+    required bool proxyOnly,
+    required bool validate,
+    int startIndex = 0,
+  }) async {
+    for (var offset = 0; offset < configs.length; offset++) {
+      final index = (startIndex + offset) % configs.length;
+      try {
+        await _vless.startVless(
+          remark: remark,
+          config: configs[index],
+          blockedApps: blockedApps,
+          proxyOnly: proxyOnly,
+        );
+
+        if (!validate || await _runtimeHealthy()) {
+          return index;
+        }
+
+        debugPrint('[VPN] Runtime profile $index did not pass health check.');
+      } catch (e) {
+        debugPrint('[VPN] Runtime profile $index failed: $e');
+      }
+
+      await _stopForRetry();
+    }
+
+    return null;
+  }
+
+  Future<bool> _runtimeHealthy() async {
+    await Future.delayed(const Duration(milliseconds: 900));
+    try {
+      final delay = await _vless
+          .getConnectedServerDelay(
+            url: '${AppConfig.hivemindApiPublic}/health',
+          )
+          .timeout(
+            const Duration(seconds: 6),
+            onTimeout: () => -1,
+          );
+      return delay >= 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _stopForRetry() async {
+    try {
+      await _vless.stopVless().timeout(const Duration(seconds: 4));
+    } catch (_) {}
+    await Future.delayed(const Duration(milliseconds: 500));
+  }
+
+  Future<void> _checkActiveRuntime() async {
+    if (_status != VpnStatus.connected ||
+        _restartInProgress ||
+        _userDisconnecting ||
+        _lastBaseConfig == null) {
+      return;
+    }
+
+    if (await _runtimeHealthy()) {
+      _runtimeFailures = 0;
+      return;
+    }
+
+    _runtimeFailures++;
+    if (_runtimeFailures >= 2) {
+      _scheduleRuntimeRestart('Runtime health check failed');
+    }
+  }
+
+  void _scheduleRuntimeRestart(String reason) {
+    if (_restartInProgress || _userDisconnecting || _lastBaseConfig == null) {
+      return;
+    }
+    if (_restartTimer?.isActive ?? false) return;
+
+    _setStatus(VpnStatus.connecting, 'Network changed — reconnecting…');
+    _restartTimer = Timer(const Duration(milliseconds: 1500), () {
+      unawaited(_restartActiveRuntime(reason));
+    });
+  }
+
+  Future<void> _restartActiveRuntime(String reason) async {
+    if (_restartInProgress || _userDisconnecting || _lastBaseConfig == null) {
+      return;
+    }
+
+    _restartInProgress = true;
+    debugPrint('[VPN] Restarting runtime: $reason');
+
+    try {
+      await _stopForRetry();
+
+      final configs = _transportConfigs(
+        _lastBaseConfig!,
+        _activeResilienceMode,
+      );
+      final startIndex = _activeResilienceMode == ResilienceMode.extreme &&
+              configs.length > 1
+          ? (_activeTransportIndex + 1) % configs.length
+          : 0;
+
+      final transportIndex = await _startRuntime(
+        configs: configs,
+        remark: _lastRemark,
+        blockedApps: _lastBlockedApps,
+        proxyOnly: _lastProxyOnly,
+        validate: _activeResilienceMode == ResilienceMode.extreme,
+        startIndex: startIndex,
+      );
+
+      if (transportIndex == null) {
+        _errorMessage = 'Could not restore the connection after a network change.';
+        _setStatus(VpnStatus.error, 'Reconnect failed');
+        return;
+      }
+
+      _activeTransportIndex = transportIndex;
+      _runtimeFailures = 0;
+      _setStatus(VpnStatus.connected, _connectedLabel);
+    } finally {
+      _restartInProgress = false;
+    }
+  }
+
   Future<void> disconnect() async {
     _cancelled = true;
+    _userDisconnecting = true;
+    _restartTimer?.cancel();
     HivemindService.cancel();
+    _clearRuntimeSnapshot();
+
     if (_status == VpnStatus.disconnected ||
         _status == VpnStatus.disconnecting) {
+      _userDisconnecting = false;
       return;
     }
 
@@ -233,6 +504,7 @@ class VpnConnection extends ChangeNotifier {
     if (kIsWeb) {
       await Future.delayed(const Duration(milliseconds: 500));
       _setStatus(VpnStatus.disconnected, 'Tap to connect');
+      _userDisconnecting = false;
       return;
     }
 
@@ -246,24 +518,34 @@ class VpnConnection extends ChangeNotifier {
       debugPrint('[VPN] VLESS stop error: $e');
       _errorMessage = 'VPN shutdown error.\nPlease restart the app.';
       _setStatus(VpnStatus.error, 'Shutdown failed');
+      _userDisconnecting = false;
       return;
     }
 
     if (timedOut) {
       debugPrint('[VPN] stopVless() timed out after 5 s — '
           'tunnel may still be active.');
-      _errorMessage = 'VPN did not shut down cleanly.\n'
-          'Please restart the app.';
+      _errorMessage = 'VPN did not shut down cleanly.\nPlease restart the app.';
       _setStatus(VpnStatus.error, 'Shutdown failed');
+      _userDisconnecting = false;
       return;
     }
 
     _setStatus(VpnStatus.disconnected, 'Tap to connect');
+    _userDisconnecting = false;
   }
 
-  void _setStatus(VpnStatus s, String msg) {
-    _status = s;
-    _statusMessage = msg;
+  void _clearRuntimeSnapshot() {
+    _lastBaseConfig = null;
+    _lastBlockedApps = null;
+    _lastProxyOnly = false;
+    _activeTransportIndex = 0;
+    _runtimeFailures = 0;
+  }
+
+  void _setStatus(VpnStatus status, String message) {
+    _status = status;
+    _statusMessage = message;
     notifyListeners();
   }
 
@@ -275,6 +557,7 @@ class VpnConnection extends ChangeNotifier {
   @override
   void dispose() {
     _healthTimer?.cancel();
+    _restartTimer?.cancel();
     if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
       try {
         _vless.stopVless();

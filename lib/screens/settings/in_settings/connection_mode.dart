@@ -64,8 +64,8 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
           ),
           subtitle: Text(
             proxyMode
-                ? 'Local SOCKS5/HTTP proxy. Apps must support proxy settings.'
-                : 'TUN mode. Device traffic uses the VPN tunnel.',
+                ? 'Local SOCKS5/HTTP proxy. Traffic still exits through the same ReVolt VLESS/Reality server.'
+                : 'TUN mode. Device traffic uses the Android VPN tunnel.',
             style: const TextStyle(color: AppColors.textDim, fontSize: 12),
           ),
           trailing: DropdownButtonHideUnderline(

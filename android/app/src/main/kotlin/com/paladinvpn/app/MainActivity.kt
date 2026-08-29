@@ -3,6 +3,9 @@ package com.paladinvpn.app
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ResolveInfo
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -10,6 +13,8 @@ import android.os.VibratorManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayOutputStream
+import kotlin.math.roundToInt
 
 class MainActivity : FlutterActivity() {
     private val installerChannel = "com.revoltvpn.app/installer"
@@ -59,7 +64,7 @@ class MainActivity : FlutterActivity() {
         null
     }
 
-    private fun launchableApps(): List<Map<String, String>> {
+    private fun launchableApps(): List<Map<String, Any>> {
         val intent = Intent(Intent.ACTION_MAIN).apply {
             addCategory(Intent.CATEGORY_LAUNCHER)
         }
@@ -76,15 +81,35 @@ class MainActivity : FlutterActivity() {
 
         return resolved
             .mapNotNull { info ->
-                val packageName = info.activityInfo?.packageName ?: return@mapNotNull null
-                if (packageName == this.packageName) return@mapNotNull null
-                mapOf(
-                    "packageName" to packageName,
+                val appPackage = info.activityInfo?.packageName ?: return@mapNotNull null
+                if (appPackage == packageName) return@mapNotNull null
+
+                val item = mutableMapOf<String, Any>(
+                    "packageName" to appPackage,
                     "label" to info.loadLabel(packageManager).toString(),
                 )
+                appIconPng(info)?.let { item["icon"] = it }
+                item
             }
-            .distinctBy { it["packageName"] }
-            .sortedBy { it["label"]?.lowercase() }
+            .distinctBy { it["packageName"] as String }
+            .sortedBy { (it["label"] as String).lowercase() }
+    }
+
+    private fun appIconPng(info: ResolveInfo): ByteArray? = try {
+        val drawable = info.loadIcon(packageManager)
+        val density = resources.displayMetrics.density
+        val size = (48f * density).roundToInt().coerceIn(48, 144)
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        drawable.setBounds(0, 0, size, size)
+        drawable.draw(canvas)
+
+        ByteArrayOutputStream().use { output ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+            output.toByteArray()
+        }
+    } catch (_: Exception) {
+        null
     }
 
     private fun performHaptic(kind: String): Boolean {

@@ -1,31 +1,60 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
 enum ConnectionMode { tun, proxy }
+enum AppRoutingMode { all, exclude, selected }
+enum ResilienceMode { standard, extreme }
 
 abstract final class ConnectionSettings {
   ConnectionSettings._();
 
   static const String _modeKey = 'connection_mode';
-  static const String _blockedAppsKey = 'blocked_apps';
+  static const String _routingModeKey = 'app_routing_mode';
+  static const String _appPackagesKey = 'app_routing_packages';
+  static const String _legacyBlockedAppsKey = 'blocked_apps';
+  static const String _resilienceModeKey = 'resilience_mode';
 
   static ConnectionMode _mode = ConnectionMode.tun;
-  static List<String> _blockedApps = const <String>[];
+  static AppRoutingMode _routingMode = AppRoutingMode.all;
+  static ResilienceMode _resilienceMode = ResilienceMode.standard;
+  static List<String> _appPackages = const <String>[];
   static bool _initialized = false;
 
   static ConnectionMode get mode => _mode;
-  static List<String> get blockedApps => List.unmodifiable(_blockedApps);
+  static AppRoutingMode get routingMode => _routingMode;
+  static ResilienceMode get resilienceMode => _resilienceMode;
+  static List<String> get appPackages => List.unmodifiable(_appPackages);
 
   static Future<void> initialize() async {
     if (_initialized) return;
 
     final prefs = await SharedPreferences.getInstance();
-    final storedMode = prefs.getString(_modeKey);
-    _mode = storedMode == ConnectionMode.proxy.name
+
+    _mode = prefs.getString(_modeKey) == ConnectionMode.proxy.name
         ? ConnectionMode.proxy
         : ConnectionMode.tun;
 
-    final storedApps = prefs.getStringList(_blockedAppsKey) ?? const <String>[];
-    _blockedApps = _cleanPackages(storedApps);
+    final legacyBlocked =
+        prefs.getStringList(_legacyBlockedAppsKey) ?? const <String>[];
+    final storedPackages = prefs.getStringList(_appPackagesKey);
+    _appPackages = _cleanPackages(storedPackages ?? legacyBlocked);
+
+    final storedRoutingMode = prefs.getString(_routingModeKey);
+    if (storedRoutingMode == AppRoutingMode.exclude.name) {
+      _routingMode = AppRoutingMode.exclude;
+    } else if (storedRoutingMode == AppRoutingMode.selected.name) {
+      _routingMode = AppRoutingMode.selected;
+    } else if (storedRoutingMode == null && legacyBlocked.isNotEmpty) {
+      // Keep the old Exclude Apps setting when upgrading from preview v1.
+      _routingMode = AppRoutingMode.exclude;
+    } else {
+      _routingMode = AppRoutingMode.all;
+    }
+
+    _resilienceMode =
+        prefs.getString(_resilienceModeKey) == ResilienceMode.extreme.name
+            ? ResilienceMode.extreme
+            : ResilienceMode.standard;
+
     _initialized = true;
   }
 
@@ -36,11 +65,25 @@ abstract final class ConnectionSettings {
     await prefs.setString(_modeKey, mode.name);
   }
 
-  static Future<void> setBlockedApps(Iterable<String> packages) async {
-    _blockedApps = _cleanPackages(packages);
+  static Future<void> setRoutingMode(AppRoutingMode mode) async {
+    _routingMode = mode;
     _initialized = true;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(_blockedAppsKey, _blockedApps);
+    await prefs.setString(_routingModeKey, mode.name);
+  }
+
+  static Future<void> setAppPackages(Iterable<String> packages) async {
+    _appPackages = _cleanPackages(packages);
+    _initialized = true;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_appPackagesKey, _appPackages);
+  }
+
+  static Future<void> setResilienceMode(ResilienceMode mode) async {
+    _resilienceMode = mode;
+    _initialized = true;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_resilienceModeKey, mode.name);
   }
 
   static List<String> _cleanPackages(Iterable<String> packages) {
