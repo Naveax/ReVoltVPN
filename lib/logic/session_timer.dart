@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
@@ -13,13 +14,18 @@ class SessionTimer extends ChangeNotifier {
   final VpnConnection vpnConnection;
 
   int _remainingSeconds = 0;
-  int _usedBytes       = 0;
+  int _usedBytes = 0;
 
-  bool _hasSyncedOnce       = false;
-  int  _consecutiveFailures = 0;
-  bool _isDisconnecting     = false;
-  bool _syncInProgress      = false;
+  bool _hasSyncedOnce = false;
+  int _consecutiveFailures = 0;
+  bool _isDisconnecting = false;
+  bool _syncInProgress = false;
   bool _supportRewardClaimed = false;
+  bool _supportRewardStateLoaded = false;
+  int _supportStateEpoch = 0;
+
+  static const String _supportRewardClaimKey =
+      'support_reward_claimed_active_session';
 
   static const int _maxConsecutiveFailures = 3;
   static const int _maxOfflineSeconds = 120;
@@ -27,20 +33,22 @@ class SessionTimer extends ChangeNotifier {
 
   static const int _pollIntervalSeconds = 5;
 
-  int    _lastUsedBytes     = 0;
-  double _currentSpeedKBps  = 0.0;
+  int _lastUsedBytes = 0;
+  double _currentSpeedKBps = 0.0;
 
   SessionTimer({required this.vpnConnection}) {
     vpnConnection.addListener(_onVpnConnectionChanged);
+    unawaited(_loadSupportRewardState());
   }
 
-  int  get remaining        => _remainingSeconds;
-  bool get isRunning        => _timer != null && _timer!.isActive;
-  bool get isExpired        => _remainingSeconds <= 0 && !isRunning;
-  bool get hasSyncedOnce    => _hasSyncedOnce;
+  int get remaining => _remainingSeconds;
+  bool get isRunning => _timer != null && _timer!.isActive;
+  bool get isExpired => _remainingSeconds <= 0 && !isRunning;
+  bool get hasSyncedOnce => _hasSyncedOnce;
   bool get supportRewardClaimed => _supportRewardClaimed;
+  bool get supportRewardStateLoaded => _supportRewardStateLoaded;
 
-  int    get usedBytes      => _usedBytes;
+  int get usedBytes => _usedBytes;
   double get currentSpeedKBps => _currentSpeedKBps;
 
   String get formatted {
@@ -50,10 +58,40 @@ class SessionTimer extends ChangeNotifier {
     return '$h:$m:$s';
   }
 
-  void markSupportRewardClaimed() {
+  Future<void> _loadSupportRewardState() async {
+    final epoch = _supportStateEpoch;
+    bool claimed = false;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      claimed = prefs.getBool(_supportRewardClaimKey) ?? false;
+    } catch (e) {
+      debugPrint('[Timer] Failed to load support reward state: $e');
+    }
+
+    if (epoch != _supportStateEpoch) return;
+    _supportRewardClaimed = claimed;
+    _supportRewardStateLoaded = true;
+    notifyListeners();
+  }
+
+  Future<void> _persistSupportRewardState(bool value) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = await prefs.setBool(_supportRewardClaimKey, value);
+      if (!saved) {
+        debugPrint('[Timer] Support reward state was not persisted.');
+      }
+    } catch (e) {
+      debugPrint('[Timer] Failed to persist support reward state: $e');
+    }
+  }
+
+  Future<void> markSupportRewardClaimed() async {
     if (_supportRewardClaimed) return;
     _supportRewardClaimed = true;
+    _supportRewardStateLoaded = true;
     notifyListeners();
+    await _persistSupportRewardState(true);
   }
 
   void _onVpnConnectionChanged() {
@@ -81,16 +119,23 @@ class SessionTimer extends ChangeNotifier {
   }
 
   Future<void> start() async {
-    _remainingSeconds     = 0;
-    _usedBytes            = 0;
-    _lastUsedBytes        = 0;
-    _currentSpeedKBps     = 0.0;
-    _tickCount            = 0;
-    _hasSyncedOnce        = false;
-    _consecutiveFailures  = 0;
-    _offlineSeconds       = 0;
-    _isDisconnecting      = false;
+    _remainingSeconds = 0;
+    _usedBytes = 0;
+    _lastUsedBytes = 0;
+    _currentSpeedKBps = 0.0;
+    _tickCount = 0;
+    _hasSyncedOnce = false;
+    _consecutiveFailures = 0;
+    _offlineSeconds = 0;
+    _isDisconnecting = false;
+
+    // This is a genuinely new VPN session, so the one-support-reward allowance
+    // starts fresh. Increment the epoch so a stale async preference load from
+    // app startup cannot overwrite the new-session state.
+    _supportStateEpoch++;
     _supportRewardClaimed = false;
+    _supportRewardStateLoaded = true;
+    unawaited(_persistSupportRewardState(false));
 
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), _tick);
@@ -151,26 +196,41 @@ class SessionTimer extends ChangeNotifier {
     notifyListeners();
   }
 
+  int _readNonNegativeInt(dynamic value, int fallback) {
+    if (value is int) return value >= 0 ? value : fallback;
+    if (value is num && value >= 0) return value.toInt();
+    return fallback;
+  }
+
   Future<void> _syncWithHivemind() async {
     if (_isDisconnecting || _syncInProgress) return;
     _syncInProgress = true;
     try {
       final deviceId = await CryptoService.getDeviceId();
-      final url = Uri.parse(
-          '${AppConfig.hivemindApiPublic}/session/status?device_id=$deviceId');
+      final base = Uri.parse('${AppConfig.hivemindApiPublic}/session/status');
+      final url = base.replace(queryParameters: {'device_id': deviceId});
       final response = await HivemindService.directGet(url);
 
       if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
+        final decoded = jsonDecode(response.body);
+        if (decoded is! Map<String, dynamic>) {
+          debugPrint('[Timer] Invalid session payload type.');
+          _markSyncFailure();
+          return;
+        }
+        final data = decoded;
 
-        final bool active = data['active'] ?? false;
+        final active = data['active'] == true;
         if (!active) {
           await _doDisconnect('Server ended session');
           return;
         }
 
-        _remainingSeconds = data['expires_in_seconds'] ?? _remainingSeconds;
-        _usedBytes        = data['used_bytes']        ?? _usedBytes;
+        _remainingSeconds = _readNonNegativeInt(
+          data['expires_in_seconds'],
+          _remainingSeconds,
+        );
+        _usedBytes = _readNonNegativeInt(data['used_bytes'], _usedBytes);
 
         final int deltaBytes = _usedBytes - _lastUsedBytes;
         if (_hasSyncedOnce && deltaBytes > 0) {
@@ -180,7 +240,7 @@ class SessionTimer extends ChangeNotifier {
         }
         _lastUsedBytes = _usedBytes;
 
-        final capExhausted = data['cap_exhausted'] ?? false;
+        final capExhausted = data['cap_exhausted'] == true;
         if (capExhausted) {
           await _doDisconnect('Data cap reached');
           return;
