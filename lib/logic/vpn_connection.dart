@@ -7,6 +7,7 @@ import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/connection_settings.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/installed_apps_service.dart';
+import 'package:revoltvpn/logic/network_monitor.dart';
 
 enum VpnStatus {
   disconnected,
@@ -39,8 +40,45 @@ class VpnConnection extends ChangeNotifier {
   ResilienceMode _activeResilienceMode = ResilienceMode.standard;
   ResilienceMode get activeResilienceMode => _activeResilienceMode;
 
+  String _networkTransport = 'unknown';
+  String get networkTransport => _networkTransport;
+
+  bool _networkValidated = false;
+  bool get networkValidated => _networkValidated;
+
+  int? _lastHealthLatencyMs;
+  int? get lastHealthLatencyMs => _lastHealthLatencyMs;
+
+  int _reconnectCount = 0;
+  int get reconnectCount => _reconnectCount;
+
+  int _fallbackCount = 0;
+  int get fallbackCount => _fallbackCount;
+
+  String? _lastRecoveryReason;
+  String? get lastRecoveryReason => _lastRecoveryReason;
+
+  String get activeTransportProfile {
+    if (_status != VpnStatus.connected && _status != VpnStatus.connecting) {
+      return 'inactive';
+    }
+    if (_activeResilienceMode == ResilienceMode.standard) {
+      return 'server';
+    }
+    switch (_activeTransportIndex) {
+      case 1:
+        return 'stream-up';
+      case 2:
+        return 'packet-up';
+      default:
+        return 'server';
+    }
+  }
+
   Timer? _healthTimer;
   Timer? _restartTimer;
+  Timer? _networkDebounce;
+  StreamSubscription<NetworkSnapshot>? _networkSubscription;
 
   String? _lastBaseConfig;
   String _lastRemark = 'Revolt VPN';
@@ -50,6 +88,7 @@ class VpnConnection extends ChangeNotifier {
   int _runtimeFailures = 0;
   bool _restartInProgress = false;
   bool _userDisconnecting = false;
+  bool _receivedInitialNetwork = false;
 
   late final FlutterVless _vless;
   bool _initialized = false;
@@ -94,6 +133,13 @@ class VpnConnection extends ChangeNotifier {
       debugPrint('[VPN] VLESS init error (expected on emulator): $e');
     }
 
+    _networkSubscription = NetworkMonitor.changes.listen(
+      _handleNetworkSnapshot,
+      onError: (Object error) {
+        debugPrint('[VPN] Network monitor error: $error');
+      },
+    );
+
     unawaited(_checkHealth());
     _healthTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       unawaited(_checkHealth());
@@ -106,10 +152,45 @@ class VpnConnection extends ChangeNotifier {
 
       final delay = await _vless.getConnectedServerDelay();
       if (delay > 0) {
+        _lastHealthLatencyMs = delay;
         _isStartupRestoration = true;
         _setStatus(VpnStatus.connected, _connectedLabel);
       }
     } catch (_) {}
+  }
+
+  void _handleNetworkSnapshot(NetworkSnapshot snapshot) {
+    final previousTransport = _networkTransport;
+    _networkTransport = snapshot.transport;
+    _networkValidated = snapshot.validated;
+    notifyListeners();
+
+    if (!_receivedInitialNetwork) {
+      _receivedInitialNetwork = true;
+      return;
+    }
+
+    if (_status != VpnStatus.connected ||
+        _userDisconnecting ||
+        _restartInProgress ||
+        _lastBaseConfig == null ||
+        !snapshot.connected ||
+        !snapshot.validated) {
+      return;
+    }
+
+    final changedTransport = previousTransport != 'unknown' &&
+        previousTransport != snapshot.transport;
+    if (!changedTransport && snapshot.reason != 'available') return;
+
+    _networkDebounce?.cancel();
+    _networkDebounce = Timer(const Duration(milliseconds: 900), () {
+      if (_status != VpnStatus.connected || _userDisconnecting) return;
+      final reason = changedTransport
+          ? 'Network $previousTransport → ${snapshot.transport}'
+          : 'Network available: ${snapshot.transport}';
+      _scheduleRuntimeRestart(reason);
+    });
   }
 
   String get _connectedLabel =>
@@ -128,7 +209,7 @@ class VpnConnection extends ChangeNotifier {
             _lastBaseConfig != null &&
             _status == VpnStatus.connected;
         if (shouldRecover) {
-          _scheduleRuntimeRestart('Network changed');
+          _scheduleRuntimeRestart('Runtime disconnected');
           return;
         }
 
@@ -166,6 +247,11 @@ class VpnConnection extends ChangeNotifier {
     _cancelled = false;
     _userDisconnecting = false;
     _restartTimer?.cancel();
+    _networkDebounce?.cancel();
+    _reconnectCount = 0;
+    _fallbackCount = 0;
+    _lastRecoveryReason = null;
+    _lastHealthLatencyMs = null;
 
     await ConnectionSettings.initialize();
     _activeMode = ConnectionSettings.mode;
@@ -262,6 +348,7 @@ class VpnConnection extends ChangeNotifier {
       _lastProxyOnly = proxyOnly;
       _activeTransportIndex = transportIndex;
       _runtimeFailures = 0;
+      if (transportIndex > 0) _fallbackCount++;
     } catch (e) {
       debugPrint('[VPN] Tunnel start error: $e');
       _clearRuntimeSnapshot();
@@ -399,8 +486,12 @@ class VpnConnection extends ChangeNotifier {
             const Duration(seconds: 6),
             onTimeout: () => -1,
           );
+      _lastHealthLatencyMs = delay >= 0 ? delay : null;
+      notifyListeners();
       return delay >= 0;
     } catch (_) {
+      _lastHealthLatencyMs = null;
+      notifyListeners();
       return false;
     }
   }
@@ -437,8 +528,9 @@ class VpnConnection extends ChangeNotifier {
     }
     if (_restartTimer?.isActive ?? false) return;
 
+    _lastRecoveryReason = reason;
     _setStatus(VpnStatus.connecting, 'Network changed — reconnecting…');
-    _restartTimer = Timer(const Duration(milliseconds: 1500), () {
+    _restartTimer = Timer(const Duration(milliseconds: 900), () {
       unawaited(_restartActiveRuntime(reason));
     });
   }
@@ -478,8 +570,11 @@ class VpnConnection extends ChangeNotifier {
         return;
       }
 
+      if (transportIndex != _activeTransportIndex) _fallbackCount++;
       _activeTransportIndex = transportIndex;
       _runtimeFailures = 0;
+      _reconnectCount++;
+      _lastRecoveryReason = reason;
       _setStatus(VpnStatus.connected, _connectedLabel);
     } finally {
       _restartInProgress = false;
@@ -490,6 +585,7 @@ class VpnConnection extends ChangeNotifier {
     _cancelled = true;
     _userDisconnecting = true;
     _restartTimer?.cancel();
+    _networkDebounce?.cancel();
     HivemindService.cancel();
     _clearRuntimeSnapshot();
 
@@ -541,6 +637,7 @@ class VpnConnection extends ChangeNotifier {
     _lastProxyOnly = false;
     _activeTransportIndex = 0;
     _runtimeFailures = 0;
+    _lastHealthLatencyMs = null;
   }
 
   void _setStatus(VpnStatus status, String message) {
@@ -558,6 +655,8 @@ class VpnConnection extends ChangeNotifier {
   void dispose() {
     _healthTimer?.cancel();
     _restartTimer?.cancel();
+    _networkDebounce?.cancel();
+    _networkSubscription?.cancel();
     if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
       try {
         _vless.stopVless();
