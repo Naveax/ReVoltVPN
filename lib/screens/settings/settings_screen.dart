@@ -56,7 +56,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onChanged: (mode) => setState(() => _mode = mode),
           ),
           const ResilienceModeTile(),
-          AppRoutingTile(tunMode: _mode == ConnectionMode.tun),
+          AppRoutingTile(connectionMode: _mode),
           ListTile(
             leading: const Icon(Icons.monitor_heart_outlined),
             title: const Text(
