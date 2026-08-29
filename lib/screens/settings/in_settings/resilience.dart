@@ -49,34 +49,42 @@ class _ResilienceModeTileState extends State<ResilienceModeTile> {
   Widget build(BuildContext context) {
     final extreme = _mode == ResilienceMode.extreme;
 
-    return ListTile(
-      title: const Text(
-        'Network resilience',
-        style: TextStyle(color: AppColors.textWhite, fontSize: 15),
-      ),
-      subtitle: Text(
-        extreme
-            ? 'Extreme: same server, automatic XHTTP fallback and runtime reconnect.'
-            : 'Standard: use the server-provided XHTTP configuration.',
-        style: const TextStyle(color: AppColors.textDim, fontSize: 12),
-      ),
-      trailing: DropdownButtonHideUnderline(
-        child: DropdownButton<ResilienceMode>(
-          value: _mode,
-          dropdownColor: AppColors.bgCard,
-          onChanged: _change,
-          items: const [
-            DropdownMenuItem(
-              value: ResilienceMode.standard,
-              child: Text('Standard'),
+    return Consumer<VpnConnection>(
+      builder: (context, vpn, _) {
+        final connected = vpn.status == VpnStatus.connected ||
+            vpn.status == VpnStatus.connecting;
+        final active = connected ? ' Active: ${vpn.activeTransportProfile}.' : '';
+
+        return ListTile(
+          title: const Text(
+            'Network resilience',
+            style: TextStyle(color: AppColors.textWhite, fontSize: 15),
+          ),
+          subtitle: Text(
+            extreme
+                ? 'Extreme: server profile + XHTTP stream-up/packet-up fallbacks.$active'
+                : 'Standard: server-provided XHTTP profile with runtime recovery.$active',
+            style: const TextStyle(color: AppColors.textDim, fontSize: 12),
+          ),
+          trailing: DropdownButtonHideUnderline(
+            child: DropdownButton<ResilienceMode>(
+              value: _mode,
+              dropdownColor: AppColors.bgCard,
+              onChanged: _change,
+              items: const [
+                DropdownMenuItem(
+                  value: ResilienceMode.standard,
+                  child: Text('Standard'),
+                ),
+                DropdownMenuItem(
+                  value: ResilienceMode.extreme,
+                  child: Text('Extreme'),
+                ),
+              ],
             ),
-            DropdownMenuItem(
-              value: ResilienceMode.extreme,
-              child: Text('Extreme'),
-            ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 }
