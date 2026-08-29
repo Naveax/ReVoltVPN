@@ -20,9 +20,10 @@ class _SupportButtonState extends State<SupportButton> {
     final ad = context.read<AdManager>();
     final timer = context.read<SessionTimer>();
 
-    // Only available when there's an active session, and only once per
-    // client-side VPN session. Backend must still enforce the same rule.
+    // Only available when there's an active session, once the persisted
+    // support state is known, and only once per client-side VPN session.
     if ((!timer.isRunning && !timer.hasSyncedOnce) ||
+        !timer.supportRewardStateLoaded ||
         timer.supportRewardClaimed) {
       return;
     }
@@ -32,7 +33,7 @@ class _SupportButtonState extends State<SupportButton> {
     try {
       final rewarded = await ad.showAd('support');
       if (rewarded) {
-        timer.markSupportRewardClaimed();
+        await timer.markSupportRewardClaimed();
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -47,12 +48,14 @@ class _SupportButtonState extends State<SupportButton> {
           return const SizedBox.shrink();
         }
 
+        final stateLoaded = timer.supportRewardStateLoaded;
         final claimed = timer.supportRewardClaimed;
+        final disabled = !stateLoaded || claimed;
 
         return GestureDetector(
-          onTap: claimed ? null : _handleTap,
+          onTap: disabled ? null : _handleTap,
           child: Opacity(
-            opacity: claimed ? 0.55 : 1.0,
+            opacity: disabled ? 0.55 : 1.0,
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
               decoration: BoxDecoration(
@@ -82,9 +85,11 @@ class _SupportButtonState extends State<SupportButton> {
                           ),
                         )
                       : Text(
-                          claimed
-                              ? 'Support bonus used'
-                              : 'Support us — 30 min!',
+                          !stateLoaded
+                              ? 'Checking support bonus…'
+                              : claimed
+                                  ? 'Support bonus used'
+                                  : 'Support us — 30 min!',
                           style: const TextStyle(
                             color: AppColors.textWhite,
                             fontSize: 14,
