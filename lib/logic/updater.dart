@@ -13,6 +13,14 @@ enum UpdateStatus { upToDate, updateAvailable, checkFailed }
 
 enum InstallSource { playStore, sideload }
 
+Uri? _trustedHttpsUri(String raw, Set<String> allowedHosts) {
+  final uri = Uri.tryParse(raw);
+  if (uri == null || uri.scheme != 'https' || !allowedHosts.contains(uri.host)) {
+    return null;
+  }
+  return uri;
+}
+
 class PlayStoreUpdater {
   PlayStoreUpdater._();
 
@@ -20,9 +28,13 @@ class PlayStoreUpdater {
       'https://play.google.com/store/apps/details?id=${AppConfig.applicationId}';
 
   static Future<bool> open() async {
+    final uri = _trustedHttpsUri(_url, const {'play.google.com'});
+    if (uri == null) {
+      debugPrint('[Updater] Refusing invalid Play Store URL.');
+      return false;
+    }
     try {
-      return await launchUrl(Uri.parse(_url),
-          mode: LaunchMode.externalApplication);
+      return await launchUrl(uri, mode: LaunchMode.externalApplication);
     } catch (e) {
       debugPrint('[Updater] Failed to open Play Store: $e');
       return false;
@@ -36,13 +48,14 @@ class GitHubUpdater {
   static String? _cachedDownloadUrl;
 
   static Future<String?> fetchLatestVersion() async {
-    final url =
-        'https://api.github.com/repos/${AppConfig.githubOwner}/${AppConfig.githubRepo}/releases/latest';
+    final apiUri = Uri.https(
+      'api.github.com',
+      '/repos/${AppConfig.githubOwner}/${AppConfig.githubRepo}/releases/latest',
+    );
 
     try {
       final response = await http
-          .get(Uri.parse(url),
-              headers: {'Accept': 'application/vnd.github+json'})
+          .get(apiUri, headers: {'Accept': 'application/vnd.github+json'})
           .timeout(const Duration(seconds: 8));
 
       if (response.statusCode != 200) {
@@ -50,11 +63,27 @@ class GitHubUpdater {
         return null;
       }
 
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-      _cachedDownloadUrl = data['html_url'] as String?;
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, dynamic>) {
+        debugPrint('[Updater] Invalid GitHub release payload.');
+        return null;
+      }
 
-      final tag = data['tag_name'] as String? ?? '0.0.0';
-      return tag.startsWith('v') ? tag.substring(1) : tag;
+      final htmlUrl = decoded['html_url'];
+      if (htmlUrl is String &&
+          _trustedHttpsUri(htmlUrl, const {'github.com'}) != null) {
+        _cachedDownloadUrl = htmlUrl;
+      } else {
+        _cachedDownloadUrl = null;
+      }
+
+      final rawTag = decoded['tag_name'];
+      if (rawTag is! String || rawTag.isEmpty || rawTag.length > 64) {
+        debugPrint('[Updater] Invalid release tag.');
+        return null;
+      }
+
+      return rawTag.startsWith('v') ? rawTag.substring(1) : rawTag;
     } catch (e) {
       debugPrint('[Updater] GitHub API error: $e');
       return null;
@@ -62,10 +91,15 @@ class GitHubUpdater {
   }
 
   static Future<bool> open() async {
-    final url = _cachedDownloadUrl ?? AppConfig.githubReleasesUrl;
+    final raw = _cachedDownloadUrl ?? AppConfig.githubReleasesUrl;
+    final uri = _trustedHttpsUri(raw, const {'github.com'});
+    if (uri == null) {
+      debugPrint('[Updater] Refusing untrusted GitHub update URL.');
+      return false;
+    }
+
     try {
-      return await launchUrl(Uri.parse(url),
-          mode: LaunchMode.externalApplication);
+      return await launchUrl(uri, mode: LaunchMode.externalApplication);
     } catch (e) {
       debugPrint('[Updater] Failed to open GitHub: $e');
       return false;
