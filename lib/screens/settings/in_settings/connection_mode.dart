@@ -124,7 +124,7 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
           ),
           subtitle: Text(
             proxyMode
-                ? 'Local SOCKS5 mode. Traffic still exits through the same ReVolt VLESS/Reality server.'
+                ? 'Local SOCKS5 on 127.0.0.1:10807. Exclude/Selected app routing can automatically steer apps into it.'
                 : 'TUN mode. Device traffic uses the Android VPN tunnel.',
             style: const TextStyle(color: AppColors.textDim, fontSize: 12),
           ),
@@ -158,7 +158,7 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
           const Padding(
             padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
             child: Text(
-              'SOCKS5: $localSocksAddress\nUse the main Connect button to start the local proxy.',
+              'SOCKS5: $localSocksAddress\nAll apps = proxy-only. Exclude/Selected = automatic Android app routing through this local SOCKS5.',
               style: TextStyle(color: AppColors.textMuted, fontSize: 12),
             ),
           ),

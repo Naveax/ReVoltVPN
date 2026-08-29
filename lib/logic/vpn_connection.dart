@@ -40,6 +40,9 @@ class VpnConnection extends ChangeNotifier {
   ResilienceMode _activeResilienceMode = ResilienceMode.standard;
   ResilienceMode get activeResilienceMode => _activeResilienceMode;
 
+  bool _hybridAppRoutingActive = false;
+  bool get hybridAppRoutingActive => _hybridAppRoutingActive;
+
   String _networkTransport = 'unknown';
   String get networkTransport => _networkTransport;
 
@@ -114,6 +117,11 @@ class VpnConnection extends ChangeNotifier {
   Future<void> _startEngine() async {
     if (kIsWeb) return;
 
+    await ConnectionSettings.initialize();
+    _activeMode = ConnectionSettings.mode;
+    _activeResilienceMode = ConnectionSettings.resilienceMode;
+    _hybridAppRoutingActive = _shouldUseHybridAppRouting();
+
     _vless = FlutterVless(
       onStatusChanged: (status) {
         debugPrint('[VPN] Status: state=${status.state} '
@@ -159,6 +167,19 @@ class VpnConnection extends ChangeNotifier {
     } catch (_) {}
   }
 
+  bool _shouldUseHybridAppRouting() {
+    if (ConnectionSettings.mode != ConnectionMode.proxy) return false;
+
+    switch (ConnectionSettings.routingMode) {
+      case AppRoutingMode.all:
+        return false;
+      case AppRoutingMode.exclude:
+        return ConnectionSettings.appPackages.isNotEmpty;
+      case AppRoutingMode.selected:
+        return true;
+    }
+  }
+
   void _handleNetworkSnapshot(NetworkSnapshot snapshot) {
     final previousTransport = _networkTransport;
     _networkTransport = snapshot.transport;
@@ -193,8 +214,10 @@ class VpnConnection extends ChangeNotifier {
     });
   }
 
-  String get _connectedLabel =>
-      _activeMode == ConnectionMode.proxy ? 'Proxy ready' : 'Secured';
+  String get _connectedLabel {
+    if (_activeMode != ConnectionMode.proxy) return 'Secured';
+    return _hybridAppRoutingActive ? 'SOCKS app routing active' : 'Proxy ready';
+  }
 
   void _mapStatus(VlessStatus status) {
     switch (status.connectionState) {
@@ -256,7 +279,10 @@ class VpnConnection extends ChangeNotifier {
     await ConnectionSettings.initialize();
     _activeMode = ConnectionSettings.mode;
     _activeResilienceMode = ConnectionSettings.resilienceMode;
-    final proxyOnly = _activeMode == ConnectionMode.proxy;
+    _hybridAppRoutingActive = _shouldUseHybridAppRouting();
+
+    final localSocksMode = _activeMode == ConnectionMode.proxy;
+    final proxyOnly = localSocksMode && !_hybridAppRoutingActive;
 
     if (!kIsWeb && !_initialized) {
       _errorMessage = 'VPN service unavailable.';
@@ -273,10 +299,12 @@ class VpnConnection extends ChangeNotifier {
       }
     }
 
-    _setStatus(
-      VpnStatus.connecting,
-      proxyOnly ? 'Starting local proxy…' : 'Establishing secure channel…',
-    );
+    final startingMessage = localSocksMode
+        ? (_hybridAppRoutingActive
+            ? 'Starting app-routed SOCKS…'
+            : 'Starting local proxy…')
+        : 'Establishing secure channel…';
+    _setStatus(VpnStatus.connecting, startingMessage);
     _errorMessage = null;
 
     if (kIsWeb) {
@@ -320,7 +348,7 @@ class VpnConnection extends ChangeNotifier {
 
     _setStatus(
       VpnStatus.connecting,
-      proxyOnly ? 'Starting proxy…' : 'Securing connection…',
+      localSocksMode ? 'Starting SOCKS route…' : 'Securing connection…',
     );
 
     try {
@@ -352,8 +380,8 @@ class VpnConnection extends ChangeNotifier {
     } catch (e) {
       debugPrint('[VPN] Tunnel start error: $e');
       _clearRuntimeSnapshot();
-      _errorMessage = proxyOnly
-          ? 'Proxy failed to start.\nTry reconnecting.'
+      _errorMessage = localSocksMode
+          ? 'SOCKS route failed to start.\nTry reconnecting.'
           : 'Tunnel failed to start.\nTry reconnecting.';
       _setStatus(VpnStatus.error, 'Connection failed');
       return false;
@@ -638,6 +666,7 @@ class VpnConnection extends ChangeNotifier {
     _activeTransportIndex = 0;
     _runtimeFailures = 0;
     _lastHealthLatencyMs = null;
+    _hybridAppRoutingActive = false;
   }
 
   void _setStatus(VpnStatus status, String message) {

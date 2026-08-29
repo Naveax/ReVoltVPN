@@ -68,16 +68,6 @@ jobs:
             printf 'sdk.dir=%s\n' "$ANDROID_HOME"
           } > android/local.properties
 
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('android/gradle.properties')
-          lines = p.read_text().splitlines()
-          lines = [line for line in lines if not line.startswith('org.gradle.jvmargs=') and not line.startswith('org.gradle.workers.max=')]
-          lines.insert(0, 'org.gradle.workers.max=2')
-          lines.insert(0, 'org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8')
-          p.write_text('\n'.join(lines) + '\n')
-          PY
-
       - name: Generate temporary release signing key
         shell: bash
         run: |
@@ -118,26 +108,37 @@ jobs:
           network = Path('lib/logic/network_monitor.dart').read_text()
           socks = Path('lib/logic/local_socks_tester.dart').read_text()
           diagnostics = Path('lib/screens/settings/in_settings/diagnostics.dart').read_text()
+          routing = Path('lib/screens/settings/in_settings/app_routing.dart').read_text()
           activity = Path('android/app/src/main/kotlin/com/paladinvpn/app/MainActivity.kt').read_text()
+          gradle = Path('android/gradle.properties').read_text()
           ad = Path('lib/logic/ad_manager.dart').read_text()
           hivemind = Path('lib/logic/hivemind_service.dart').read_text()
 
           assert 'registerDefaultNetworkCallback' in activity
+          assert 'registerNetworkCallback' in activity
+          assert 'Build.VERSION_CODES.N' in activity
           assert 'com.revoltvpn.app/network' in activity
           assert 'NetworkMonitor.changes.listen' in vpn
           assert '_handleNetworkSnapshot' in vpn
           assert 'activeTransportProfile' in vpn
           assert 'reconnectCount' in vpn and 'fallbackCount' in vpn
+          assert '_shouldUseHybridAppRouting' in vpn
+          assert 'hybridAppRoutingActive' in vpn
+          assert 'proxyOnly = localSocksMode && !_hybridAppRoutingActive' in vpn
+          assert 'Applied automatically through Android routing into Local SOCKS5.' in routing
           assert '127.0.0.1' in socks and '10807' in socks
           assert '0x05' in socks and 'targetPort = 443' in socks
           assert 'Copy diagnostics' in diagnostics
           assert 'Test Local SOCKS5' in diagnostics
+          assert 'Hybrid app routing' in diagnostics
+          assert 'android.enableR8=true' not in gradle
+          assert 'org.gradle.jvmargs=-Xmx4g' in gradle
 
           assert 'static const bool adsEnabled = false;' in ad
           assert '?signature=test&key_id=test' in ad
           assert 'HivemindService.setExpectedNonce(nonce)' in ad
           assert '/admob/callback?signature=test&key_id=test' in hivemind
-          print('v3 wiring and legacy AdMob/nonce invariants verified')
+          print('v3 hybrid routing, diagnostics and legacy invariants verified')
           PY
 
       - name: Generate unit tests
