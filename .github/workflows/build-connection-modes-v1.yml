@@ -1,0 +1,199 @@
+name: Build connection modes v1 APK
+
+on:
+  push:
+    branches:
+      - build/connection-modes-v1-apk
+
+permissions:
+  contents: read
+
+concurrency:
+  group: connection-modes-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Set up Gradle 8.14
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+
+      - name: Generate local build config
+        shell: bash
+        run: |
+          cat > lib/logic/app_config.dart <<'DART'
+          abstract final class AppConfig {
+            AppConfig._();
+            static const String serverIp = '204.168.246.88';
+            static const String hivemindApiPublic = 'https://paladinvpn.duckdns.org/api';
+            static const String realityFp = 'chrome';
+            static const String vlessSecurity = 'reality';
+            static const String vlessType = 'xhttp';
+            static const String vlessPath = '/revolt';
+            static const String applicationId = 'com.paladinvpn.app';
+            static const String githubOwner = 'esefxdz';
+            static const String githubRepo = 'ReVoltVPN';
+            static const String githubReleasesUrl =
+                'https://github.com/$githubOwner/$githubRepo/releases/latest';
+            static const String adUnitId =
+                'ca-app-pub-5671224884648691/9198987725';
+          }
+          DART
+
+          cat > android/admob.properties <<'PROPS'
+          ADMOB_APP_ID=ca-app-pub-3940256099942544~3347511713
+          PROPS
+
+          {
+            printf 'flutter.sdk=%s\n' "$FLUTTER_ROOT"
+            printf 'sdk.dir=%s\n' "$ANDROID_HOME"
+          } > android/local.properties
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('android/gradle.properties')
+          lines = p.read_text().splitlines()
+          lines = [line for line in lines if not line.startswith('org.gradle.jvmargs=') and not line.startswith('org.gradle.workers.max=')]
+          lines.insert(0, 'org.gradle.workers.max=2')
+          lines.insert(0, 'org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8')
+          p.write_text('\n'.join(lines) + '\n')
+          PY
+
+      - name: Restore Gradle wrapper
+        shell: bash
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.14 --distribution-type all
+          chmod +x gradlew
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Verify flutter_vless capabilities
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import glob
+
+          wrapper = glob.glob(str(Path.home() / '.pub-cache/hosted/pub.dev/flutter_vless-1.1.5/lib/flutter_vless.dart'))
+          android = glob.glob(str(Path.home() / '.pub-cache/hosted/pub.dev/flutter_vless_android-1.1.5/android/src/main/kotlin/**/*.kt'), recursive=True)
+          assert wrapper, 'flutter_vless 1.1.5 wrapper not found'
+          text = Path(wrapper[0]).read_text()
+          assert 'blockedApps' in text, 'blockedApps missing from flutter_vless API'
+          assert 'proxyOnly' in text, 'proxyOnly missing from flutter_vless API'
+          android_text = '\n'.join(Path(p).read_text(errors='ignore') for p in android)
+          assert 'addDisallowedApplication' in android_text, 'Android blockedApps wiring missing'
+          assert 'PROXY_ONLY' in android_text, 'Android proxy-only mode missing'
+          print('flutter_vless connection-mode capabilities verified')
+          PY
+
+      - name: Verify source wiring
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          vpn = Path('lib/logic/vpn_connection.dart').read_text()
+          manifest = Path('android/app/src/main/AndroidManifest.xml').read_text()
+          main = Path('lib/main.dart').read_text()
+          assert 'if (!kIsWeb && !proxyOnly)' in vpn
+          assert 'proxyOnly: proxyOnly' in vpn
+          assert 'blockedApps: blockedApps' in vpn
+          assert 'ConnectionSettings.initialize()' in main
+          assert 'android.intent.category.LAUNCHER' in manifest
+          assert 'android.intent.action.MAIN' in manifest
+          print('source wiring verified')
+          PY
+
+      - name: Generate connection settings unit test
+        shell: bash
+        run: |
+          mkdir -p test
+          cat > test/connection_modes_ci_test.dart <<'DART'
+          import 'package:flutter_test/flutter_test.dart';
+          import 'package:shared_preferences/shared_preferences.dart';
+          import 'package:revoltvpn/logic/connection_settings.dart';
+
+          void main() {
+            TestWidgetsFlutterBinding.ensureInitialized();
+
+            test('connection settings default and persistence writes', () async {
+              SharedPreferences.setMockInitialValues(<String, Object>{});
+              await ConnectionSettings.initialize();
+              expect(ConnectionSettings.mode, ConnectionMode.tun);
+              expect(ConnectionSettings.blockedApps, isEmpty);
+
+              await ConnectionSettings.setMode(ConnectionMode.proxy);
+              expect(ConnectionSettings.mode, ConnectionMode.proxy);
+
+              await ConnectionSettings.setBlockedApps(<String>[
+                'com.example.second',
+                ' com.example.first ',
+                'com.example.second',
+                '',
+              ]);
+              expect(
+                ConnectionSettings.blockedApps,
+                <String>['com.example.first', 'com.example.second'],
+              );
+
+              final prefs = await SharedPreferences.getInstance();
+              expect(prefs.getString('connection_mode'), 'proxy');
+              expect(
+                prefs.getStringList('blocked_apps'),
+                <String>['com.example.first', 'com.example.second'],
+              );
+            });
+          }
+          DART
+
+      - name: Flutter analyze
+        run: flutter analyze
+
+      - name: Connection settings tests
+        run: flutter test test/connection_modes_ci_test.dart
+
+      - name: Public API health
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --max-time 10 \
+            https://paladinvpn.duckdns.org/api/health
+          echo
+
+      - name: Build debug APK
+        run: flutter build apk --debug
+
+      - name: Package APK
+        shell: bash
+        run: |
+          cp build/app/outputs/flutter-apk/app-debug.apk ReVoltVPN-connection-modes-v1-debug.apk
+          sha256sum ReVoltVPN-connection-modes-v1-debug.apk > ReVoltVPN-connection-modes-v1-debug.apk.sha256
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReVoltVPN-connection-modes-v1-debug
+          path: |
+            ReVoltVPN-connection-modes-v1-debug.apk
+            ReVoltVPN-connection-modes-v1-debug.apk.sha256
+          retention-days: 3
+          if-no-files-found: error
