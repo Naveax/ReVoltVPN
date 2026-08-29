@@ -1,6 +1,6 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
-enum ConnectionMode { tun, proxy }
+enum ConnectionMode { tun, proxy, ass }
 enum AppRoutingMode { all, exclude, selected }
 enum ResilienceMode { standard, extreme }
 
@@ -29,9 +29,14 @@ abstract final class ConnectionSettings {
 
     final prefs = await SharedPreferences.getInstance();
 
-    _mode = prefs.getString(_modeKey) == ConnectionMode.proxy.name
-        ? ConnectionMode.proxy
-        : ConnectionMode.tun;
+    final storedMode = prefs.getString(_modeKey);
+    if (storedMode == ConnectionMode.proxy.name) {
+      _mode = ConnectionMode.proxy;
+    } else if (storedMode == ConnectionMode.ass.name) {
+      _mode = ConnectionMode.ass;
+    } else {
+      _mode = ConnectionMode.tun;
+    }
 
     final legacyBlocked =
         prefs.getStringList(_legacyBlockedAppsKey) ?? const <String>[];
@@ -44,7 +49,6 @@ abstract final class ConnectionSettings {
     } else if (storedRoutingMode == AppRoutingMode.selected.name) {
       _routingMode = AppRoutingMode.selected;
     } else if (storedRoutingMode == null && legacyBlocked.isNotEmpty) {
-      // Keep the old Exclude Apps setting when upgrading from preview v1.
       _routingMode = AppRoutingMode.exclude;
     } else {
       _routingMode = AppRoutingMode.all;
