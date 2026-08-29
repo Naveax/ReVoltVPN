@@ -19,6 +19,7 @@ class SessionTimer extends ChangeNotifier {
   int  _consecutiveFailures = 0;
   bool _isDisconnecting     = false;
   bool _syncInProgress      = false;
+  bool _supportRewardClaimed = false;
 
   static const int _maxConsecutiveFailures = 3;
   static const int _maxOfflineSeconds = 120;
@@ -37,6 +38,7 @@ class SessionTimer extends ChangeNotifier {
   bool get isRunning        => _timer != null && _timer!.isActive;
   bool get isExpired        => _remainingSeconds <= 0 && !isRunning;
   bool get hasSyncedOnce    => _hasSyncedOnce;
+  bool get supportRewardClaimed => _supportRewardClaimed;
 
   int    get usedBytes      => _usedBytes;
   double get currentSpeedKBps => _currentSpeedKBps;
@@ -46,6 +48,12 @@ class SessionTimer extends ChangeNotifier {
     final m = ((_remainingSeconds % 3600) ~/ 60).toString().padLeft(2, '0');
     final s = (_remainingSeconds % 60).toString().padLeft(2, '0');
     return '$h:$m:$s';
+  }
+
+  void markSupportRewardClaimed() {
+    if (_supportRewardClaimed) return;
+    _supportRewardClaimed = true;
+    notifyListeners();
   }
 
   void _onVpnConnectionChanged() {
@@ -73,15 +81,16 @@ class SessionTimer extends ChangeNotifier {
   }
 
   Future<void> start() async {
-    _remainingSeconds    = 0;
-    _usedBytes           = 0;
-    _lastUsedBytes       = 0;
-    _currentSpeedKBps    = 0.0;
-    _tickCount           = 0;
-    _hasSyncedOnce       = false;
-    _consecutiveFailures = 0;
-    _offlineSeconds      = 0;
-    _isDisconnecting     = false;
+    _remainingSeconds     = 0;
+    _usedBytes            = 0;
+    _lastUsedBytes        = 0;
+    _currentSpeedKBps     = 0.0;
+    _tickCount            = 0;
+    _hasSyncedOnce        = false;
+    _consecutiveFailures  = 0;
+    _offlineSeconds       = 0;
+    _isDisconnecting      = false;
+    _supportRewardClaimed = false;
 
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), _tick);
