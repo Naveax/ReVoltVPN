@@ -106,9 +106,12 @@ class _ConnectionDiagnosticsScreenState
                     row.key,
                     style: const TextStyle(color: AppColors.textDim),
                   ),
-                  trailing: Flexible(
+                  trailing: SizedBox(
+                    width: 180,
                     child: Text(
                       row.value,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                       textAlign: TextAlign.right,
                       style: const TextStyle(color: AppColors.textWhite),
                     ),
