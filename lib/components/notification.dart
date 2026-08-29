@@ -65,7 +65,9 @@ class VpnNotificationManager {
       playSound: false,
       enableVibration: false,
       showWhen: false,
-      visibility: NotificationVisibility.public,
+      // Session time/speed is usage metadata. Keep it out of public lock-screen
+      // previews while leaving the ongoing VPN status notification intact.
+      visibility: NotificationVisibility.private,
       usesChronometer: false,
       category: AndroidNotificationCategory.service,
       colorized: true,
