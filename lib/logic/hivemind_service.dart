@@ -13,7 +13,17 @@ class HivemindService {
   static const _ua = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
 
-  static Future<http.Response> directGet(Uri uri, {Duration timeout = const Duration(seconds: 5)}) {
+  static const List<Duration> _pollBackoff = [
+    Duration(seconds: 1),
+    Duration(seconds: 2),
+    Duration(seconds: 3),
+    Duration(seconds: 5),
+  ];
+
+  static Future<http.Response> directGet(
+    Uri uri, {
+    Duration timeout = const Duration(seconds: 5),
+  }) {
     return http.get(uri, headers: {'User-Agent': _ua}).timeout(timeout);
   }
 
@@ -32,7 +42,8 @@ class HivemindService {
     final deviceId = await CryptoService.getDeviceId();
 
     final callId = ++_currentCallId;
-    final nonce = '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
+    final nonce =
+        '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
     _expectedNonce = nonce;
     debugPrint('[HivemindService] Call #$callId — nonce: $nonce');
 
@@ -42,7 +53,8 @@ class HivemindService {
       try {
         final customData = jsonEncode({'device_id': deviceId, 'nonce': nonce});
         final fakeUrl = _publicUrl(
-            '/admob/callback?signature=test&key_id=test&custom_data=${Uri.encodeComponent(customData)}');
+          '/admob/callback?signature=test&key_id=test&custom_data=${Uri.encodeComponent(customData)}',
+        );
         await directGet(fakeUrl, timeout: const Duration(seconds: 8));
       } catch (_) {}
     }
@@ -58,18 +70,22 @@ class HivemindService {
           final data = jsonDecode(response.body);
 
           final serverNonce = data['nonce'] as String?;
-          if (_expectedNonce != null && serverNonce != null && serverNonce != _expectedNonce) {
+          if (_expectedNonce != null &&
+              serverNonce != null &&
+              serverNonce != _expectedNonce) {
             debugPrint('[HivemindService] Nonce mismatch — retrying…');
           } else if (data['active'] == true && data['vless_uuid'] != null) {
             final vlessUuid = data['vless_uuid'];
-            final vlessIp   = data['vless_ip'] ?? AppConfig.serverIp;
+            final vlessIp = data['vless_ip'] ?? AppConfig.serverIp;
             final vlessPort = data['vless_port'] ?? 443;
-            final pbk       = data['reality_pbk'] ?? '';
-            final sid       = data['reality_sid'] ?? '';
-            final sni       = data['reality_sni'];
-            if (sni == null) throw Exception('Server did not provide reality_sni');
-            final fp        = data['reality_fp']  ?? AppConfig.realityFp;
-            final xhttpPath = data['xhttp_path']  ?? AppConfig.vlessPath;
+            final pbk = data['reality_pbk'] ?? '';
+            final sid = data['reality_sid'] ?? '';
+            final sni = data['reality_sni'];
+            if (sni == null) {
+              throw Exception('Server did not provide reality_sni');
+            }
+            final fp = data['reality_fp'] ?? AppConfig.realityFp;
+            final xhttpPath = data['xhttp_path'] ?? AppConfig.vlessPath;
 
             final vlessUrl = 'vless://$vlessUuid@$vlessIp:$vlessPort'
                 '?security=${AppConfig.vlessSecurity}'
@@ -89,23 +105,31 @@ class HivemindService {
         debugPrint('[HivemindService] Attempt $i failed: $e');
       }
 
-      if (i < maxAttempts) await Future.delayed(const Duration(seconds: 1));
+      if (i < maxAttempts) {
+        final delay = _pollBackoff[i - 1];
+        debugPrint(
+          '[HivemindService] Waiting ${delay.inSeconds}s before retry.',
+        );
+        await Future.delayed(delay);
+        if (_currentCallId != callId) throw Exception('Cancelled');
+      }
     }
 
-    throw Exception('Session not activated. Server callback may have timed out.');
+    throw Exception(
+      'Session not activated. Server callback may have timed out.',
+    );
   }
 
   static Future<bool> checkHealth() async {
     try {
       final url = Uri.parse('${AppConfig.hivemindApiPublic}/health');
-      final response = await directGet(url, timeout: const Duration(seconds: 3));
+      final response =
+          await directGet(url, timeout: const Duration(seconds: 3));
       return response.statusCode == 200;
     } catch (_) {
       return false;
     }
   }
-
-  // ── URL builders ──────────────────────────────────────────────────
 
   static Uri _publicUrl(String path) =>
       Uri.parse('${AppConfig.hivemindApiPublic}$path');
