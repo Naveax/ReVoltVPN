@@ -55,28 +55,45 @@ class _SidebarDrawerState extends State<SidebarDrawer> {
               ),
               child: Row(
                 children: [
-                  Image.asset('assets/brand.png', width: 36, height: 36,
-                    errorBuilder: (_, __, ___) =>
-                        const Icon(Icons.shield, size: 36, color: AppColors.accent),
+                  Image.asset(
+                    'assets/brand.png',
+                    width: 36,
+                    height: 36,
+                    errorBuilder: (_, __, ___) => const Icon(
+                      Icons.shield,
+                      size: 36,
+                      color: AppColors.accent,
+                    ),
                   ),
                   const SizedBox(width: 12),
-                  const Text('ReVolt', style: TextStyle(
-                    fontSize: 20, fontWeight: FontWeight.w800,
-                    letterSpacing: 4, color: AppColors.textWhite,
-                  )),
+                  const Text(
+                    'ReVolt',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 4,
+                      color: AppColors.textWhite,
+                    ),
+                  ),
                   const Spacer(),
                   IconButton(
-                    icon: const Icon(Icons.close, color: AppColors.textDim, size: 22),
+                    icon: const Icon(
+                      Icons.close,
+                      color: AppColors.textDim,
+                      size: 22,
+                    ),
                     onPressed: () => Navigator.of(context).pop(),
-                    splashRadius: 20, padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                    splashRadius: 20,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 36,
+                      minHeight: 36,
+                    ),
                   ),
                 ],
               ),
             ),
-
             const SizedBox(height: 8),
-
             _Row(
               icon: Icons.admin_panel_settings_outlined,
               label: 'Ad Consent',
@@ -85,7 +102,6 @@ class _SidebarDrawerState extends State<SidebarDrawer> {
                 GdprButton.showConsentForm();
               },
             ),
-
             _Row(
               icon: Icons.privacy_tip_outlined,
               label: 'Privacy Policy',
@@ -94,7 +110,6 @@ class _SidebarDrawerState extends State<SidebarDrawer> {
                 PrivacyPolicyButton.launchPrivacyPolicy();
               },
             ),
-
             _Row(
               icon: Icons.help_outline,
               label: 'About',
@@ -103,7 +118,6 @@ class _SidebarDrawerState extends State<SidebarDrawer> {
                 InfoButton.launchGitHub();
               },
             ),
-
             _Row(
               icon: Icons.discord,
               label: 'Discord',
@@ -112,7 +126,6 @@ class _SidebarDrawerState extends State<SidebarDrawer> {
                 DiscordLinkButton.launchDiscord();
               },
             ),
-
             _Row(
               icon: Icons.language,
               label: 'Website',
@@ -121,31 +134,41 @@ class _SidebarDrawerState extends State<SidebarDrawer> {
                 WebsiteButton.launchWebsite();
               },
             ),
-
             _Row(
               icon: Icons.settings,
               label: 'Settings',
               onTap: () {
-                Navigator.of(context).pop();
-                SettingsButton.open(context);
+                final drawerNavigator = Navigator.of(context);
+                final rootNavigator = Navigator.of(context, rootNavigator: true);
+                drawerNavigator.pop();
+                SettingsButton.openWithNavigator(rootNavigator);
               },
             ),
-
             _Row(
               icon: Icons.system_update_alt,
               label: 'Check for updates',
               onTap: () {
-                Navigator.of(context).pop();
-                Updater.check(context);
+                final drawerNavigator = Navigator.of(context);
+                final rootNavigator = Navigator.of(context, rootNavigator: true);
+                final messenger = ScaffoldMessenger.of(context);
+                drawerNavigator.pop();
+                Updater.checkWithHandles(
+                  navigator: rootNavigator,
+                  messenger: messenger,
+                );
               },
             ),
-
             const Spacer(),
-
             Padding(
               padding: const EdgeInsets.all(20),
-              child: Text('ReVoltVPN · v$_version', textAlign: TextAlign.center,
-                style: const TextStyle(color: AppColors.slate, fontSize: 11, letterSpacing: 1),
+              child: Text(
+                'ReVoltVPN · v$_version',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: AppColors.slate,
+                  fontSize: 11,
+                  letterSpacing: 1,
+                ),
               ),
             ),
           ],
@@ -172,9 +195,14 @@ class _Row extends StatelessWidget {
           children: [
             Icon(icon, color: AppColors.textWhite, size: 28),
             const SizedBox(width: 16),
-            Text(label, style: const TextStyle(
-              color: AppColors.textWhite, fontSize: 15, fontWeight: FontWeight.w500,
-            )),
+            Text(
+              label,
+              style: const TextStyle(
+                color: AppColors.textWhite,
+                fontSize: 15,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
           ],
         ),
       ),
