@@ -6,12 +6,16 @@ import android.content.pm.PackageManager
 import android.content.pm.ResolveInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
 import kotlin.math.roundToInt
@@ -20,6 +24,10 @@ class MainActivity : FlutterActivity() {
     private val installerChannel = "com.revoltvpn.app/installer"
     private val hapticsChannel = "com.revoltvpn.app/haptics"
     private val appsChannel = "com.revoltvpn.app/apps"
+    private val networkChannel = "com.revoltvpn.app/network"
+
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var networkEvents: EventChannel.EventSink? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -51,6 +59,94 @@ class MainActivity : FlutterActivity() {
                     result.notImplemented()
                 }
             }
+
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, networkChannel)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    networkEvents = events
+                    startNetworkMonitor()
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    networkEvents = null
+                    stopNetworkMonitor()
+                }
+            })
+    }
+
+    override fun onDestroy() {
+        stopNetworkMonitor()
+        super.onDestroy()
+    }
+
+    private fun startNetworkMonitor() {
+        if (networkCallback != null) return
+
+        val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                emitNetworkState(manager, network, "available")
+            }
+
+            override fun onLost(network: Network) {
+                emitNetworkState(manager, null, "lost")
+            }
+
+            override fun onCapabilitiesChanged(
+                network: Network,
+                capabilities: NetworkCapabilities,
+            ) {
+                emitNetworkState(manager, network, "changed", capabilities)
+            }
+        }
+
+        try {
+            manager.registerDefaultNetworkCallback(callback)
+            networkCallback = callback
+            emitNetworkState(manager, manager.activeNetwork, "initial")
+        } catch (e: Exception) {
+            networkEvents?.error("NETWORK_MONITOR", e.message, null)
+        }
+    }
+
+    private fun stopNetworkMonitor() {
+        val callback = networkCallback ?: return
+        val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        try {
+            manager.unregisterNetworkCallback(callback)
+        } catch (_: Exception) {
+        }
+        networkCallback = null
+    }
+
+    private fun emitNetworkState(
+        manager: ConnectivityManager,
+        network: Network?,
+        reason: String,
+        providedCapabilities: NetworkCapabilities? = null,
+    ) {
+        val capabilities = providedCapabilities ?: network?.let { manager.getNetworkCapabilities(it) }
+        val transport = when {
+            capabilities == null -> "none"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "vpn"
+            else -> "other"
+        }
+
+        val payload = mapOf(
+            "reason" to reason,
+            "transport" to transport,
+            "connected" to (network != null && capabilities != null),
+            "validated" to (capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true),
+            "metered" to manager.isActiveNetworkMetered,
+            "timestamp" to System.currentTimeMillis(),
+        )
+
+        runOnUiThread {
+            networkEvents?.success(payload)
+        }
     }
 
     private fun installerPackage(): String? = try {
