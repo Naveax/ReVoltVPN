@@ -1,0 +1,207 @@
+name: Build Android v3 release
+
+on:
+  push:
+    branches:
+      - build/android-v3-release
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-v3-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Set up Gradle 8.14
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+
+      - name: Generate local build config
+        shell: bash
+        run: |
+          cat > lib/logic/app_config.dart <<'DART'
+          abstract final class AppConfig {
+            AppConfig._();
+            static const String serverIp = '204.168.246.88';
+            static const String hivemindApiPublic = 'https://paladinvpn.duckdns.org/api';
+            static const String realityFp = 'chrome';
+            static const String vlessSecurity = 'reality';
+            static const String vlessType = 'xhttp';
+            static const String vlessPath = '/revolt';
+            static const String applicationId = 'com.paladinvpn.app';
+            static const String githubOwner = 'esefxdz';
+            static const String githubRepo = 'ReVoltVPN';
+            static const String githubReleasesUrl =
+                'https://github.com/$githubOwner/$githubRepo/releases/latest';
+            static const String adUnitId =
+                'ca-app-pub-5671224884648691/9198987725';
+          }
+          DART
+
+          cat > android/admob.properties <<'PROPS'
+          ADMOB_APP_ID=ca-app-pub-3940256099942544~3347511713
+          PROPS
+
+          {
+            printf 'flutter.sdk=%s\n' "$FLUTTER_ROOT"
+            printf 'sdk.dir=%s\n' "$ANDROID_HOME"
+          } > android/local.properties
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('android/gradle.properties')
+          lines = p.read_text().splitlines()
+          lines = [line for line in lines if not line.startswith('org.gradle.jvmargs=') and not line.startswith('org.gradle.workers.max=')]
+          lines.insert(0, 'org.gradle.workers.max=2')
+          lines.insert(0, 'org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8')
+          p.write_text('\n'.join(lines) + '\n')
+          PY
+
+      - name: Generate temporary release signing key
+        shell: bash
+        run: |
+          keytool -genkeypair \
+            -keystore android/revolt-v3-test-release.jks \
+            -storepass revoltv3test \
+            -keypass revoltv3test \
+            -alias revolt-v3-test \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650 \
+            -dname "CN=ReVoltVPN Test Release,O=ReVoltVPN,C=US"
+
+          cat > android/key.properties <<'PROPS'
+          storePassword=revoltv3test
+          keyPassword=revoltv3test
+          keyAlias=revolt-v3-test
+          storeFile=revolt-v3-test-release.jks
+          PROPS
+
+      - name: Restore Gradle wrapper
+        shell: bash
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.14 --distribution-type all
+          chmod +x gradlew
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Verify v3 wiring and legacy invariants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          vpn = Path('lib/logic/vpn_connection.dart').read_text()
+          network = Path('lib/logic/network_monitor.dart').read_text()
+          socks = Path('lib/logic/local_socks_tester.dart').read_text()
+          diagnostics = Path('lib/screens/settings/in_settings/diagnostics.dart').read_text()
+          activity = Path('android/app/src/main/kotlin/com/paladinvpn/app/MainActivity.kt').read_text()
+          ad = Path('lib/logic/ad_manager.dart').read_text()
+          hivemind = Path('lib/logic/hivemind_service.dart').read_text()
+
+          assert 'registerDefaultNetworkCallback' in activity
+          assert 'com.revoltvpn.app/network' in activity
+          assert 'NetworkMonitor.changes.listen' in vpn
+          assert '_handleNetworkSnapshot' in vpn
+          assert 'activeTransportProfile' in vpn
+          assert 'reconnectCount' in vpn and 'fallbackCount' in vpn
+          assert '127.0.0.1' in socks and '10807' in socks
+          assert '0x05' in socks and 'targetPort = 443' in socks
+          assert 'Copy diagnostics' in diagnostics
+          assert 'Test Local SOCKS5' in diagnostics
+
+          assert 'static const bool adsEnabled = false;' in ad
+          assert '?signature=test&key_id=test' in ad
+          assert 'HivemindService.setExpectedNonce(nonce)' in ad
+          assert '/admob/callback?signature=test&key_id=test' in hivemind
+          print('v3 wiring and legacy AdMob/nonce invariants verified')
+          PY
+
+      - name: Generate unit tests
+        shell: bash
+        run: |
+          mkdir -p test
+          cat > test/android_v3_ci_test.dart <<'DART'
+          import 'package:flutter_test/flutter_test.dart';
+          import 'package:revoltvpn/logic/network_monitor.dart';
+
+          void main() {
+            test('network snapshot parses native payload', () {
+              final snapshot = NetworkSnapshot.fromMap(<String, Object>{
+                'reason': 'changed',
+                'transport': 'wifi',
+                'connected': true,
+                'validated': true,
+                'metered': false,
+                'timestamp': 123,
+              });
+
+              expect(snapshot.transport, 'wifi');
+              expect(snapshot.connected, isTrue);
+              expect(snapshot.validated, isTrue);
+              expect(snapshot.timestamp, 123);
+            });
+          }
+          DART
+
+      - name: Flutter analyze
+        run: flutter analyze
+
+      - name: Unit tests
+        run: flutter test test/android_v3_ci_test.dart
+
+      - name: Public API health
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --max-time 10 \
+            https://paladinvpn.duckdns.org/api/health
+          echo
+
+      - name: Build release APK
+        run: flutter build apk --release --build-name 3.3.0 --build-number 26
+
+      - name: Build release AAB
+        run: flutter build appbundle --release --build-name 3.3.0 --build-number 26
+
+      - name: Package release artifacts
+        shell: bash
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk ReVoltVPN-v3-release-test.apk
+          cp build/app/outputs/bundle/release/app-release.aab ReVoltVPN-v3-release-test.aab
+          sha256sum ReVoltVPN-v3-release-test.apk > ReVoltVPN-v3-release-test.apk.sha256
+          sha256sum ReVoltVPN-v3-release-test.aab > ReVoltVPN-v3-release-test.aab.sha256
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReVoltVPN-v3-release-test
+          path: |
+            ReVoltVPN-v3-release-test.apk
+            ReVoltVPN-v3-release-test.apk.sha256
+            ReVoltVPN-v3-release-test.aab
+            ReVoltVPN-v3-release-test.aab.sha256
+          retention-days: 3
+          if-no-files-found: error
