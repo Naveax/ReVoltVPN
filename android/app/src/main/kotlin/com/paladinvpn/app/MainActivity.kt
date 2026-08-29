@@ -9,6 +9,7 @@ import android.graphics.Canvas
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -101,9 +102,21 @@ class MainActivity : FlutterActivity() {
         }
 
         try {
-            manager.registerDefaultNetworkCallback(callback)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                manager.registerDefaultNetworkCallback(callback)
+            } else {
+                val request = NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build()
+                manager.registerNetworkCallback(request, callback)
+            }
             networkCallback = callback
-            emitNetworkState(manager, manager.activeNetwork, "initial")
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                emitNetworkState(manager, manager.activeNetwork, "initial")
+            } else {
+                emitLegacyNetworkState(manager, "initial")
+            }
         } catch (e: Exception) {
             networkEvents?.error("NETWORK_MONITOR", e.message, null)
         }
@@ -134,16 +147,48 @@ class MainActivity : FlutterActivity() {
             capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "vpn"
             else -> "other"
         }
+        val validated = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+        } else {
+            network != null && capabilities != null
+        }
 
-        val payload = mapOf(
-            "reason" to reason,
-            "transport" to transport,
-            "connected" to (network != null && capabilities != null),
-            "validated" to (capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true),
-            "metered" to manager.isActiveNetworkMetered,
-            "timestamp" to System.currentTimeMillis(),
+        emitNetworkPayload(
+            mapOf<String, Any>(
+                "reason" to reason,
+                "transport" to transport,
+                "connected" to (network != null && capabilities != null),
+                "validated" to validated,
+                "metered" to manager.isActiveNetworkMetered,
+                "timestamp" to System.currentTimeMillis(),
+            ),
         )
+    }
 
+    @Suppress("DEPRECATION")
+    private fun emitLegacyNetworkState(manager: ConnectivityManager, reason: String) {
+        val info = manager.activeNetworkInfo
+        val connected = info?.isConnected == true
+        val transport = when (info?.type) {
+            ConnectivityManager.TYPE_WIFI -> "wifi"
+            ConnectivityManager.TYPE_MOBILE -> "cellular"
+            ConnectivityManager.TYPE_ETHERNET -> "ethernet"
+            else -> if (connected) "other" else "none"
+        }
+
+        emitNetworkPayload(
+            mapOf<String, Any>(
+                "reason" to reason,
+                "transport" to transport,
+                "connected" to connected,
+                "validated" to connected,
+                "metered" to manager.isActiveNetworkMetered,
+                "timestamp" to System.currentTimeMillis(),
+            ),
+        )
+    }
+
+    private fun emitNetworkPayload(payload: Map<String, Any>) {
         runOnUiThread {
             networkEvents?.success(payload)
         }
