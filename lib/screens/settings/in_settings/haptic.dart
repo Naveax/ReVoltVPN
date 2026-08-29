@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
-
-bool hapticEnabled = false;
+import 'package:revoltvpn/logic/haptic_settings.dart';
 
 class HapticFeedbackTile extends StatefulWidget {
   const HapticFeedbackTile({super.key});
@@ -12,7 +10,7 @@ class HapticFeedbackTile extends StatefulWidget {
 }
 
 class _HapticFeedbackTileState extends State<HapticFeedbackTile> {
-  bool _on = false;
+  bool _on = HapticSettings.enabled;
 
   @override
   void initState() {
@@ -20,21 +18,21 @@ class _HapticFeedbackTileState extends State<HapticFeedbackTile> {
     _load();
   }
 
-  // Loads persisted state and syncs the top-level bool.
   Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
-    final value = prefs.getBool('haptic_feedback_enabled') ?? false;
-    hapticEnabled = value;
-    if (mounted) setState(() => _on = value);
+    await HapticSettings.initialize();
+    if (mounted) setState(() => _on = HapticSettings.enabled);
   }
 
-  // Writes to SharedPreferences AND updates the live bool so the connect
-  // button sees the change immediately — no restart needed.
   Future<void> _toggle(bool value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('haptic_feedback_enabled', value);
-    hapticEnabled = value;
-    setState(() => _on = value);
+    if (!value) HapticSettings.selection();
+    if (mounted) setState(() => _on = value);
+
+    try {
+      await HapticSettings.setEnabled(value);
+      if (value) HapticSettings.selection();
+    } catch (_) {
+      if (mounted) setState(() => _on = HapticSettings.enabled);
+    }
   }
 
   @override
