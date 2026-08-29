@@ -79,11 +79,15 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
     if (!widget.tunMode) {
       switch (_mode) {
         case AppRoutingMode.all:
-          return 'Local SOCKS5 is active. App routing is saved for TUN mode.';
+          return 'Local SOCKS5 proxy-only mode. Apps use 127.0.0.1:10807 manually.';
         case AppRoutingMode.exclude:
-          return 'Local SOCKS5 is active. $_selectedCount excluded app${_selectedCount == 1 ? '' : 's'} saved for TUN mode.';
+          return _selectedCount == 0
+              ? 'Choose apps to bypass. Selecting apps enables automatic Local SOCKS routing.'
+              : '$_selectedCount app${_selectedCount == 1 ? '' : 's'} bypass; other apps are automatically routed through Local SOCKS5.';
         case AppRoutingMode.selected:
-          return 'Local SOCKS5 is active. $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} saved for TUN mode.';
+          return _selectedCount == 0
+              ? 'Choose at least one app. Automatic Local SOCKS routing uses Android VPN permission.'
+              : 'Only $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} are automatically routed through Local SOCKS5.';
       }
     }
 
@@ -148,7 +152,9 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
             ),
             subtitle: widget.tunMode
                 ? null
-                : const Text('Saved now, applied when TUN mode is used.'),
+                : const Text(
+                    'Applied automatically through Android routing into Local SOCKS5.',
+                  ),
             trailing: const Icon(Icons.chevron_right),
           ),
       ],
