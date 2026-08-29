@@ -6,9 +6,9 @@ import 'package:revoltvpn/logic/installed_apps_service.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 
 class AppRoutingTile extends StatefulWidget {
-  final bool tunMode;
+  final ConnectionMode connectionMode;
 
-  const AppRoutingTile({super.key, required this.tunMode});
+  const AppRoutingTile({super.key, required this.connectionMode});
 
   @override
   State<AppRoutingTile> createState() => _AppRoutingTileState();
@@ -17,6 +17,9 @@ class AppRoutingTile extends StatefulWidget {
 class _AppRoutingTileState extends State<AppRoutingTile> {
   AppRoutingMode _mode = ConnectionSettings.routingMode;
   int _selectedCount = ConnectionSettings.appPackages.length;
+
+  bool get _assMode => widget.connectionMode == ConnectionMode.ass;
+  bool get _tunMode => widget.connectionMode == ConnectionMode.tun;
 
   @override
   void initState() {
@@ -47,7 +50,7 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
   }
 
   Future<void> _changeMode(AppRoutingMode? next) async {
-    if (next == null || next == _mode) return;
+    if (_assMode || next == null || next == _mode) return;
     if (_vpnBusy()) {
       _showDisconnectFirst();
       return;
@@ -58,7 +61,7 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
   }
 
   Future<void> _openPicker() async {
-    if (_mode == AppRoutingMode.all) return;
+    if (!_assMode && _mode == AppRoutingMode.all) return;
     if (_vpnBusy()) {
       _showDisconnectFirst();
       return;
@@ -66,7 +69,9 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
 
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => _AppPicker(mode: _mode),
+        builder: (_) => _AppPicker(
+          mode: _assMode ? AppRoutingMode.selected : _mode,
+        ),
       ),
     );
 
@@ -76,18 +81,20 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
   }
 
   String get _subtitle {
-    if (!widget.tunMode) {
+    if (_assMode) {
+      return _selectedCount == 0
+          ? 'Choose at least one app. ASS uses a strict native allowlist and routes only those apps through Local SOCKS5.'
+          : '$_selectedCount app${_selectedCount == 1 ? '' : 's'} use strict ASS routing through Local SOCKS5.';
+    }
+
+    if (!_tunMode) {
       switch (_mode) {
         case AppRoutingMode.all:
-          return 'Local SOCKS5 proxy-only mode. Apps use 127.0.0.1:10807 manually.';
+          return 'Local SOCKS5 stays proxy-only. App routing choices remain available for TUN or ASS.';
         case AppRoutingMode.exclude:
-          return _selectedCount == 0
-              ? 'Choose apps to bypass. Selecting apps enables automatic Local SOCKS routing.'
-              : '$_selectedCount app${_selectedCount == 1 ? '' : 's'} bypass; other apps are automatically routed through Local SOCKS5.';
+          return '$_selectedCount excluded app${_selectedCount == 1 ? '' : 's'} saved for TUN mode.';
         case AppRoutingMode.selected:
-          return _selectedCount == 0
-              ? 'Choose at least one app. Automatic Local SOCKS routing uses Android VPN permission.'
-              : 'Only $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} are automatically routed through Local SOCKS5.';
+          return '$_selectedCount selected app${_selectedCount == 1 ? '' : 's'} saved for TUN/ASS use.';
       }
     }
 
@@ -100,13 +107,15 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
             : '$_selectedCount app${_selectedCount == 1 ? '' : 's'} bypass the VPN.';
       case AppRoutingMode.selected:
         return _selectedCount == 0
-            ? 'Choose at least one app.'
-            : 'Only $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} use the VPN.';
+            ? 'Choose at least one app for strict native Selected only routing.'
+            : 'Only $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} use the VPN via a strict native allowlist.';
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final showPicker = _assMode || _mode != AppRoutingMode.all;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -119,42 +128,49 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
             _subtitle,
             style: const TextStyle(color: AppColors.textDim, fontSize: 12),
           ),
-          trailing: DropdownButtonHideUnderline(
-            child: DropdownButton<AppRoutingMode>(
-              value: _mode,
-              dropdownColor: AppColors.bgCard,
-              onChanged: _changeMode,
-              items: const [
-                DropdownMenuItem(
-                  value: AppRoutingMode.all,
-                  child: Text('All apps'),
+          trailing: _assMode
+              ? const Text(
+                  'Selected only',
+                  style: TextStyle(color: AppColors.textWhite, fontSize: 12),
+                )
+              : DropdownButtonHideUnderline(
+                  child: DropdownButton<AppRoutingMode>(
+                    value: _mode,
+                    dropdownColor: AppColors.bgCard,
+                    onChanged: _changeMode,
+                    items: const [
+                      DropdownMenuItem(
+                        value: AppRoutingMode.all,
+                        child: Text('All apps'),
+                      ),
+                      DropdownMenuItem(
+                        value: AppRoutingMode.exclude,
+                        child: Text('Exclude apps'),
+                      ),
+                      DropdownMenuItem(
+                        value: AppRoutingMode.selected,
+                        child: Text('Selected only'),
+                      ),
+                    ],
+                  ),
                 ),
-                DropdownMenuItem(
-                  value: AppRoutingMode.exclude,
-                  child: Text('Exclude apps'),
-                ),
-                DropdownMenuItem(
-                  value: AppRoutingMode.selected,
-                  child: Text('Selected only'),
-                ),
-              ],
-            ),
-          ),
         ),
-        if (_mode != AppRoutingMode.all)
+        if (showPicker)
           ListTile(
             onTap: _openPicker,
             leading: const Icon(Icons.apps),
             title: Text(
-              _mode == AppRoutingMode.exclude
-                  ? 'Choose excluded apps'
-                  : 'Choose VPN apps',
+              _assMode || _mode == AppRoutingMode.selected
+                  ? 'Choose routed apps'
+                  : 'Choose excluded apps',
             ),
-            subtitle: widget.tunMode
-                ? null
-                : const Text(
-                    'Applied automatically through Android routing into Local SOCKS5.',
-                  ),
+            subtitle: _assMode
+                ? const Text(
+                    'These apps are automatically wrapped into 127.0.0.1:10807.',
+                  )
+                : _tunMode
+                    ? null
+                    : const Text('Saved while Local SOCKS5 is active.'),
             trailing: const Icon(Icons.chevron_right),
           ),
       ],
@@ -229,7 +245,7 @@ class _AppPickerState extends State<_AppPicker> {
 
     final title = widget.mode == AppRoutingMode.exclude
         ? 'Exclude apps'
-        : 'Selected VPN apps';
+        : 'Selected routed apps';
 
     return Scaffold(
       backgroundColor: AppColors.bgDeep,
