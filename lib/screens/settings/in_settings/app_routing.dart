@@ -6,9 +6,9 @@ import 'package:revoltvpn/logic/installed_apps_service.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 
 class AppRoutingTile extends StatefulWidget {
-  final bool enabled;
+  final bool tunMode;
 
-  const AppRoutingTile({super.key, required this.enabled});
+  const AppRoutingTile({super.key, required this.tunMode});
 
   @override
   State<AppRoutingTile> createState() => _AppRoutingTileState();
@@ -47,7 +47,7 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
   }
 
   Future<void> _changeMode(AppRoutingMode? next) async {
-    if (!widget.enabled || next == null || next == _mode) return;
+    if (next == null || next == _mode) return;
     if (_vpnBusy()) {
       _showDisconnectFirst();
       return;
@@ -58,7 +58,7 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
   }
 
   Future<void> _openPicker() async {
-    if (!widget.enabled || _mode == AppRoutingMode.all) return;
+    if (_mode == AppRoutingMode.all) return;
     if (_vpnBusy()) {
       _showDisconnectFirst();
       return;
@@ -76,7 +76,16 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
   }
 
   String get _subtitle {
-    if (!widget.enabled) return 'Available only in TUN mode.';
+    if (!widget.tunMode) {
+      switch (_mode) {
+        case AppRoutingMode.all:
+          return 'Local SOCKS5 is active. App routing is saved for TUN mode.';
+        case AppRoutingMode.exclude:
+          return 'Local SOCKS5 is active. $_selectedCount excluded app${_selectedCount == 1 ? '' : 's'} saved for TUN mode.';
+        case AppRoutingMode.selected:
+          return 'Local SOCKS5 is active. $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} saved for TUN mode.';
+      }
+    }
 
     switch (_mode) {
       case AppRoutingMode.all:
@@ -98,7 +107,6 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         ListTile(
-          enabled: widget.enabled,
           title: const Text(
             'App routing',
             style: TextStyle(color: AppColors.textWhite, fontSize: 15),
@@ -111,7 +119,7 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
             child: DropdownButton<AppRoutingMode>(
               value: _mode,
               dropdownColor: AppColors.bgCard,
-              onChanged: widget.enabled ? _changeMode : null,
+              onChanged: _changeMode,
               items: const [
                 DropdownMenuItem(
                   value: AppRoutingMode.all,
@@ -129,7 +137,7 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
             ),
           ),
         ),
-        if (widget.enabled && _mode != AppRoutingMode.all)
+        if (_mode != AppRoutingMode.all)
           ListTile(
             onTap: _openPicker,
             leading: const Icon(Icons.apps),
@@ -138,6 +146,9 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
                   ? 'Choose excluded apps'
                   : 'Choose VPN apps',
             ),
+            subtitle: widget.tunMode
+                ? null
+                : const Text('Saved now, applied when TUN mode is used.'),
             trailing: const Icon(Icons.chevron_right),
           ),
       ],
@@ -183,7 +194,7 @@ class _AppPickerState extends State<_AppPicker> {
         _apps = apps;
         _loading = false;
       });
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
       setState(() {
         _error = 'Could not load installed apps.';
