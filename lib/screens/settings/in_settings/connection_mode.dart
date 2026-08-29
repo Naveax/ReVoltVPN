@@ -82,12 +82,28 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
     );
   }
 
+  Future<void> _selectAss() async {
+    final changed = await _setMode(ConnectionMode.ass);
+    if (!changed || !mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'ASS selected. Choose apps below, then Connect.',
+        ),
+      ),
+    );
+  }
+
   Future<void> _testLocalSocks() async {
     final vpn = context.read<VpnConnection>();
-    if (vpn.status != VpnStatus.connected || vpn.activeMode != ConnectionMode.proxy) {
+    final localSocksRunning = vpn.status == VpnStatus.connected &&
+        (vpn.activeMode == ConnectionMode.proxy ||
+            vpn.activeMode == ConnectionMode.ass);
+    if (!localSocksRunning) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Connect with Local SOCKS5 first, then run the test.'),
+          content: Text('Connect with Local SOCKS5 or ASS first, then run the test.'),
         ),
       );
       return;
@@ -110,9 +126,21 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
     );
   }
 
+  String get _subtitle {
+    switch (_mode) {
+      case ConnectionMode.tun:
+        return 'TUN: Android VPN routes device traffic through ReVolt.';
+      case ConnectionMode.proxy:
+        return 'Local SOCKS5: apps that support SOCKS can use 127.0.0.1:10807 directly.';
+      case ConnectionMode.ass:
+        return 'ASS: selected apps are automatically wrapped into Local SOCKS5, even without proxy support.';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final proxyMode = _mode == ConnectionMode.proxy;
+    final localSocksMode = _mode == ConnectionMode.proxy;
+    final assMode = _mode == ConnectionMode.ass;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -123,9 +151,7 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
             style: TextStyle(color: AppColors.textWhite, fontSize: 15),
           ),
           subtitle: Text(
-            proxyMode
-                ? 'Local SOCKS5 on 127.0.0.1:10807. Exclude/Selected app routing can automatically steer apps into it.'
-                : 'TUN mode. Device traffic uses the Android VPN tunnel.',
+            _subtitle,
             style: const TextStyle(color: AppColors.textDim, fontSize: 12),
           ),
           trailing: DropdownButtonHideUnderline(
@@ -142,24 +168,44 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
                   value: ConnectionMode.proxy,
                   child: Text('Local SOCKS5'),
                 ),
+                DropdownMenuItem(
+                  value: ConnectionMode.ass,
+                  child: Text('App Specific (ASS)'),
+                ),
               ],
             ),
           ),
         ),
         Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-          child: OutlinedButton.icon(
-            onPressed: _selectLocalServer,
-            icon: const Icon(Icons.dns_outlined),
-            label: const Text('Server Local'),
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _selectLocalServer,
+                  icon: const Icon(Icons.dns_outlined),
+                  label: const Text('Server Local'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _selectAss,
+                  icon: const Icon(Icons.apps),
+                  label: const Text('App Specific'),
+                ),
+              ),
+            ],
           ),
         ),
-        if (proxyMode) ...[
-          const Padding(
-            padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
+        if (localSocksMode || assMode) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
             child: Text(
-              'SOCKS5: $localSocksAddress\nAll apps = proxy-only. Exclude/Selected = automatic Android app routing through this local SOCKS5.',
-              style: TextStyle(color: AppColors.textMuted, fontSize: 12),
+              assMode
+                  ? 'ASS uses a strict Android app allowlist, then routes those apps through SOCKS5 $localSocksAddress.'
+                  : 'SOCKS5: $localSocksAddress\nNo server-side SOCKS port is required.',
+              style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
             ),
           ),
           Padding(
