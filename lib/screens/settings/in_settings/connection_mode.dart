@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/logic/connection_settings.dart';
+import 'package:revoltvpn/logic/local_socks_tester.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 
 class ConnectionModeTile extends StatefulWidget {
@@ -17,6 +18,8 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
   static const String localSocksAddress = '127.0.0.1:10807';
 
   ConnectionMode _mode = ConnectionSettings.mode;
+  bool _testingLocalSocks = false;
+  LocalSocksTestResult? _lastSocksTest;
 
   @override
   void initState() {
@@ -53,7 +56,10 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
     await ConnectionSettings.setMode(next);
     if (!mounted) return false;
 
-    setState(() => _mode = next);
+    setState(() {
+      _mode = next;
+      _lastSocksTest = null;
+    });
     widget.onChanged?.call(next);
     return true;
   }
@@ -73,6 +79,34 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
           'Server Local selected. Connect to start SOCKS5 on 127.0.0.1:10807.',
         ),
       ),
+    );
+  }
+
+  Future<void> _testLocalSocks() async {
+    final vpn = context.read<VpnConnection>();
+    if (vpn.status != VpnStatus.connected || vpn.activeMode != ConnectionMode.proxy) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Connect with Local SOCKS5 first, then run the test.'),
+        ),
+      );
+      return;
+    }
+
+    if (_testingLocalSocks) return;
+    setState(() => _testingLocalSocks = true);
+
+    final result = await LocalSocksTester.test();
+    if (!mounted) return;
+
+    setState(() {
+      _testingLocalSocks = false;
+      _lastSocksTest = result;
+    });
+
+    final latency = result.latencyMs == null ? '' : ' (${result.latencyMs} ms)';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('${result.message}$latency')),
     );
   }
 
@@ -120,14 +154,39 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
             label: const Text('Server Local'),
           ),
         ),
-        if (proxyMode)
+        if (proxyMode) ...[
           const Padding(
-            padding: EdgeInsets.fromLTRB(20, 0, 20, 12),
+            padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
             child: Text(
               'SOCKS5: $localSocksAddress\nUse the main Connect button to start the local proxy.',
               style: TextStyle(color: AppColors.textMuted, fontSize: 12),
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+            child: OutlinedButton.icon(
+              onPressed: _testingLocalSocks ? null : _testLocalSocks,
+              icon: _testingLocalSocks
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.network_check),
+              label: Text(_testingLocalSocks ? 'Testing…' : 'Test Local SOCKS'),
+            ),
+          ),
+          if (_lastSocksTest != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: Text(
+                _lastSocksTest!.ok
+                    ? 'Last test: OK${_lastSocksTest!.latencyMs == null ? '' : ' · ${_lastSocksTest!.latencyMs} ms'}'
+                    : 'Last test: Failed · ${_lastSocksTest!.message}',
+                style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
+              ),
+            ),
+        ],
       ],
     );
   }
