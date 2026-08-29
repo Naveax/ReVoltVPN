@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 class LocalSocksTestResult {
   final bool ok;
@@ -24,6 +25,7 @@ abstract final class LocalSocksTester {
   }) async {
     final stopwatch = Stopwatch()..start();
     Socket? socket;
+    _SocketReader? reader;
 
     try {
       socket = await Socket.connect(
@@ -32,10 +34,11 @@ abstract final class LocalSocksTester {
         timeout: const Duration(seconds: 3),
       );
       socket.setOption(SocketOption.tcpNoDelay, true);
+      reader = _SocketReader(socket);
 
       socket.add(const <int>[0x05, 0x01, 0x00]);
       await socket.flush();
-      final greeting = await _readExactly(socket, 2);
+      final greeting = await reader.readExactly(2);
       if (greeting[0] != 0x05 || greeting[1] != 0x00) {
         return const LocalSocksTestResult(
           ok: false,
@@ -65,16 +68,16 @@ abstract final class LocalSocksTester {
       ]);
       await socket.flush();
 
-      final replyHead = await _readExactly(socket, 4);
+      final replyHead = await reader.readExactly(4);
       if (replyHead[0] != 0x05 || replyHead[1] != 0x00) {
-        return LocalSocksTestResult(
+        return const LocalSocksTestResult(
           ok: false,
           latencyMs: null,
           message: 'SOCKS5 is listening, but the ReVolt route could not reach the test target.',
         );
       }
 
-      await _consumeAddress(socket, replyHead[3]);
+      await _consumeAddress(reader, replyHead[3]);
       stopwatch.stop();
       return LocalSocksTestResult(
         ok: true,
@@ -100,48 +103,50 @@ abstract final class LocalSocksTester {
         message: 'Local SOCKS5 test failed.',
       );
     } finally {
+      await reader?.close();
       await socket?.close();
     }
   }
 
-  static Future<List<int>> _readExactly(Socket socket, int count) async {
-    final bytes = <int>[];
-    final completer = Completer<List<int>>();
-    late StreamSubscription<List<int>> subscription;
-
-    subscription = socket.listen(
-      (chunk) {
-        bytes.addAll(chunk);
-        if (bytes.length >= count && !completer.isCompleted) {
-          completer.complete(bytes.sublist(0, count));
-          subscription.cancel();
-        }
-      },
-      onError: (Object error) {
-        if (!completer.isCompleted) completer.completeError(error);
-      },
-      onDone: () {
-        if (!completer.isCompleted) {
-          completer.completeError(const SocketException('Socket closed early'));
-        }
-      },
-      cancelOnError: true,
-    );
-
-    return completer.future.timeout(const Duration(seconds: 4));
-  }
-
-  static Future<void> _consumeAddress(Socket socket, int addressType) async {
-    switch (addressType) {
-      case 0x01:
-        await _readExactly(socket, 4 + 2);
-      case 0x04:
-        await _readExactly(socket, 16 + 2);
-      case 0x03:
-        final length = (await _readExactly(socket, 1)).first;
-        await _readExactly(socket, length + 2);
-      default:
-        throw const FormatException('Unsupported SOCKS5 address type');
+  static Future<void> _consumeAddress(_SocketReader reader, int addressType) async {
+    if (addressType == 0x01) {
+      await reader.readExactly(4 + 2);
+      return;
     }
+    if (addressType == 0x04) {
+      await reader.readExactly(16 + 2);
+      return;
+    }
+    if (addressType == 0x03) {
+      final length = (await reader.readExactly(1)).first;
+      await reader.readExactly(length + 2);
+      return;
+    }
+    throw const FormatException('Unsupported SOCKS5 address type');
   }
+}
+
+class _SocketReader {
+  final StreamIterator<Uint8List> _iterator;
+  final List<int> _buffer = <int>[];
+
+  _SocketReader(Socket socket) : _iterator = StreamIterator<Uint8List>(socket);
+
+  Future<List<int>> readExactly(int count) async {
+    while (_buffer.length < count) {
+      final hasNext = await _iterator
+          .moveNext()
+          .timeout(const Duration(seconds: 4));
+      if (!hasNext) {
+        throw const SocketException('Socket closed early');
+      }
+      _buffer.addAll(_iterator.current);
+    }
+
+    final result = _buffer.sublist(0, count);
+    _buffer.removeRange(0, count);
+    return result;
+  }
+
+  Future<void> close() => _iterator.cancel();
 }
