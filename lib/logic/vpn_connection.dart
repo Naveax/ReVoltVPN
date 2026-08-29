@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_vless/flutter_vless.dart';
+import 'package:revoltvpn/logic/connection_settings.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 
 enum VpnStatus {
@@ -28,6 +29,9 @@ class VpnConnection extends ChangeNotifier {
   bool _serverReachable = false;
   bool get serverReachable => _serverReachable;
 
+  ConnectionMode _activeMode = ConnectionMode.tun;
+  ConnectionMode get activeMode => _activeMode;
+
   Timer? _healthTimer;
 
   late final FlutterVless _vless;
@@ -36,6 +40,7 @@ class VpnConnection extends ChangeNotifier {
   Future<void> get ready => _readyCompleter.future;
 
   VpnConnection() {
+    _activeMode = ConnectionSettings.mode;
     _init();
   }
 
@@ -82,15 +87,18 @@ class VpnConnection extends ChangeNotifier {
       final delay = await _vless.getConnectedServerDelay();
       if (delay > 0) {
         _isStartupRestoration = true;
-        _setStatus(VpnStatus.connected, 'Secured');
+        _setStatus(VpnStatus.connected, _connectedLabel);
       }
     } catch (_) {}
   }
 
+  String get _connectedLabel =>
+      _activeMode == ConnectionMode.proxy ? 'Proxy ready' : 'Secured';
+
   void _mapStatus(VlessStatus status) {
     switch (status.connectionState) {
       case VlessConnectionState.connected:
-        _setStatus(VpnStatus.connected, 'Secured');
+        _setStatus(VpnStatus.connected, _connectedLabel);
         break;
       case VlessConnectionState.disconnected:
         _isStartupRestoration = false;
@@ -112,15 +120,6 @@ class VpnConnection extends ChangeNotifier {
     }
   }
 
-  // ── Connect ────────────────────────────────────────────────────────
-  //
-  // 1. Direct HTTPS to the public API → get per-user VLESS URL
-  // 2. Start tunnel directly with that URL (no bootstrap, no switch)
-  //
-  // The only hardcoded data in the APK is the Reality public key and
-  // shortId (needed for every Reality handshake — unavoidable).
-  // The tunnel UUID is per-user, assigned by Hivemind via AdMob SSV.
-
   Future<bool> connect({
     bool skipAdBypass = false,
   }) async {
@@ -129,13 +128,17 @@ class VpnConnection extends ChangeNotifier {
     }
     _cancelled = false;
 
+    await ConnectionSettings.initialize();
+    _activeMode = ConnectionSettings.mode;
+    final proxyOnly = _activeMode == ConnectionMode.proxy;
+
     if (!kIsWeb && !_initialized) {
       _errorMessage = 'VPN service unavailable.';
       _setStatus(VpnStatus.error, 'Service unavailable');
       return false;
     }
 
-    if (!kIsWeb) {
+    if (!kIsWeb && !proxyOnly) {
       final ok = await _vless.requestPermission();
       if (!ok) {
         _errorMessage = 'VPN permission denied.';
@@ -144,7 +147,10 @@ class VpnConnection extends ChangeNotifier {
       }
     }
 
-    _setStatus(VpnStatus.connecting, 'Establishing secure channel…');
+    _setStatus(
+      VpnStatus.connecting,
+      proxyOnly ? 'Starting local proxy…' : 'Establishing secure channel…',
+    );
     _errorMessage = null;
 
     if (kIsWeb) {
@@ -184,23 +190,33 @@ class VpnConnection extends ChangeNotifier {
       return false;
     }
 
-    _setStatus(VpnStatus.connecting, 'Securing connection…');
+    _setStatus(
+      VpnStatus.connecting,
+      proxyOnly ? 'Starting proxy…' : 'Securing connection…',
+    );
 
     try {
       final parsed = FlutterVless.parse(realUrl);
+      final blockedApps = !proxyOnly && ConnectionSettings.blockedApps.isNotEmpty
+          ? ConnectionSettings.blockedApps
+          : null;
 
       await _vless.startVless(
         remark: parsed.remark.isNotEmpty ? parsed.remark : 'Revolt VPN',
         config: parsed.getFullConfiguration(),
+        blockedApps: blockedApps,
+        proxyOnly: proxyOnly,
       );
     } catch (e) {
       debugPrint('[VPN] Tunnel start error: $e');
-      _errorMessage = 'Tunnel failed to start.\nTry reconnecting.';
+      _errorMessage = proxyOnly
+          ? 'Proxy failed to start.\nTry reconnecting.'
+          : 'Tunnel failed to start.\nTry reconnecting.';
       _setStatus(VpnStatus.error, 'Connection failed');
       return false;
     }
 
-    _setStatus(VpnStatus.connected, 'Secured');
+    _setStatus(VpnStatus.connected, _connectedLabel);
     return true;
   }
 

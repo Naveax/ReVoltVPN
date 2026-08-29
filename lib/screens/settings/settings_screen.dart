@@ -1,26 +1,32 @@
 import 'package:flutter/material.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
+import 'package:revoltvpn/logic/connection_settings.dart';
+import 'package:revoltvpn/screens/settings/in_settings/blocked_apps.dart';
+import 'package:revoltvpn/screens/settings/in_settings/connection_mode.dart';
 import 'package:revoltvpn/screens/settings/in_settings/haptic.dart';
 import 'package:revoltvpn/screens/settings/in_settings/rain.dart';
 import 'package:revoltvpn/screens/settings/in_settings/lightning.dart';
 
-// ── lib/screens/settings/settings_screen.dart ────────────────────────────────
-// Settings shell — full-screen page reached from the sidebar.
-//
-// Folder layout:
-//   lib/screens/settings/       ← this folder: settings family
-//     settings_screen.dart      ← shell: Scaffold + AppBar + ListView (this file)
-//     *_tile.dart               ← one file per setting feature (add below)
-//   lib/components/sidebar_contents/
-//     settings.dart             ← thin sidebar row that navigates here
-//
-// To add a setting:
-//   1. Create a new file in this folder, e.g. appearance_tile.dart
-//   2. Import it below
-//   3. Append it to the children list
-
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  ConnectionMode _mode = ConnectionSettings.mode;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadMode();
+  }
+
+  Future<void> _loadMode() async {
+    await ConnectionSettings.initialize();
+    if (mounted) setState(() => _mode = ConnectionSettings.mode);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -43,12 +49,14 @@ class SettingsScreen extends StatelessWidget {
       ),
       body: ListView(
         padding: const EdgeInsets.symmetric(vertical: 8),
-        children: const [
-          HapticFeedbackTile(),
-          RainToggleTile(),
-          LightningToggleTile(),
-          // ── Add setting tiles here ────────────────────────────────────────
-          // Each tile imports from its own file in this folder.
+        children: [
+          ConnectionModeTile(
+            onChanged: (mode) => setState(() => _mode = mode),
+          ),
+          BlockedAppsTile(enabled: _mode == ConnectionMode.tun),
+          const HapticFeedbackTile(),
+          const RainToggleTile(),
+          const LightningToggleTile(),
         ],
       ),
     );

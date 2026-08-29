@@ -11,6 +11,11 @@
            <action android:name="android.intent.action.VIEW"/>
            <data android:scheme="https"/>
        </intent>
+       <!-- App picker only needs launcher apps; avoid QUERY_ALL_PACKAGES. -->
+       <intent>
+           <action android:name="android.intent.action.MAIN"/>
+           <category android:name="android.intent.category.LAUNCHER"/>
+       </intent>
    </queries>
 
    <application
@@ -48,4 +53,3 @@
             android:value="2" />
     </application>
 </manifest>
-
