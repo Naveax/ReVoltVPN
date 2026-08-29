@@ -1,4 +1,4 @@
-name: tmp-extract-old-config
+name: tmp-build-main-sidebar-haptics
 
 on:
   push:
@@ -6,30 +6,116 @@ on:
       - fix/main-sidebar-haptics-only-v2
 
 jobs:
-  extract:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Download old working release APK
-        run: curl -fL --retry 3 -o old.apk https://github.com/esefxdz/ReVoltVPN/releases/download/v3.2.2/app-release.apk
-      - name: Extract public client strings
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Set up Gradle 8.14
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+          cache-read-only: true
+
+      - name: Restore old-system client config
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p out/apk
-          unzip -j old.apk 'lib/arm64-v8a/libapp.so' -d out/apk
-          strings -a out/apk/libapp.so > out/all-strings.txt
-          grep -E -i 'userevolt|getrevolt|hivemind|/api|/session/status|/admob/callback|204\.168\.|vless://|/revolt|ca-app-pub-|github\.com/esefxdz|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' out/all-strings.txt | sort -u > out/public-config-candidates.txt || true
-          if command -v apkanalyzer >/dev/null 2>&1; then
-            apkanalyzer manifest print old.apk > out/manifest.xml || true
-          fi
-          cat out/public-config-candidates.txt
-      - name: Upload extraction
+          cat > lib/logic/app_config.dart <<'DART'
+          abstract final class AppConfig {
+            AppConfig._();
+            static const String serverIp = '204.168.246.88';
+            static const String hivemindApiPublic = 'https://paladinvpn.duckdns.org/api';
+            static const String bootstrapUuid = '00000000-0000-0000-0000-000000000000';
+            static const String realityPbk = 'UNUSED_BY_DIRECT_CONFIG_FLOW';
+            static const String realitySid = '00000000';
+            static const String realityFp = 'chrome';
+            static const String vlessSecurity = 'reality';
+            static const String vlessType = 'xhttp';
+            static const String vlessPath = '/revolt';
+            static String get bootstrapVlessUrl =>
+                'vless://$bootstrapUuid@$serverIp:8443'
+                '?security=$vlessSecurity&type=$vlessType&path=$vlessPath'
+                '&pbk=$realityPbk&sni=www.github.com&sid=$realitySid&fp=$realityFp'
+                '#ReVoltVPN';
+            static const String applicationId = 'com.paladinvpn.app';
+            static const String githubOwner = 'esefxdz';
+            static const String githubRepo = 'ReVoltVPN';
+            static const String githubReleasesUrl =
+                'https://github.com/$githubOwner/$githubRepo/releases/latest';
+            static const String adUnitId =
+                'ca-app-pub-3940256099942544/5224354917';
+          }
+          DART
+
+          cat > android/admob.properties <<'PROPS'
+          ADMOB_APP_ID=ca-app-pub-3940256099942544~3347511713
+          PROPS
+
+          {
+            printf 'flutter.sdk=%s\n' "$FLUTTER_ROOT"
+            printf 'sdk.dir=%s\n' "$ANDROID_HOME"
+          } > android/local.properties
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('android/gradle.properties')
+          lines = p.read_text().splitlines()
+          lines = [line for line in lines if not line.startswith('org.gradle.jvmargs=') and not line.startswith('org.gradle.workers.max=')]
+          lines.insert(0, 'org.gradle.workers.max=2')
+          lines.insert(0, 'org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8')
+          p.write_text('\n'.join(lines) + '\n')
+          PY
+
+      - name: Probe old backend
+        shell: bash
+        run: |
+          set +e
+          code=$(curl -L -sS -o /tmp/revolt-health.txt -w '%{http_code}' --connect-timeout 8 --max-time 15 https://paladinvpn.duckdns.org/api/health)
+          echo "health_http=$code"
+          cat /tmp/revolt-health.txt || true
+          exit 0
+
+      - name: Restore Gradle wrapper files
+        shell: bash
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.14 --distribution-type all
+          chmod +x gradlew
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Flutter analyze
+        run: flutter analyze
+
+      - name: Build debug APK
+        run: flutter build apk --debug --dart-define=ADS_ENABLED=false --dart-define=ALLOW_AD_DEBUG_BYPASS=true
+
+      - name: Package APK
+        shell: bash
+        run: |
+          cp build/app/outputs/flutter-apk/app-debug.apk ReVoltVPN-main-sidebar-haptics.apk
+          sha256sum ReVoltVPN-main-sidebar-haptics.apk > ReVoltVPN-main-sidebar-haptics.apk.sha256
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: old-public-config
+          name: ReVoltVPN-main-sidebar-haptics
           path: |
-            out/public-config-candidates.txt
-            out/manifest.xml
-          if-no-files-found: warn
-          retention-days: 1
+            ReVoltVPN-main-sidebar-haptics.apk
+            ReVoltVPN-main-sidebar-haptics.apk.sha256
+          retention-days: 3
