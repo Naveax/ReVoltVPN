@@ -72,10 +72,10 @@ void main() {
                 config.LOCAL_SOCKS5_PORT = nextFreePort(config.LOCAL_SOCKS5_PORT, usedPorts)
             }
 ''',
-    '''            if (usedPorts.contains(config.LOCAL_SOCKS5_PORT)) {
+    r'''            if (usedPorts.contains(config.LOCAL_SOCKS5_PORT)) {
                 throw IllegalStateException("Local SOCKS5 port collision on ${config.LOCAL_SOCKS5_PORT}")
             }
-''',
+'''.replaceAll(r'\"', '"'),
     'Local SOCKS5 port collision on',
   );
 
@@ -110,9 +110,9 @@ void main() {
   replaceOnce(
     service,
     r'''            "-proxy", "socks5://127.0.0.1:${config.LOCAL_SOCKS5_PORT}",
-''',
+'''.replaceAll(r'\"', '"'),
     r'''            "-proxy", "socks5://${config.LOCAL_SOCKS_USERNAME}:${config.LOCAL_SOCKS_PASSWORD}@127.0.0.1:${config.LOCAL_SOCKS5_PORT}",
-''',
+'''.replaceAll(r'\"', '"'),
     'LOCAL_SOCKS_USERNAME}:${config.LOCAL_SOCKS_PASSWORD}@127.0.0.1',
   );
 
