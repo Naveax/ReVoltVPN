@@ -88,14 +88,14 @@ abstract final class NativeTunnelControl {
   }
 
   static Future<bool> waitUntilReady({
-    Duration timeout = const Duration(seconds: 8),
+    Duration timeout = const Duration(seconds: 15),
   }) async {
     final deadline = DateTime.now().add(timeout);
     do {
       final state = await getState();
       if (state.fullyReady) return true;
       if (state.state == 'DISCONNECTED' && state.error.isNotEmpty) return false;
-      await Future<void>.delayed(const Duration(milliseconds: 150));
+      await Future<void>.delayed(const Duration(milliseconds: 250));
     } while (DateTime.now().isBefore(deadline));
     return (await getState()).fullyReady;
   }
