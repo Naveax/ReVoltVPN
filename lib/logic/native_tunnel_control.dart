@@ -26,16 +26,28 @@ class NativeTunnelState {
   });
 
   factory NativeTunnelState.fromMap(Map<Object?, Object?> map) {
+    final generation = (map['generation'] as num?)?.toInt() ?? 0;
+    final error = map['error']?.toString() ?? '';
+    final rawState = map['state']?.toString() ?? 'UNKNOWN';
+
+    // A freshly recreated Flutter process has not received a status broadcast
+    // from the remote VPN process yet. Treat its zero-generation default as
+    // UNKNOWN, not as authoritative DISCONNECTED. This keeps restoration
+    // fail-closed without racing the first native status broadcast.
+    final state = rawState == 'DISCONNECTED' && generation == 0 && error.isEmpty
+        ? 'UNKNOWN'
+        : rawState;
+
     return NativeTunnelState(
-      state: map['state']?.toString() ?? 'DISCONNECTED',
+      state: state,
       tunEstablished: map['tunEstablished'] == true,
       fdDelivered: map['fdDelivered'] == true,
       socksReady: map['socksReady'] == true,
       socksPort: (map['socksPort'] as num?)?.toInt() ?? 0,
       socksUser: map['socksUser']?.toString() ?? '',
       socksPass: map['socksPass']?.toString() ?? '',
-      generation: (map['generation'] as num?)?.toInt() ?? 0,
-      error: map['error']?.toString() ?? '',
+      generation: generation,
+      error: error,
     );
   }
 
@@ -48,7 +60,12 @@ class NativeTunnelState {
       socksUser.isNotEmpty &&
       socksPass.isNotEmpty;
 
-  bool get stopped => state == 'DISCONNECTED' && !tunEstablished && !fdDelivered;
+  bool get stopped =>
+      state == 'DISCONNECTED' &&
+      generation > 0 &&
+      !tunEstablished &&
+      !fdDelivered &&
+      !socksReady;
 }
 
 abstract final class NativeTunnelControl {
