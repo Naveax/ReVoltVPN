@@ -9,6 +9,8 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import androidx.core.app.ActivityCompat
 import com.github.tfox.flutter_vless.xray.core.XrayCoreManager
 import com.github.tfox.flutter_vless.xray.dto.XrayConfig
@@ -31,6 +33,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
     PluginRegistry.ActivityResultListener, MethodChannel.MethodCallHandler {
 
     private val executor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var vpnControlMethod: MethodChannel
     private lateinit var vpnStatusEvent: EventChannel
     private var vpnStatusSink: EventChannel.EventSink? = null
@@ -105,16 +108,21 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
                 }
                 executor.execute {
                     val delay = XrayCoreManager.getServerDelay(context, configJson, url)
-                    activity?.runOnUiThread { result.success(delay) } ?: result.success(delay)
+                    mainHandler.post { result.success(delay) }
                 }
             }
             "getConnectedServerDelay" -> {
                 val url = call.argument<String>("url") ?: "https://www.google.com"
                 executor.execute {
-                    val delay = if (lastState == "CONNECTED" && lastTunEstablished && lastFdDelivered && lastSocksReady) {
+                    val delay = if (
+                        lastState == "CONNECTED" &&
+                        lastTunEstablished &&
+                        lastFdDelivered &&
+                        lastSocksReady
+                    ) {
                         XrayCoreManager.measureSocksDelay(lastSocksPort, lastSocksUser, lastSocksPass, url)
                     } else -1L
-                    activity?.runOnUiThread { result.success(delay) } ?: result.success(delay)
+                    mainHandler.post { result.success(delay) }
                 }
             }
             "getCoreVersion" -> executor.execute {
@@ -128,7 +136,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
                 } catch (e: Exception) {
                     "Error: ${e.message}"
                 }
-                activity?.runOnUiThread { result.success(version) } ?: result.success(version)
+                mainHandler.post { result.success(version) }
             }
             "requestPermission" -> requestPermission(result)
             else -> result.notImplemented()
