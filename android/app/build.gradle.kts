@@ -24,37 +24,20 @@ val dartExecutable = File(
         "bin/cache/dart-sdk/bin/dart"
     },
 )
-val flutterVlessPatchScript = File(
-    projectRootDir,
-    "tool/patch_flutter_vless_allowed_apps.dart",
-)
-val flutterVlessReadinessPatchScript = File(
-    projectRootDir,
-    "tool/patch_flutter_vless_runtime_readiness.dart",
-)
+val flutterVlessPatchScript = File(projectRootDir, "tool/patch_flutter_vless_allowed_apps.dart")
+val flutterVlessReadinessPatchScript = File(projectRootDir, "tool/patch_flutter_vless_runtime_readiness.dart")
+val flutterVlessSurfacePatchScript = File(projectRootDir, "tool/patch_flutter_vless_surface_hardening.dart")
 
 val patchFlutterVlessAllowedApps = tasks.register<Exec>("patchFlutterVlessAllowedApps") {
     group = "build setup"
     description = "Patch pinned flutter_vless_android 1.1.5 with ReVolt routing/runtime hardening"
     workingDir(projectRootDir)
-
     doFirst {
-        if (!dartExecutable.isFile) {
-            throw GradleException("Flutter Dart executable not found: ${dartExecutable.absolutePath}")
-        }
-        if (!flutterVlessPatchScript.isFile) {
-            throw GradleException("flutter_vless patch script missing: ${flutterVlessPatchScript.absolutePath}")
-        }
-        if (!File(projectRootDir, ".dart_tool/package_config.json").isFile) {
-            throw GradleException("Flutter package metadata missing. Run `flutter pub get` before Android compilation.")
-        }
+        if (!dartExecutable.isFile) throw GradleException("Flutter Dart executable not found: ${dartExecutable.absolutePath}")
+        if (!flutterVlessPatchScript.isFile) throw GradleException("flutter_vless patch script missing: ${flutterVlessPatchScript.absolutePath}")
+        if (!File(projectRootDir, ".dart_tool/package_config.json").isFile) throw GradleException("Flutter package metadata missing. Run `flutter pub get` before Android compilation.")
     }
-
-    commandLine(
-        dartExecutable.absolutePath,
-        "run",
-        flutterVlessPatchScript.absolutePath,
-    )
+    commandLine(dartExecutable.absolutePath, "run", flutterVlessPatchScript.absolutePath)
 }
 
 val patchFlutterVlessRuntimeReadiness = tasks.register<Exec>("patchFlutterVlessRuntimeReadiness") {
@@ -62,38 +45,34 @@ val patchFlutterVlessRuntimeReadiness = tasks.register<Exec>("patchFlutterVlessR
     description = "Fail closed unless Android TUN and tun2socks FD handoff are ready"
     workingDir(projectRootDir)
     dependsOn(patchFlutterVlessAllowedApps)
-
     doFirst {
-        if (!dartExecutable.isFile) {
-            throw GradleException("Flutter Dart executable not found: ${dartExecutable.absolutePath}")
-        }
-        if (!flutterVlessReadinessPatchScript.isFile) {
-            throw GradleException("runtime readiness patch missing: ${flutterVlessReadinessPatchScript.absolutePath}")
-        }
+        if (!flutterVlessReadinessPatchScript.isFile) throw GradleException("runtime readiness patch missing: ${flutterVlessReadinessPatchScript.absolutePath}")
     }
+    commandLine(dartExecutable.absolutePath, "run", flutterVlessReadinessPatchScript.absolutePath)
+}
 
-    commandLine(
-        dartExecutable.absolutePath,
-        "run",
-        flutterVlessReadinessPatchScript.absolutePath,
-    )
+val patchFlutterVlessSurfaceHardening = tasks.register<Exec>("patchFlutterVlessSurfaceHardening") {
+    group = "build setup"
+    description = "Remove unused local HTTP proxy and gate startup restoration on proven tunnel readiness"
+    workingDir(projectRootDir)
+    dependsOn(patchFlutterVlessRuntimeReadiness)
+    doFirst {
+        if (!flutterVlessSurfacePatchScript.isFile) throw GradleException("surface hardening patch missing: ${flutterVlessSurfacePatchScript.absolutePath}")
+    }
+    commandLine(dartExecutable.absolutePath, "run", flutterVlessSurfacePatchScript.absolutePath)
 }
 
 // App compilation and the transitive Android plugin compilation must both wait
 // for deterministic native hardening. Plain `flutter build apk` must behave like CI.
 tasks.configureEach {
-    if (name == "preBuild") {
-        dependsOn(patchFlutterVlessRuntimeReadiness)
-    }
+    if (name == "preBuild") dependsOn(patchFlutterVlessSurfaceHardening)
 }
 
 gradle.projectsEvaluated {
     rootProject.findProject(":flutter_vless_android")
         ?.tasks
         ?.matching { it.name == "preBuild" }
-        ?.configureEach {
-            dependsOn(patchFlutterVlessRuntimeReadiness)
-        }
+        ?.configureEach { dependsOn(patchFlutterVlessSurfaceHardening) }
 }
 
 android {
@@ -113,15 +92,11 @@ android {
 
     val keystorePropertiesFile = rootProject.file("key.properties")
     val keystoreProperties = Properties()
-    if (keystorePropertiesFile.exists()) {
-        keystoreProperties.load(FileInputStream(keystorePropertiesFile))
-    }
+    if (keystorePropertiesFile.exists()) keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 
     val admobPropertiesFile = rootProject.file("admob.properties")
     val admobProperties = Properties()
-    if (admobPropertiesFile.exists()) {
-        admobProperties.load(FileInputStream(admobPropertiesFile))
-    }
+    if (admobPropertiesFile.exists()) admobProperties.load(FileInputStream(admobPropertiesFile))
 
     defaultConfig {
         applicationId = "com.paladinvpn.app"
@@ -146,10 +121,7 @@ android {
             signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             isShrinkResources = true
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
 }
@@ -160,9 +132,7 @@ kotlin {
     }
 }
 
-flutter {
-    source = "../.."
-}
+flutter { source = "../.." }
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
