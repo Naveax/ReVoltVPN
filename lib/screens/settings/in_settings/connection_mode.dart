@@ -40,8 +40,8 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
         status == VpnStatus.disconnecting;
   }
 
-  Future<bool> _setMode(ConnectionMode next) async {
-    if (next == _mode) return true;
+  Future<void> _changeMode(ConnectionMode? next) async {
+    if (next == null || next == _mode) return;
 
     final vpn = context.read<VpnConnection>();
     if (_isTunnelBusy(vpn.status)) {
@@ -50,60 +50,30 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
           content: Text('Disconnect before changing connection mode.'),
         ),
       );
-      return false;
+      return;
     }
 
     await ConnectionSettings.setMode(next);
-    if (!mounted) return false;
+    if (!mounted) return;
 
     setState(() {
       _mode = next;
       _lastSocksTest = null;
     });
     widget.onChanged?.call(next);
-    return true;
-  }
-
-  Future<void> _changeMode(ConnectionMode? next) async {
-    if (next == null) return;
-    await _setMode(next);
-  }
-
-  Future<void> _selectLocalServer() async {
-    final changed = await _setMode(ConnectionMode.proxy);
-    if (!changed || !mounted) return;
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'Server Local selected. Connect to start SOCKS5 on 127.0.0.1:10807.',
-        ),
-      ),
-    );
-  }
-
-  Future<void> _selectAss() async {
-    final changed = await _setMode(ConnectionMode.ass);
-    if (!changed || !mounted) return;
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'ASS selected. Choose apps below, then Connect.',
-        ),
-      ),
-    );
   }
 
   Future<void> _testLocalSocks() async {
     final vpn = context.read<VpnConnection>();
     final localSocksRunning = vpn.status == VpnStatus.connected &&
         (vpn.activeMode == ConnectionMode.proxy ||
-            vpn.activeMode == ConnectionMode.ass);
+            vpn.activeMode == ConnectionMode.ass ||
+            vpn.appSpecificRoutingActive);
+
     if (!localSocksRunning) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Connect with Local SOCKS5 or ASS first, then run the test.'),
+          content: Text('Connect with SOCKS5 or app routing first.'),
         ),
       );
       return;
@@ -128,19 +98,22 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
 
   String get _subtitle {
     switch (_mode) {
+      case ConnectionMode.auto:
+        return 'Auto: uses TUN for normal/all-app routing and app-specific SOCKS routing for Selected only.';
       case ConnectionMode.tun:
-        return 'TUN: Android VPN routes device traffic through ReVolt.';
+        return 'TUN: Android VPN routes traffic through ReVolt.';
       case ConnectionMode.proxy:
-        return 'Local SOCKS5: apps that support SOCKS can use 127.0.0.1:10807 directly.';
+        return 'SOCKS5: starts $localSocksAddress and automatically applies the App routing choice below.';
       case ConnectionMode.ass:
-        return 'ASS: selected apps are automatically wrapped into Local SOCKS5, even without proxy support.';
+        return 'ASS: only the selected apps are wrapped into Local SOCKS5.';
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final localSocksMode = _mode == ConnectionMode.proxy;
-    final assMode = _mode == ConnectionMode.ass;
+    final showSocksTest = _mode == ConnectionMode.proxy ||
+        _mode == ConnectionMode.ass ||
+        _mode == ConnectionMode.auto;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -161,6 +134,10 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
               onChanged: _changeMode,
               items: const [
                 DropdownMenuItem(
+                  value: ConnectionMode.auto,
+                  child: Text('Auto'),
+                ),
+                DropdownMenuItem(
                   value: ConnectionMode.tun,
                   child: Text('TUN'),
                 ),
@@ -176,38 +153,15 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
             ),
           ),
         ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-          child: Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _selectLocalServer,
-                  icon: const Icon(Icons.dns_outlined),
-                  label: const Text('Server Local'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _selectAss,
-                  icon: const Icon(Icons.apps),
-                  label: const Text('App Specific'),
-                ),
-              ),
-            ],
-          ),
-        ),
-        if (localSocksMode || assMode) ...[
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+        if (_mode == ConnectionMode.proxy || _mode == ConnectionMode.ass)
+          const Padding(
+            padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
             child: Text(
-              assMode
-                  ? 'ASS uses a strict Android app allowlist, then routes those apps through SOCKS5 $localSocksAddress.'
-                  : 'SOCKS5: $localSocksAddress\nNo server-side SOCKS port is required.',
-              style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
+              'Local SOCKS5: 127.0.0.1:10807',
+              style: TextStyle(color: AppColors.textMuted, fontSize: 12),
             ),
           ),
+        if (showSocksTest)
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
             child: OutlinedButton.icon(
@@ -222,17 +176,16 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
               label: Text(_testingLocalSocks ? 'Testing…' : 'Test Local SOCKS'),
             ),
           ),
-          if (_lastSocksTest != null)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-              child: Text(
-                _lastSocksTest!.ok
-                    ? 'Last test: OK${_lastSocksTest!.latencyMs == null ? '' : ' · ${_lastSocksTest!.latencyMs} ms'}'
-                    : 'Last test: Failed · ${_lastSocksTest!.message}',
-                style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
-              ),
+        if (_lastSocksTest != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+            child: Text(
+              _lastSocksTest!.ok
+                  ? 'Last test: OK${_lastSocksTest!.latencyMs == null ? '' : ' · ${_lastSocksTest!.latencyMs} ms'}'
+                  : 'Last test: Failed · ${_lastSocksTest!.message}',
+              style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
             ),
-        ],
+          ),
       ],
     );
   }
