@@ -185,9 +185,36 @@ class VpnConnection extends ChangeNotifier {
       if (delay > 0) {
         _lastHealthLatencyMs = delay;
         _isStartupRestoration = true;
+        _restoreRoutingPresentationFromSettings();
         _setStatus(VpnStatus.connected, _connectedLabel);
       }
     } catch (_) {}
+  }
+
+  void _restoreRoutingPresentationFromSettings() {
+    final routingMode = ConnectionSettings.routingMode;
+    final packages = ConnectionSettings.appPackages;
+
+    _lastBlockedApps = null;
+    _lastAllowedApps = const <String>[];
+    _lastProxyOnly = _activeMode == ConnectionMode.proxy;
+    _appSpecificRoutingActive = false;
+
+    if (_activeMode == ConnectionMode.ass ||
+        ((_activeMode == ConnectionMode.auto ||
+                _activeMode == ConnectionMode.tun) &&
+            routingMode == AppRoutingMode.selected)) {
+      _lastAllowedApps = List.of(packages);
+      _appSpecificRoutingActive = packages.isNotEmpty;
+      return;
+    }
+
+    if ((_activeMode == ConnectionMode.auto ||
+            _activeMode == ConnectionMode.tun) &&
+        routingMode == AppRoutingMode.exclude &&
+        packages.isNotEmpty) {
+      _lastBlockedApps = List.of(packages);
+    }
   }
 
   String get _connectedLabel {
@@ -212,7 +239,10 @@ class VpnConnection extends ChangeNotifier {
         break;
 
       case VlessConnectionState.disconnected:
-        if (_restartInProgress) return;
+        // A recovery timer changes the public state to `connecting` before the
+        // restart begins. Repeated native DISCONNECTED broadcasts during that
+        // debounce window must not clear the config snapshot the timer needs.
+        if (_restartInProgress || (_restartTimer?.isActive ?? false)) return;
 
         final canRecover = !_userDisconnecting &&
             _activeResilienceMode == ResilienceMode.extreme &&
@@ -224,7 +254,6 @@ class VpnConnection extends ChangeNotifier {
           return;
         }
 
-        _isStartupRestoration = false;
         _clearRuntimeSnapshot();
         _setStatus(VpnStatus.disconnected, 'Tap to connect');
         break;
@@ -352,6 +381,10 @@ class VpnConnection extends ChangeNotifier {
       final baseConfig = parsed.getFullConfiguration();
       final remark = parsed.remark.isNotEmpty ? parsed.remark : 'Revolt VPN';
 
+      // Set this before the native status callback can report CONNECTED so the
+      // first visible label already reflects Selected-only/ASS accurately.
+      _appSpecificRoutingActive = routingPlan.selectedOnly;
+
       await _startRuntime(
         config: baseConfig,
         remark: remark,
@@ -364,6 +397,11 @@ class VpnConnection extends ChangeNotifier {
         _setStatus(VpnStatus.connecting, 'Checking Local SOCKS5…');
         if (!await _waitForLocalSocks()) {
           throw StateError('Local SOCKS5 did not become ready');
+        }
+      } else {
+        _setStatus(VpnStatus.connecting, 'Waiting for VPN interface…');
+        if (!await _waitForNativeConnected()) {
+          throw StateError('VPN runtime did not report CONNECTED');
         }
       }
 
@@ -378,6 +416,7 @@ class VpnConnection extends ChangeNotifier {
     } catch (e) {
       debugPrint('[VPN] Tunnel start error: $e');
       await _stopRuntime();
+      await _clearAndroidAllowlist();
       _clearRuntimeSnapshot();
       _errorMessage = _activeMode == ConnectionMode.proxy
           ? 'Local SOCKS5 failed to start.\nTry reconnecting.'
@@ -493,6 +532,19 @@ class VpnConnection extends ChangeNotifier {
     return false;
   }
 
+  Future<bool> _waitForNativeConnected() async {
+    // startVless() only queues the Android foreground service. Wait for the
+    // service/core broadcast instead of treating MethodChannel completion as a
+    // successfully established TUN interface.
+    for (var attempt = 0; attempt < 24; attempt++) {
+      if (_status == VpnStatus.connected) return true;
+      if (_status == VpnStatus.error) return false;
+      if (_cancelled || _userDisconnecting) return false;
+      await Future.delayed(const Duration(milliseconds: 250));
+    }
+    return _status == VpnStatus.connected;
+  }
+
   void _scheduleRuntimeRestart(String reason) {
     if (_activeResilienceMode != ResilienceMode.extreme ||
         _restartInProgress ||
@@ -530,8 +582,12 @@ class VpnConnection extends ChangeNotifier {
         proxyOnly: _lastProxyOnly,
       );
 
-      if (_lastProxyOnly && !await _waitForLocalSocks()) {
-        throw StateError('Local SOCKS5 did not recover');
+      if (_lastProxyOnly) {
+        if (!await _waitForLocalSocks()) {
+          throw StateError('Local SOCKS5 did not recover');
+        }
+      } else if (!await _waitForNativeConnected()) {
+        throw StateError('VPN runtime did not recover');
       }
 
       _reconnectCount++;
@@ -540,6 +596,9 @@ class VpnConnection extends ChangeNotifier {
       _setStatus(VpnStatus.connected, _connectedLabel);
     } catch (e) {
       debugPrint('[VPN] Extreme recovery failed: $e');
+      await _stopRuntime();
+      await _clearAndroidAllowlist();
+      _clearRuntimeSnapshot();
       _errorMessage = 'Could not restore the connection.';
       _setStatus(VpnStatus.error, 'Reconnect failed');
     } finally {
@@ -604,6 +663,7 @@ class VpnConnection extends ChangeNotifier {
       return;
     }
 
+    _errorMessage = null;
     _clearRuntimeSnapshot();
     _setStatus(VpnStatus.disconnected, 'Tap to connect');
     _userDisconnecting = false;
@@ -622,6 +682,7 @@ class VpnConnection extends ChangeNotifier {
     _lastProxyOnly = false;
     _appSpecificRoutingActive = false;
     _lastHealthLatencyMs = null;
+    _isStartupRestoration = false;
   }
 
   void _setStatus(VpnStatus status, String message) {

@@ -59,9 +59,8 @@ jobs:
           }
           DART
 
-          # Ads are intentionally disabled in this branch. The sample App ID
-          # only satisfies the Android manifest while preserving the existing
-          # legacy/fake AdMob + nonce flow unchanged.
+          # Ads remain intentionally disabled in this branch. The sample ID only
+          # satisfies manifest substitution and does not change the fake nonce flow.
           cat > android/admob.properties <<'PROPS'
           ADMOB_APP_ID=ca-app-pub-3940256099942544~3347511713
           PROPS
@@ -101,8 +100,11 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      - name: Apply pinned flutter_vless allowlist patch
-        run: python3 tool/patch_flutter_vless_allowed_apps.py
+      - name: Verify automatic flutter_vless patch task
+        shell: bash
+        run: |
+          cd android
+          ./gradlew :app:patchFlutterVlessAllowedApps --stacktrace
 
       - name: Verify routing and legacy invariants
         shell: bash
@@ -113,6 +115,8 @@ jobs:
           from urllib.parse import unquote, urlparse
 
           vpn = Path('lib/logic/vpn_connection.dart').read_text()
+          build_gradle = Path('android/app/build.gradle.kts').read_text()
+          patcher = Path('tool/patch_flutter_vless_allowed_apps.dart').read_text()
           mode_ui = Path('lib/screens/settings/in_settings/connection_mode.dart').read_text()
           routing_ui = Path('lib/screens/settings/in_settings/app_routing.dart').read_text()
           settings_ui = Path('lib/screens/settings/settings_screen.dart').read_text()
@@ -124,15 +128,17 @@ jobs:
           assert 'AppRoutingVpnService' not in manifest
           assert 'app_specific_routing.dart' not in vpn
           assert 'AppSpecificRouting' not in vpn
-          assert "ConnectionMode.proxy" in vpn
           assert 'proxyOnly: true' in vpn
           assert 'Local SOCKS is intentionally a pure proxy-only mode' in vpn
           assert 'FlutterVlessAndroidRouting.setAllowedApps(allowedApps)' in vpn
           assert 'allowedApps: await _selectedInstalledPackages()' in vpn
+          assert '_waitForNativeConnected' in vpn
+          assert 'Waiting for VPN interface' in vpn
+          assert '_restartTimer?.isActive ?? false' in vpn
+          assert 'await _clearAndroidAllowlist();' in vpn
           assert '_checkActiveRuntime' not in vpn
           assert '_runtimeHealthy' not in vpn
           assert 'NetworkMonitor.changes.listen' in vpn
-          assert '_scheduleRuntimeRestart' in vpn
           assert '_activeResilienceMode != ResilienceMode.extreme' in vpn
           assert '_maxExtremeReconnects = 2' in vpn
           assert 'Connection diagnostics' not in settings_ui
@@ -140,6 +146,12 @@ jobs:
           assert 'manual proxy' in mode_ui
           assert 'not applied in SOCKS5 mode' in routing_ui
           assert 'NET_CAPABILITY_NOT_VPN' in activity
+
+          assert 'patchFlutterVlessAllowedApps' in build_gradle
+          assert 'patch_flutter_vless_allowed_apps.dart' in build_gradle
+          assert 'flutter_vless_android-1.1.5' in patcher
+          assert 'legacyPatchedPolicy' in patcher
+          assert 'Allowed and blocked app policies cannot be mixed' in patcher
 
           # Legacy/dev AdMob + nonce flow is intentionally untouched.
           assert 'static const bool adsEnabled = false;' in ad
@@ -159,11 +171,15 @@ jobs:
           config = (kotlin / 'xray/dto/XrayConfig.kt').read_text()
           service = (kotlin / 'xray/service/XrayVPNService.kt').read_text()
           assert '"setAllowedApps" ->' in plugin
+          assert 'it.isNotEmpty() && it != context.packageName' in plugin
           assert 'config.ALLOWED_APPS = ArrayList(allowedApps)' in plugin
           assert 'var ALLOWED_APPS:' in config
           assert 'builder.addAllowedApplication(pkg)' in service
+          assert 'Allowed and blocked app policies cannot be mixed' in service
+          assert 'Selected-only routing has no valid applications' in service
+          assert 'Stopping stale Xray core before restart' in service
           assert 'builder.addDisallowedApplication(pkg)' in service
-          print('Single-VpnService routing and legacy invariants verified')
+          print('Single-VpnService routing, reconnect and legacy invariants verified')
           PY
 
       - name: Generate unit tests
@@ -171,9 +187,12 @@ jobs:
         run: |
           mkdir -p test
           cat > test/routing_stability_v2_ci_test.dart <<'DART'
+          import 'package:flutter/foundation.dart';
+          import 'package:flutter/services.dart';
           import 'package:flutter_test/flutter_test.dart';
           import 'package:shared_preferences/shared_preferences.dart';
           import 'package:revoltvpn/logic/connection_settings.dart';
+          import 'package:revoltvpn/logic/flutter_vless_android_routing.dart';
 
           void main() {
             TestWidgetsFlutterBinding.ensureInitialized();
@@ -197,6 +216,38 @@ jobs:
                 <String>['com.android.chrome', 'com.discord'],
               );
             });
+
+            test('Android allowlist channel trims, deduplicates and sorts', () async {
+              debugDefaultTargetPlatformOverride = TargetPlatform.android;
+              final messenger = TestDefaultBinaryMessengerBinding
+                  .instance.defaultBinaryMessenger;
+              MethodCall? captured;
+              messenger.setMockMethodCallHandler(
+                const MethodChannel('flutter_vless'),
+                (call) async {
+                  captured = call;
+                  return null;
+                },
+              );
+
+              await FlutterVlessAndroidRouting.setAllowedApps(<String>[
+                ' com.discord ',
+                'com.android.chrome',
+                'com.discord',
+              ]);
+
+              expect(captured?.method, 'setAllowedApps');
+              expect(
+                (captured?.arguments as Map)['allowed_apps'],
+                <String>['com.android.chrome', 'com.discord'],
+              );
+
+              messenger.setMockMethodCallHandler(
+                const MethodChannel('flutter_vless'),
+                null,
+              );
+              debugDefaultTargetPlatformOverride = null;
+            });
           }
           DART
 
@@ -214,7 +265,7 @@ jobs:
           echo
 
       - name: Build release APK
-        run: flutter build apk --release --build-name 3.3.2 --build-number 29
+        run: flutter build apk --release --build-name 3.3.3 --build-number 30
 
       - name: Verify packaged VPN runtime
         shell: bash
@@ -225,15 +276,15 @@ jobs:
       - name: Package release artifact
         shell: bash
         run: |
-          cp build/app/outputs/flutter-apk/app-release.apk ReVoltVPN-3.3.2-routing-stability-release.apk
-          sha256sum ReVoltVPN-3.3.2-routing-stability-release.apk > ReVoltVPN-3.3.2-routing-stability-release.apk.sha256
+          cp build/app/outputs/flutter-apk/app-release.apk ReVoltVPN-3.3.3-routing-stability-release.apk
+          sha256sum ReVoltVPN-3.3.3-routing-stability-release.apk > ReVoltVPN-3.3.3-routing-stability-release.apk.sha256
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ReVoltVPN-3.3.2-routing-stability-release
+          name: ReVoltVPN-3.3.3-routing-stability-release
           path: |
-            ReVoltVPN-3.3.2-routing-stability-release.apk
-            ReVoltVPN-3.3.2-routing-stability-release.apk.sha256
+            ReVoltVPN-3.3.3-routing-stability-release.apk
+            ReVoltVPN-3.3.3-routing-stability-release.apk.sha256
           retention-days: 3
           if-no-files-found: error
