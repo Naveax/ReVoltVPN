@@ -32,7 +32,7 @@ class _RoutingPlan {
 }
 
 class VpnConnection extends ChangeNotifier {
-  static const int _maxExtremeReconnects = 2;
+  static const int _maxExtremeRecoveryAttempts = 2;
 
   bool _cancelled = false;
   VpnStatus _status = VpnStatus.disconnected;
@@ -247,8 +247,7 @@ class VpnConnection extends ChangeNotifier {
         final canRecover = !_userDisconnecting &&
             _activeResilienceMode == ResilienceMode.extreme &&
             _lastBaseConfig != null &&
-            _status == VpnStatus.connected &&
-            _reconnectCount < _maxExtremeReconnects;
+            _status == VpnStatus.connected;
         if (canRecover) {
           _scheduleRuntimeRestart('Runtime disconnected');
           return;
@@ -550,7 +549,6 @@ class VpnConnection extends ChangeNotifier {
         _restartInProgress ||
         _userDisconnecting ||
         _lastBaseConfig == null ||
-        _reconnectCount >= _maxExtremeReconnects ||
         (_restartTimer?.isActive ?? false)) {
       return;
     }
@@ -568,35 +566,74 @@ class VpnConnection extends ChangeNotifier {
     }
 
     _restartInProgress = true;
-    debugPrint('[VPN] Extreme recovery: $reason');
+    Object? lastError;
 
     try {
-      await _stopRuntime();
-      await Future.delayed(const Duration(milliseconds: 600));
+      for (var attempt = 1;
+          attempt <= _maxExtremeRecoveryAttempts;
+          attempt++) {
+        if (_userDisconnecting || _lastBaseConfig == null) return;
 
-      await _startRuntime(
-        config: _lastBaseConfig!,
-        remark: _lastRemark,
-        blockedApps: _lastBlockedApps,
-        allowedApps: _lastAllowedApps,
-        proxyOnly: _lastProxyOnly,
-      );
+        try {
+          debugPrint(
+            '[VPN] Extreme recovery attempt '
+            '$attempt/$_maxExtremeRecoveryAttempts: $reason',
+          );
 
-      if (_lastProxyOnly) {
-        if (!await _waitForLocalSocks()) {
-          throw StateError('Local SOCKS5 did not recover');
+          await _stopRuntime();
+          if (_userDisconnecting) return;
+
+          await Future.delayed(
+            Duration(milliseconds: attempt == 1 ? 600 : 900),
+          );
+          if (_userDisconnecting || _lastBaseConfig == null) return;
+
+          await _startRuntime(
+            config: _lastBaseConfig!,
+            remark: _lastRemark,
+            blockedApps: _lastBlockedApps,
+            allowedApps: _lastAllowedApps,
+            proxyOnly: _lastProxyOnly,
+          );
+
+          if (_lastProxyOnly) {
+            if (!await _waitForLocalSocks()) {
+              throw StateError('Local SOCKS5 did not recover');
+            }
+          } else if (!await _waitForNativeConnected()) {
+            throw StateError('VPN runtime did not recover');
+          }
+
+          if (_userDisconnecting) return;
+
+          _reconnectCount++;
+          _lastRecoveryReason = reason;
+          _appSpecificRoutingActive = _lastAllowedApps.isNotEmpty;
+          _errorMessage = null;
+          _setStatus(VpnStatus.connected, _connectedLabel);
+          return;
+        } catch (e) {
+          lastError = e;
+          debugPrint(
+            '[VPN] Extreme recovery attempt '
+            '$attempt/$_maxExtremeRecoveryAttempts failed: $e',
+          );
+          await _stopRuntime();
+          if (_userDisconnecting) return;
+
+          if (attempt < _maxExtremeRecoveryAttempts) {
+            _setStatus(
+              VpnStatus.connecting,
+              'Reconnecting… (${attempt + 1}/$_maxExtremeRecoveryAttempts)',
+            );
+            await Future.delayed(const Duration(milliseconds: 700));
+          }
         }
-      } else if (!await _waitForNativeConnected()) {
-        throw StateError('VPN runtime did not recover');
       }
 
-      _reconnectCount++;
-      _lastRecoveryReason = reason;
-      _appSpecificRoutingActive = _lastAllowedApps.isNotEmpty;
-      _setStatus(VpnStatus.connected, _connectedLabel);
-    } catch (e) {
-      debugPrint('[VPN] Extreme recovery failed: $e');
-      await _stopRuntime();
+      if (_userDisconnecting) return;
+
+      debugPrint('[VPN] Extreme recovery exhausted: $lastError');
       await _clearAndroidAllowlist();
       _clearRuntimeSnapshot();
       _errorMessage = 'Could not restore the connection.';
