@@ -18,7 +18,6 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
   AppRoutingMode _mode = ConnectionSettings.routingMode;
   int _selectedCount = ConnectionSettings.appPackages.length;
 
-  bool get _assMode => widget.connectionMode == ConnectionMode.ass;
   bool get _proxyMode => widget.connectionMode == ConnectionMode.proxy;
   bool get _autoMode => widget.connectionMode == ConnectionMode.auto;
 
@@ -51,9 +50,7 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
   }
 
   Future<void> _changeMode(AppRoutingMode? next) async {
-    // ASS is always selected-app routing. TUN, Auto and transparent SOCKS5 let
-    // the user choose All / Exclude / Selected.
-    if (_assMode || next == null || next == _mode) return;
+    if (next == null || next == _mode) return;
     if (_vpnBusy()) {
       _showDisconnectFirst();
       return;
@@ -64,7 +61,7 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
   }
 
   Future<void> _openPicker() async {
-    if (!_assMode && _mode == AppRoutingMode.all) return;
+    if (_mode == AppRoutingMode.all) return;
     if (_vpnBusy()) {
       _showDisconnectFirst();
       return;
@@ -72,9 +69,7 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
 
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => _AppPicker(
-          mode: _assMode ? AppRoutingMode.selected : _mode,
-        ),
+        builder: (_) => _AppPicker(mode: _mode),
       ),
     );
 
@@ -84,12 +79,6 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
   }
 
   String get _subtitle {
-    if (_assMode) {
-      return _selectedCount == 0
-          ? 'Choose at least one app. ASS automatically routes selected apps through Local SOCKS5.'
-          : 'Only $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} are routed; Android network helpers remain available for compatibility.';
-    }
-
     if (_proxyMode) {
       switch (_mode) {
         case AppRoutingMode.all:
@@ -115,8 +104,8 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
               : 'Auto uses TUN and $_selectedCount app${_selectedCount == 1 ? '' : 's'} bypass it.';
         case AppRoutingMode.selected:
           return _selectedCount == 0
-              ? 'Choose apps. Auto will use compatibility App Specific routing.'
-              : 'Auto routes $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} and keeps Android network helpers available.';
+              ? 'Choose apps. Auto will use compatibility per-app routing.'
+              : 'Auto routes $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} while Android network helpers remain available.';
       }
     }
 
@@ -130,13 +119,13 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
       case AppRoutingMode.selected:
         return _selectedCount == 0
             ? 'Choose at least one app for compatible Selected only routing.'
-            : 'Only $_selectedCount selected user app${_selectedCount == 1 ? '' : 's'} are targeted; Android network helpers stay available.';
+            : '$_selectedCount selected user app${_selectedCount == 1 ? '' : 's'} are targeted; Android network helpers stay available.';
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final showPicker = _assMode || _mode != AppRoutingMode.all;
+    final showPicker = _mode != AppRoutingMode.all;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -150,44 +139,39 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
             _subtitle,
             style: const TextStyle(color: AppColors.textDim, fontSize: 12),
           ),
-          trailing: _assMode
-              ? const Text(
-                  'Selected only',
-                  style: TextStyle(color: AppColors.textWhite, fontSize: 12),
-                )
-              : DropdownButtonHideUnderline(
-                  child: DropdownButton<AppRoutingMode>(
-                    value: _mode,
-                    dropdownColor: AppColors.bgCard,
-                    onChanged: _changeMode,
-                    items: const [
-                      DropdownMenuItem(
-                        value: AppRoutingMode.all,
-                        child: Text('All apps'),
-                      ),
-                      DropdownMenuItem(
-                        value: AppRoutingMode.exclude,
-                        child: Text('Exclude apps'),
-                      ),
-                      DropdownMenuItem(
-                        value: AppRoutingMode.selected,
-                        child: Text('Selected only'),
-                      ),
-                    ],
-                  ),
+          trailing: DropdownButtonHideUnderline(
+            child: DropdownButton<AppRoutingMode>(
+              value: _mode,
+              dropdownColor: AppColors.bgCard,
+              onChanged: _changeMode,
+              items: const [
+                DropdownMenuItem(
+                  value: AppRoutingMode.all,
+                  child: Text('All apps'),
                 ),
+                DropdownMenuItem(
+                  value: AppRoutingMode.exclude,
+                  child: Text('Exclude apps'),
+                ),
+                DropdownMenuItem(
+                  value: AppRoutingMode.selected,
+                  child: Text('Selected only'),
+                ),
+              ],
+            ),
+          ),
         ),
         if (showPicker)
           ListTile(
             onTap: _openPicker,
             leading: const Icon(Icons.apps),
             title: Text(
-              _assMode || _mode == AppRoutingMode.selected
+              _mode == AppRoutingMode.selected
                   ? 'Choose routed apps'
                   : 'Choose excluded apps',
             ),
             subtitle: Text(
-              _mode == AppRoutingMode.selected || _assMode
+              _mode == AppRoutingMode.selected
                   ? 'Selected user apps are targeted; Android network helpers remain available for compatibility.'
                   : 'Routing is applied to the selected Android package IDs.',
             ),
@@ -246,6 +230,13 @@ class _AppPickerState extends State<_AppPicker> {
   }
 
   Future<void> _save() async {
+    if (widget.mode == AppRoutingMode.selected && _selected.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select at least one app.')),
+      );
+      return;
+    }
+
     await ConnectionSettings.setAppPackages(_selected);
     if (mounted) Navigator.of(context).pop();
   }
