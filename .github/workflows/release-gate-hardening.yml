@@ -1,0 +1,228 @@
+name: Release gate hardening APK
+
+on:
+  push:
+    branches:
+      - fix/release-gate-hardening
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-gate-hardening-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Set up Gradle 8.14
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+
+      - name: Generate local build configuration
+        shell: bash
+        run: |
+          cat > lib/logic/app_config.dart <<'DART'
+          abstract final class AppConfig {
+            AppConfig._();
+            static const String serverIp = '204.168.246.88';
+            static const String hivemindApiPublic = 'https://paladinvpn.duckdns.org/api';
+            static const String realityFp = 'chrome';
+            static const String vlessSecurity = 'reality';
+            static const String vlessType = 'xhttp';
+            static const String vlessPath = '/revolt';
+            static const String applicationId = 'com.paladinvpn.app';
+            static const String githubOwner = 'esefxdz';
+            static const String githubRepo = 'ReVoltVPN';
+            static const String githubReleasesUrl =
+                'https://github.com/$githubOwner/$githubRepo/releases/latest';
+            static const String adUnitId =
+                'ca-app-pub-5671224884648691/9198987725';
+          }
+          DART
+
+          cat > android/admob.properties <<'PROPS'
+          ADMOB_APP_ID=ca-app-pub-3940256099942544~3347511713
+          PROPS
+
+          {
+            printf 'flutter.sdk=%s\n' "$FLUTTER_ROOT"
+            printf 'sdk.dir=%s\n' "$ANDROID_HOME"
+          } > android/local.properties
+
+      - name: Generate temporary test release key
+        shell: bash
+        run: |
+          keytool -genkeypair \
+            -keystore android/revolt-release-gate.jks \
+            -storepass revoltgateway \
+            -keypass revoltgateway \
+            -alias revolt-release-gate \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650 \
+            -dname "CN=ReVoltVPN Release Gate Test,O=ReVoltVPN,C=US"
+
+          cat > android/key.properties <<'PROPS'
+          storePassword=revoltgateway
+          keyPassword=revoltgateway
+          keyAlias=revolt-release-gate
+          storeFile=revolt-release-gate.jks
+          PROPS
+
+      - name: Generate Gradle wrapper
+        shell: bash
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.14 --distribution-type all
+          chmod +x gradlew
+          ./gradlew --version
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Verify release-gate invariants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path('.')
+          service = (root / 'third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt').read_text()
+          core = (root / 'third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/core/XrayCoreManager.kt').read_text()
+          plugin = (root / 'third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/FlutterVlessPlugin.kt').read_text()
+          appcfg = (root / 'third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/utils/AppConfigs.kt').read_text()
+          manifest = (root / 'third_party/flutter_vless_android/android/src/main/AndroidManifest.xml').read_text()
+          pubspec = (root / 'pubspec.yaml').read_text()
+          vpn = (root / 'lib/logic/vpn_connection.dart').read_text()
+          native = (root / 'lib/logic/native_tunnel_control.dart').read_text()
+          timer = (root / 'lib/logic/session_timer.dart').read_text()
+          mode_ui = (root / 'lib/screens/settings/in_settings/connection_mode.dart').read_text()
+          ad = (root / 'lib/logic/ad_manager.dart').read_text()
+          hivemind = (root / 'lib/logic/hivemind_service.dart').read_text()
+
+          # P0 fail-closed TUN / FD / SOCKS readiness.
+          assert 'builder.establish()' in service
+          assert 'Android refused to establish the VPN interface' in service
+          assert 'AppConfigs.TUN_ESTABLISHED = true' in service
+          assert 'AppConfigs.FD_DELIVERED = true' in service
+          assert 'AppConfigs.SOCKS_READY = true' in service
+          assert 'TUN file descriptor was not delivered to tun2socks' in service
+          assert 'Native readiness state was incomplete' in service
+          assert 'handleXrayCoreExit' in service
+          assert 'override fun onRevoke()' in service
+          assert '"-loglevel", "warning"' in service
+          assert 'startForegroundSafely' in service and 'Could not start foreground VPN service' in service
+
+          # Xray state becomes CONNECTED only after full readiness.
+          assert 'if (!AppConfigs.TUN_ESTABLISHED || !AppConfigs.FD_DELIVERED || !AppConfigs.SOCKS_READY) return false' in core
+          assert 'AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_CONNECTED' in core
+          assert 'auth", "password"' in core
+          assert 'config.LOCAL_HTTP_PORT = 0' in core
+
+          # Private status bridge.
+          assert 'RECEIVER_NOT_EXPORTED' in plugin
+          assert 'INTERNAL_STATUS_PERMISSION' in plugin
+          assert 'protectionLevel="signature"' in manifest
+          assert '.setPackage(context.packageName)' in core
+
+          # App-side CONNECTED is never trusted alone.
+          assert 'NativeTunnelControl.waitUntilReady()' in vpn
+          assert 'NativeTunnelControl.getState()' in vpn
+          assert 'if (!native.fullyReady) return;' in vpn
+          assert "state == 'CONNECTED'" in native
+          assert 'tunEstablished &&' in native
+          assert 'fdDelivered &&' in native
+          assert 'socksReady &&' in native
+          assert "? 'UNKNOWN'" in native
+
+          # Local proxy isolation / no fixed endpoint contract.
+          assert 'SecureRandom' in service
+          assert 'findFreePort()' in service
+          assert 'LOCAL_SOCKS5_USER' in service
+          assert 'LOCAL_SOCKS5_PASS' in service
+          assert '127.0.0.1:10807' not in mode_ui
+          assert 'HTTP: 127.0.0.1:10808' not in mode_ui
+
+          # Build isolation: vendored Android implementation, no Pub cache mutation.
+          assert 'flutter_vless_android:' in pubspec
+          assert 'path: third_party/flutter_vless_android' in pubspec
+          assert not (root / 'tools/patch_flutter_vless_allowed_apps.dart').exists()
+          gradle = (root / 'android/app/build.gradle.kts').read_text()
+          assert 'patchFlutterVlessAllowedApps' not in gradle
+
+          # Previously reported speed accounting issue.
+          assert '_lastSuccessfulSyncAt' in timer
+          assert 'now.difference(previousSyncAt).inMilliseconds' in timer
+
+          # ASS remains removed.
+          settings = (root / 'lib/logic/connection_settings.dart').read_text()
+          assert 'enum ConnectionMode { auto, tun, proxy }' in settings
+          assert "storedMode == 'ass'" in settings
+          assert 'ConnectionMode.ass' not in vpn
+
+          # Deliberately preserved debug AdMob/nonce path. Do not silently harden it here.
+          assert 'static const bool adsEnabled = false;' in ad
+          assert '?signature=test&key_id=test' in ad
+          assert 'HivemindService.setExpectedNonce(nonce)' in ad
+          assert '/admob/callback?signature=test&key_id=test' in hivemind
+
+          print('Release-gate invariants verified')
+          PY
+
+      - name: Flutter analyze
+        run: flutter analyze --no-fatal-warnings
+
+      - name: Unit tests
+        run: flutter test
+
+      - name: Kotlin release compile smoke test
+        shell: bash
+        run: |
+          cd android
+          ./gradlew :app:compileReleaseKotlin --stacktrace
+
+      - name: Build release APK
+        run: flutter build apk --release --build-name 3.3.6 --build-number 33
+
+      - name: Verify packaged VPN runtime
+        shell: bash
+        run: |
+          test -s build/app/outputs/flutter-apk/app-release.apk
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libtun2socks.so'
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libxray.so'
+
+      - name: Package APK
+        shell: bash
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk ReVoltVPN-3.3.6-release-gate.apk
+          sha256sum ReVoltVPN-3.3.6-release-gate.apk > ReVoltVPN-3.3.6-release-gate.apk.sha256
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReVoltVPN-3.3.6-release-gate-apk
+          path: |
+            ReVoltVPN-3.3.6-release-gate.apk
+            ReVoltVPN-3.3.6-release-gate.apk.sha256
+          retention-days: 3
+          if-no-files-found: error
