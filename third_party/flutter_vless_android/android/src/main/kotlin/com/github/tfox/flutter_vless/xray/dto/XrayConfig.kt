@@ -14,6 +14,7 @@ data class XrayConfig(
     var ALLOWED_TIMEOUT_MS: Int = 0,
     var BYPASS_SUBNETS: ArrayList<String> = ArrayList(),
     var BLOCKED_APPS: ArrayList<String> = ArrayList(),
+    var ALLOWED_APPS: ArrayList<String> = ArrayList(),
     var V2RAY_FULL_JSON_CONFIG: String = "",
     var ENABLE_TRAFFIC_STATICS: Boolean = false,
     var REMARK: String = "",
