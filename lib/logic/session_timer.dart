@@ -113,8 +113,16 @@ class SessionTimer extends ChangeNotifier {
       return;
     }
 
-    if (vpnConnection.status == VpnStatus.disconnected && !_isDisconnecting) {
-      _doDisconnect('VPN tunnel dropped');
+    if (!_isDisconnecting &&
+        (vpnConnection.status == VpnStatus.disconnected ||
+            vpnConnection.status == VpnStatus.error)) {
+      unawaited(
+        _doDisconnect(
+          vpnConnection.status == VpnStatus.error
+              ? 'VPN entered error state'
+              : 'VPN tunnel dropped',
+        ),
+      );
     }
   }
 
