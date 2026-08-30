@@ -205,7 +205,22 @@ $newAllowedHandler            "startVless" -> {
     'Stopping stale Xray core before restart',
   );
 
-  const upstreamPolicy = '''          try {
+  _replaceOnce(
+    serviceFile,
+    '''        val tun2socksPath = File(applicationInfo.nativeLibraryDir, "libtun2socks.so").absolutePath
+        val sockPath = File(filesDir, "sock_path").absolutePath
+''',
+    '''        val tun2socksPath = File(applicationInfo.nativeLibraryDir, "libtun2socks.so").absolutePath
+        val socketFile = File(filesDir, "sock_path")
+        if (socketFile.exists() && !socketFile.delete()) {
+            Log.w(TAG, "Could not delete stale tun2socks socket")
+        }
+        val sockPath = socketFile.absolutePath
+''',
+    'Could not delete stale tun2socks socket',
+  );
+
+  const upstreamPolicy = r'''          try {
     builder.addDisallowedApplication(packageName)
 } catch (e: Exception) {
     Log.e(TAG, "Failed to exclude app from VPN", e)
@@ -220,7 +235,7 @@ for (pkg in config.BLOCKED_APPS) {
     }
 }
 ''';
-  const legacyPatchedPolicy = '''            if (config.ALLOWED_APPS.isNotEmpty()) {
+  const legacyPatchedPolicy = r'''            if (config.ALLOWED_APPS.isNotEmpty()) {
                 for (pkg in config.ALLOWED_APPS) {
                     try {
                         builder.addAllowedApplication(pkg)
@@ -246,7 +261,7 @@ for (pkg in config.BLOCKED_APPS) {
                 }
             }
 ''';
-  const hardenedPolicy = '''            if (config.ALLOWED_APPS.isNotEmpty() && config.BLOCKED_APPS.isNotEmpty()) {
+  const hardenedPolicy = r'''            if (config.ALLOWED_APPS.isNotEmpty() && config.BLOCKED_APPS.isNotEmpty()) {
                 throw IllegalStateException("Allowed and blocked app policies cannot be mixed")
             }
 
