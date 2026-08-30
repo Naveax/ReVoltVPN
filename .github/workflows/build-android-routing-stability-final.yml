@@ -32,6 +32,11 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Set up Gradle 8.14
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+
       - name: Generate local build config
         shell: bash
         run: |
@@ -85,11 +90,12 @@ jobs:
           storeFile=revolt-routing-final.jks
           PROPS
 
-      - name: Prepare Gradle wrapper
+      - name: Generate Gradle wrapper
         shell: bash
         run: |
-          chmod +x android/gradlew
           cd android
+          gradle wrapper --gradle-version 8.14 --distribution-type all
+          chmod +x gradlew
           ./gradlew --version
 
       - name: Flutter pub get
@@ -137,11 +143,10 @@ jobs:
           assert 'proxyOnly: true' in vpn
           assert 'Local SOCKS is intentionally a pure proxy-only mode' in vpn
           assert '_waitForNativeConnected()' in vpn
-          assert '_maxExtremeReconnectAttempts = 2' in vpn
+          assert '_maxExtremeRecoveryAttempts = 2' in vpn
           assert '_restartTimer?.isActive' in vpn
           assert 'NetworkMonitor.changes.listen' in vpn
           assert '_scheduleRuntimeRestart' in vpn
-          assert 'if (_isDisconnecting) return;' in timer
           assert 'if (_isDisconnecting) return;' in timer
           assert 'patchFlutterVlessAllowedApps' in gradle
           assert 'NET_CAPABILITY_NOT_VPN' in activity
