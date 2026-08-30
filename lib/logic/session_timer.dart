@@ -35,6 +35,7 @@ class SessionTimer extends ChangeNotifier {
   static const int _pollIntervalSeconds = 5;
 
   int _lastUsedBytes = 0;
+  DateTime? _lastSuccessfulSyncAt;
   double _currentSpeedKBps = 0.0;
 
   SessionTimer({required this.vpnConnection}) {
@@ -138,6 +139,7 @@ class SessionTimer extends ChangeNotifier {
     _currentSpeedKBps = 0.0;
     _remainingSeconds = 0;
     _hasSyncedOnce = false;
+    _lastSuccessfulSyncAt = null;
     _consecutiveFailures = 0;
     _offlineSeconds = 0;
     notifyListeners();
@@ -147,6 +149,7 @@ class SessionTimer extends ChangeNotifier {
     _remainingSeconds = 0;
     _usedBytes = 0;
     _lastUsedBytes = 0;
+    _lastSuccessfulSyncAt = null;
     _currentSpeedKBps = 0.0;
     _tickCount = 0;
     _hasSyncedOnce = false;
@@ -212,6 +215,7 @@ class SessionTimer extends ChangeNotifier {
     _currentSpeedKBps = 0.0;
     _remainingSeconds = 0;
     _hasSyncedOnce = false;
+    _lastSuccessfulSyncAt = null;
     notifyListeners();
 
     await vpnConnection.disconnect();
@@ -258,13 +262,22 @@ class SessionTimer extends ChangeNotifier {
         );
         _usedBytes = _readNonNegativeInt(data['used_bytes'], _usedBytes);
 
+        final now = DateTime.now();
+        final previousSyncAt = _lastSuccessfulSyncAt;
         final int deltaBytes = _usedBytes - _lastUsedBytes;
-        if (_hasSyncedOnce && deltaBytes > 0) {
-          _currentSpeedKBps = (deltaBytes / _pollIntervalSeconds) / 1000;
-        } else if (!_hasSyncedOnce) {
+        if (_hasSyncedOnce && previousSyncAt != null) {
+          final elapsedMs = now.difference(previousSyncAt).inMilliseconds;
+          if (deltaBytes > 0 && elapsedMs > 0) {
+            _currentSpeedKBps =
+                (deltaBytes / (elapsedMs / 1000.0)) / 1000.0;
+          } else {
+            _currentSpeedKBps = 0.0;
+          }
+        } else {
           _currentSpeedKBps = 0.0;
         }
         _lastUsedBytes = _usedBytes;
+        _lastSuccessfulSyncAt = now;
 
         final capExhausted = data['cap_exhausted'] == true;
         if (capExhausted) {
