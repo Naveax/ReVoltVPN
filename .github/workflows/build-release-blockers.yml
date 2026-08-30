@@ -15,20 +15,17 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
-
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.14'
@@ -82,13 +79,15 @@ jobs:
         run: |
           dart analyze tool/patch_flutter_vless_allowed_apps.dart
           dart analyze tool/patch_flutter_vless_runtime_readiness.dart
+          dart analyze tool/patch_flutter_vless_surface_hardening.dart
 
       - name: Apply native patches twice
         run: |
-          dart run tool/patch_flutter_vless_allowed_apps.dart
-          dart run tool/patch_flutter_vless_runtime_readiness.dart
-          dart run tool/patch_flutter_vless_allowed_apps.dart
-          dart run tool/patch_flutter_vless_runtime_readiness.dart
+          for i in 1 2; do
+            dart run tool/patch_flutter_vless_allowed_apps.dart
+            dart run tool/patch_flutter_vless_runtime_readiness.dart
+            dart run tool/patch_flutter_vless_surface_hardening.dart
+          done
 
       - name: Verify fail-closed native invariants
         shell: bash
@@ -112,6 +111,10 @@ jobs:
           assert 'Context.RECEIVER_NOT_EXPORTED' in plugin
           assert 'Context.RECEIVER_EXPORTED' not in plugin
           assert '"-loglevel", "warning"' in service
+          assert 'ReVolt does not expose an HTTP proxy inbound.' in core
+          assert 'Local SOCKS5 port collision on' in core
+          assert 'private var tunnelReadySeen = false' in plugin
+          assert 'This app process must first observe a post-TUN CONNECTED broadcast.' in plugin
           print('fail-closed native invariants OK')
           PY
 
@@ -131,7 +134,28 @@ jobs:
       - name: Build release APK
         run: flutter build apk --release --build-name 3.3.6 --build-number 33
 
+      - name: Build release AAB
+        run: flutter build appbundle --release --build-name 3.3.6 --build-number 33
+
       - name: Verify packaged runtime
         run: |
           unzip -l build/app/outputs/flutter-apk/app-release.apk | grep libtun2socks.so
           unzip -l build/app/outputs/flutter-apk/app-release.apk | grep libxray.so
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk ReVoltVPN-3.3.6-hardening-test.apk
+          cp build/app/outputs/bundle/release/app-release.aab ReVoltVPN-3.3.6-hardening-test.aab
+          sha256sum ReVoltVPN-3.3.6-hardening-test.apk > ReVoltVPN-3.3.6-hardening-test.apk.sha256
+          sha256sum ReVoltVPN-3.3.6-hardening-test.aab > ReVoltVPN-3.3.6-hardening-test.aab.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ReVoltVPN-3.3.6-hardening-test
+          path: |
+            ReVoltVPN-3.3.6-hardening-test.apk
+            ReVoltVPN-3.3.6-hardening-test.aab
+            ReVoltVPN-3.3.6-hardening-test.apk.sha256
+            ReVoltVPN-3.3.6-hardening-test.aab.sha256
+          retention-days: 3
