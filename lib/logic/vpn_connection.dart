@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_vless/flutter_vless.dart';
 import 'package:revoltvpn/logic/connection_settings.dart';
-import 'package:revoltvpn/logic/flutter_vless_android_routing.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/installed_apps_service.dart';
 import 'package:revoltvpn/logic/local_socks_tester.dart';
@@ -20,19 +19,20 @@ enum VpnStatus {
 class _RoutingPlan {
   final bool proxyOnly;
   final List<String>? blockedApps;
-  final List<String> allowedApps;
+  final bool appSpecific;
+  final bool verifyLocalSocks;
 
   const _RoutingPlan({
     required this.proxyOnly,
     required this.blockedApps,
-    this.allowedApps = const <String>[],
+    this.appSpecific = false,
+    this.verifyLocalSocks = false,
   });
-
-  bool get selectedOnly => allowedApps.isNotEmpty;
 }
 
 class VpnConnection extends ChangeNotifier {
   static const int _maxExtremeRecoveryAttempts = 2;
+  static const String _selfPackage = 'com.paladinvpn.app';
 
   bool _cancelled = false;
   VpnStatus _status = VpnStatus.disconnected;
@@ -78,12 +78,12 @@ class VpnConnection extends ChangeNotifier {
 
   String get activeRoutingDescription {
     if (_activeMode == ConnectionMode.proxy) {
-      return 'Local SOCKS5 · manual proxy';
+      return 'SOCKS5 · transparent all apps';
     }
-    if (_lastAllowedApps.isNotEmpty) {
+    if (_appSpecificRoutingActive) {
       return _activeMode == ConnectionMode.ass
           ? 'ASS · selected apps'
-          : 'Selected apps only';
+          : 'Selected apps';
     }
     if (_lastBlockedApps?.isNotEmpty == true) {
       return 'Exclude apps';
@@ -103,8 +103,9 @@ class VpnConnection extends ChangeNotifier {
   String? _lastBaseConfig;
   String _lastRemark = 'Revolt VPN';
   List<String>? _lastBlockedApps;
-  List<String> _lastAllowedApps = const <String>[];
   bool _lastProxyOnly = false;
+  bool _lastAppSpecific = false;
+  bool _lastVerifyLocalSocks = false;
   bool _restartInProgress = false;
   bool _userDisconnecting = false;
 
@@ -148,7 +149,7 @@ class VpnConnection extends ChangeNotifier {
 
     try {
       await _vless.initializeVless(
-        providerBundleIdentifier: 'com.paladinvpn.app',
+        providerBundleIdentifier: _selfPackage,
         notificationIconResourceType: 'drawable',
         notificationIconResourceName: 'notification_icon',
       );
@@ -159,10 +160,9 @@ class VpnConnection extends ChangeNotifier {
 
     _networkSubscription = NetworkMonitor.changes.listen(
       (snapshot) {
-        // ConnectivityManager is informational only. Android/Xray already
-        // survives most Wi-Fi/mobile handovers. Forcing a restart from every
-        // callback caused the old reconnect loop because VPN creation itself
-        // also changes network state.
+        // ConnectivityManager is informational only. Restarting on every
+        // callback caused loops because creating the VPN also changes Android
+        // network state.
         _networkTransport = snapshot.transport;
         _networkValidated = snapshot.validated;
         notifyListeners();
@@ -196,16 +196,17 @@ class VpnConnection extends ChangeNotifier {
     final packages = ConnectionSettings.appPackages;
 
     _lastBlockedApps = null;
-    _lastAllowedApps = const <String>[];
-    _lastProxyOnly = _activeMode == ConnectionMode.proxy;
+    _lastProxyOnly = false;
+    _lastVerifyLocalSocks = _activeMode == ConnectionMode.proxy;
     _appSpecificRoutingActive = false;
+    _lastAppSpecific = false;
 
     if (_activeMode == ConnectionMode.ass ||
         ((_activeMode == ConnectionMode.auto ||
                 _activeMode == ConnectionMode.tun) &&
             routingMode == AppRoutingMode.selected)) {
-      _lastAllowedApps = List.of(packages);
       _appSpecificRoutingActive = packages.isNotEmpty;
+      _lastAppSpecific = packages.isNotEmpty;
       return;
     }
 
@@ -224,7 +225,7 @@ class VpnConnection extends ChangeNotifier {
             ? 'Auto · selected apps secured'
             : 'Auto · secured';
       case ConnectionMode.proxy:
-        return 'Local SOCKS5 ready';
+        return 'SOCKS5 · all apps secured';
       case ConnectionMode.ass:
         return 'App Specific routing active';
       case ConnectionMode.tun:
@@ -239,9 +240,6 @@ class VpnConnection extends ChangeNotifier {
         break;
 
       case VlessConnectionState.disconnected:
-        // A recovery timer changes the public state to `connecting` before the
-        // restart begins. Repeated native DISCONNECTED broadcasts during that
-        // debounce window must not clear the config snapshot the timer needs.
         if (_restartInProgress || (_restartTimer?.isActive ?? false)) return;
 
         final canRecover = !_userDisconnecting &&
@@ -322,13 +320,13 @@ class VpnConnection extends ChangeNotifier {
     }
 
     final startingMessage = switch (_activeMode) {
-      ConnectionMode.auto => routingPlan.selectedOnly
+      ConnectionMode.auto => routingPlan.appSpecific
           ? 'Auto · starting selected-app route…'
           : 'Auto · starting TUN…',
-      ConnectionMode.tun => routingPlan.selectedOnly
+      ConnectionMode.tun => routingPlan.appSpecific
           ? 'Starting selected-app tunnel…'
           : 'Establishing secure channel…',
-      ConnectionMode.proxy => 'Starting Local SOCKS5…',
+      ConnectionMode.proxy => 'Starting transparent SOCKS5…',
       ConnectionMode.ass => 'Starting App Specific routing…',
     };
     _setStatus(VpnStatus.connecting, startingMessage);
@@ -380,27 +378,24 @@ class VpnConnection extends ChangeNotifier {
       final baseConfig = parsed.getFullConfiguration();
       final remark = parsed.remark.isNotEmpty ? parsed.remark : 'Revolt VPN';
 
-      // Set this before the native status callback can report CONNECTED so the
-      // first visible label already reflects Selected-only/ASS accurately.
-      _appSpecificRoutingActive = routingPlan.selectedOnly;
+      _appSpecificRoutingActive = routingPlan.appSpecific;
 
       await _startRuntime(
         config: baseConfig,
         remark: remark,
         blockedApps: routingPlan.blockedApps,
-        allowedApps: routingPlan.allowedApps,
         proxyOnly: routingPlan.proxyOnly,
       );
 
-      if (routingPlan.proxyOnly) {
+      _setStatus(VpnStatus.connecting, 'Waiting for VPN interface…');
+      if (!await _waitForNativeConnected()) {
+        throw StateError('VPN runtime did not report CONNECTED');
+      }
+
+      if (routingPlan.verifyLocalSocks) {
         _setStatus(VpnStatus.connecting, 'Checking Local SOCKS5…');
         if (!await _waitForLocalSocks()) {
           throw StateError('Local SOCKS5 did not become ready');
-        }
-      } else {
-        _setStatus(VpnStatus.connecting, 'Waiting for VPN interface…');
-        if (!await _waitForNativeConnected()) {
-          throw StateError('VPN runtime did not report CONNECTED');
         }
       }
 
@@ -409,16 +404,16 @@ class VpnConnection extends ChangeNotifier {
       _lastBlockedApps = routingPlan.blockedApps == null
           ? null
           : List.of(routingPlan.blockedApps!);
-      _lastAllowedApps = List.of(routingPlan.allowedApps);
       _lastProxyOnly = routingPlan.proxyOnly;
-      _appSpecificRoutingActive = routingPlan.selectedOnly;
+      _lastAppSpecific = routingPlan.appSpecific;
+      _lastVerifyLocalSocks = routingPlan.verifyLocalSocks;
+      _appSpecificRoutingActive = routingPlan.appSpecific;
     } catch (e) {
       debugPrint('[VPN] Tunnel start error: $e');
       await _stopRuntime();
-      await _clearAndroidAllowlist();
       _clearRuntimeSnapshot();
       _errorMessage = _activeMode == ConnectionMode.proxy
-          ? 'Local SOCKS5 failed to start.\nTry reconnecting.'
+          ? 'Transparent SOCKS5 failed to start.\nTry reconnecting.'
           : 'Connection failed to start.\nTry reconnecting.';
       _setStatus(VpnStatus.error, 'Connection failed');
       return false;
@@ -435,27 +430,29 @@ class VpnConnection extends ChangeNotifier {
     switch (_activeMode) {
       case ConnectionMode.auto:
         if (routingMode == AppRoutingMode.selected) {
-          return _selectedTunPlan();
+          return _compatibilitySelectedPlan();
         }
         return _tunPlan(routingMode, selected);
 
       case ConnectionMode.tun:
         if (routingMode == AppRoutingMode.selected) {
-          return _selectedTunPlan();
+          return _compatibilitySelectedPlan();
         }
         return _tunPlan(routingMode, selected);
 
       case ConnectionMode.proxy:
-        // Local SOCKS is intentionally a pure proxy-only mode. Android cannot
-        // force arbitrary apps into a proxy without creating a TUN interface.
-        // App selections stay saved for TUN/ASS/Auto but are not applied here.
+        // SOCKS5 is exposed as a transparent all-device mode. Android TUN
+        // captures arbitrary apps, tun2socks forwards them into Xray's local
+        // SOCKS5 listener, and the existing VLESS/Reality/XHTTP outbound is
+        // unchanged. No app limiter is applied in this mode.
         return const _RoutingPlan(
-          proxyOnly: true,
+          proxyOnly: false,
           blockedApps: null,
+          verifyLocalSocks: true,
         );
 
       case ConnectionMode.ass:
-        return _selectedTunPlan();
+        return _compatibilitySelectedPlan();
     }
   }
 
@@ -476,40 +473,48 @@ class VpnConnection extends ChangeNotifier {
     );
   }
 
-  Future<_RoutingPlan> _selectedTunPlan() async {
-    return _RoutingPlan(
-      proxyOnly: false,
-      blockedApps: null,
-      allowedApps: await _selectedInstalledPackages(),
-    );
-  }
-
-  Future<List<String>> _selectedInstalledPackages() async {
+  Future<_RoutingPlan> _compatibilitySelectedPlan() async {
     final selected = ConnectionSettings.appPackages.toSet();
     if (selected.isEmpty) {
       throw StateError('Select at least one app.');
     }
 
     final apps = await InstalledAppsService.loadLaunchableApps();
-    final available = apps
+    final installedSelected = apps
         .where((app) => selected.contains(app.packageName))
         .map((app) => app.packageName)
-        .toList()
-      ..sort();
-    if (available.isEmpty) {
+        .toSet();
+
+    if (installedSelected.isEmpty) {
       throw StateError('None of the selected apps are installed.');
     }
-    return available;
+
+    // Using Android's strict addAllowedApplication() can break apps whose
+    // networking relies on non-launchable system components. Discord is a
+    // concrete example seen in device testing. Instead, exclude only the
+    // other launchable user apps. Selected apps and Android system helpers
+    // remain inside the same VPN, while unrelated user apps bypass it.
+    final blocked = apps
+        .map((app) => app.packageName)
+        .where((packageName) =>
+            packageName != _selfPackage && !installedSelected.contains(packageName))
+        .toSet()
+        .toList()
+      ..sort();
+
+    return _RoutingPlan(
+      proxyOnly: false,
+      blockedApps: blocked.isEmpty ? null : blocked,
+      appSpecific: true,
+    );
   }
 
   Future<void> _startRuntime({
     required String config,
     required String remark,
     required List<String>? blockedApps,
-    required List<String> allowedApps,
     required bool proxyOnly,
   }) async {
-    await FlutterVlessAndroidRouting.setAllowedApps(allowedApps);
     await _vless.startVless(
       remark: remark,
       config: config,
@@ -519,7 +524,7 @@ class VpnConnection extends ChangeNotifier {
   }
 
   Future<bool> _waitForLocalSocks() async {
-    for (var attempt = 0; attempt < 6; attempt++) {
+    for (var attempt = 0; attempt < 8; attempt++) {
       final result = await LocalSocksTester.test();
       if (result.ok) {
         _lastHealthLatencyMs = result.latencyMs;
@@ -532,9 +537,6 @@ class VpnConnection extends ChangeNotifier {
   }
 
   Future<bool> _waitForNativeConnected() async {
-    // startVless() only queues the Android foreground service. Wait for the
-    // service/core broadcast instead of treating MethodChannel completion as a
-    // successfully established TUN interface.
     for (var attempt = 0; attempt < 24; attempt++) {
       if (_status == VpnStatus.connected) return true;
       if (_status == VpnStatus.error) return false;
@@ -592,23 +594,21 @@ class VpnConnection extends ChangeNotifier {
             config: _lastBaseConfig!,
             remark: _lastRemark,
             blockedApps: _lastBlockedApps,
-            allowedApps: _lastAllowedApps,
             proxyOnly: _lastProxyOnly,
           );
 
-          if (_lastProxyOnly) {
-            if (!await _waitForLocalSocks()) {
-              throw StateError('Local SOCKS5 did not recover');
-            }
-          } else if (!await _waitForNativeConnected()) {
+          if (!await _waitForNativeConnected()) {
             throw StateError('VPN runtime did not recover');
+          }
+          if (_lastVerifyLocalSocks && !await _waitForLocalSocks()) {
+            throw StateError('Local SOCKS5 did not recover');
           }
 
           if (_userDisconnecting) return;
 
           _reconnectCount++;
           _lastRecoveryReason = reason;
-          _appSpecificRoutingActive = _lastAllowedApps.isNotEmpty;
+          _appSpecificRoutingActive = _lastAppSpecific;
           _errorMessage = null;
           _setStatus(VpnStatus.connected, _connectedLabel);
           return;
@@ -634,7 +634,6 @@ class VpnConnection extends ChangeNotifier {
       if (_userDisconnecting) return;
 
       debugPrint('[VPN] Extreme recovery exhausted: $lastError');
-      await _clearAndroidAllowlist();
       _clearRuntimeSnapshot();
       _errorMessage = 'Could not restore the connection.';
       _setStatus(VpnStatus.error, 'Reconnect failed');
@@ -657,7 +656,6 @@ class VpnConnection extends ChangeNotifier {
 
     if (_status == VpnStatus.disconnected ||
         _status == VpnStatus.disconnecting) {
-      await _clearAndroidAllowlist();
       _clearRuntimeSnapshot();
       _userDisconnecting = false;
       return;
@@ -682,14 +680,11 @@ class VpnConnection extends ChangeNotifier {
     } catch (e) {
       debugPrint('[VPN] VLESS stop error: $e');
       _errorMessage = 'VPN shutdown error.\nPlease restart the app.';
-      await _clearAndroidAllowlist();
       _clearRuntimeSnapshot();
       _setStatus(VpnStatus.error, 'Shutdown failed');
       _userDisconnecting = false;
       return;
     }
-
-    await _clearAndroidAllowlist();
 
     if (timedOut) {
       debugPrint('[VPN] stopVless() timed out after 5 s.');
@@ -706,17 +701,12 @@ class VpnConnection extends ChangeNotifier {
     _userDisconnecting = false;
   }
 
-  Future<void> _clearAndroidAllowlist() async {
-    try {
-      await FlutterVlessAndroidRouting.setAllowedApps(const <String>[]);
-    } catch (_) {}
-  }
-
   void _clearRuntimeSnapshot() {
     _lastBaseConfig = null;
     _lastBlockedApps = null;
-    _lastAllowedApps = const <String>[];
     _lastProxyOnly = false;
+    _lastAppSpecific = false;
+    _lastVerifyLocalSocks = false;
     _appSpecificRoutingActive = false;
     _lastHealthLatencyMs = null;
     _isStartupRestoration = false;
@@ -739,7 +729,6 @@ class VpnConnection extends ChangeNotifier {
     _restartTimer?.cancel();
     _networkSubscription?.cancel();
     if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
-      unawaited(_clearAndroidAllowlist());
       try {
         _vless.stopVless();
       } catch (_) {}
