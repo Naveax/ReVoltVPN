@@ -113,7 +113,7 @@ void main() {
 '''.replaceAll(r'\"', '"'),
     r'''            "-proxy", "socks5://${config.LOCAL_SOCKS_USERNAME}:${config.LOCAL_SOCKS_PASSWORD}@127.0.0.1:${config.LOCAL_SOCKS5_PORT}",
 '''.replaceAll(r'\"', '"'),
-    'LOCAL_SOCKS_USERNAME}:${config.LOCAL_SOCKS_PASSWORD}@127.0.0.1',
+    r'LOCAL_SOCKS_USERNAME}:${config.LOCAL_SOCKS_PASSWORD}@127.0.0.1',
   );
 
   replaceOnce(
