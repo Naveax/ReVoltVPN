@@ -89,14 +89,19 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
             "restartCurrentRuntime" -> {
                 val intent = Intent(context, XrayVPNService::class.java)
                     .putExtra("COMMAND", AppConfigs.V2RAY_SERVICE_COMMANDS.RESTART_SERVICE)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
-                else context.startService(intent)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
                 result.success(true)
             }
             "getTunnelState" -> result.success(tunnelStateMap())
             "initializeVless" -> {
-                AppConfigs.NOTIFICATION_ICON_RESOURCE_NAME = call.argument<String>("notificationIconResourceName") ?: ""
-                AppConfigs.NOTIFICATION_ICON_RESOURCE_TYPE = call.argument<String>("notificationIconResourceType") ?: ""
+                AppConfigs.NOTIFICATION_ICON_RESOURCE_NAME =
+                    call.argument<String>("notificationIconResourceName") ?: ""
+                AppConfigs.NOTIFICATION_ICON_RESOURCE_TYPE =
+                    call.argument<String>("notificationIconResourceType") ?: ""
                 result.success(null)
             }
             "getServerDelay" -> {
@@ -114,24 +119,39 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
             "getConnectedServerDelay" -> {
                 val url = call.argument<String>("url") ?: "https://www.google.com"
                 executor.execute {
+                    val config = AppConfigs.V2RAY_CONFIG
                     val delay = if (
-                        lastState == "CONNECTED" &&
-                        lastTunEstablished &&
-                        lastFdDelivered &&
-                        lastSocksReady
+                        AppConfigs.isFullyReady() &&
+                        config != null &&
+                        config.LOCAL_SOCKS5_PORT > 0
                     ) {
-                        XrayCoreManager.measureSocksDelay(lastSocksPort, lastSocksUser, lastSocksPass, url)
-                    } else -1L
+                        XrayCoreManager.measureSocksDelay(
+                            config.LOCAL_SOCKS5_PORT,
+                            config.LOCAL_SOCKS5_USER,
+                            config.LOCAL_SOCKS5_PASS,
+                            url,
+                        )
+                    } else {
+                        -1L
+                    }
                     mainHandler.post { result.success(delay) }
                 }
             }
             "getCoreVersion" -> executor.execute {
                 val version = try {
-                    val executable = File(context.applicationInfo.nativeLibraryDir, "libxray.so")
-                    if (!executable.exists()) "Xray not found"
-                    else {
-                        val p = Runtime.getRuntime().exec(arrayOf(executable.absolutePath, "-version"))
-                        BufferedReader(InputStreamReader(p.inputStream)).use { it.readLine() ?: "Unknown" }
+                    val executable = File(
+                        context.applicationInfo.nativeLibraryDir,
+                        "libxray.so",
+                    )
+                    if (!executable.exists()) {
+                        "Xray not found"
+                    } else {
+                        val p = Runtime.getRuntime().exec(
+                            arrayOf(executable.absolutePath, "-version"),
+                        )
+                        BufferedReader(InputStreamReader(p.inputStream)).use {
+                            it.readLine() ?: "Unknown"
+                        }
                     }
                 } catch (e: Exception) {
                     "Error: ${e.message}"
@@ -147,24 +167,33 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
         val config = XrayConfig()
         config.REMARK = call.argument("remark") ?: ""
         config.V2RAY_FULL_JSON_CONFIG = call.argument("config") ?: ""
-        config.BLOCKED_APPS = call.argument<ArrayList<String>>("blocked_apps") ?: ArrayList()
-        config.BYPASS_SUBNETS = call.argument<ArrayList<String>>("bypass_subnets") ?: ArrayList()
-        config.NOTIFICATION_DISCONNECT_BUTTON_NAME = call.argument("notificationDisconnectButtonName") ?: "Disconnect"
+        config.BLOCKED_APPS =
+            call.argument<ArrayList<String>>("blocked_apps") ?: ArrayList()
+        config.BYPASS_SUBNETS =
+            call.argument<ArrayList<String>>("bypass_subnets") ?: ArrayList()
+        config.NOTIFICATION_DISCONNECT_BUTTON_NAME =
+            call.argument("notificationDisconnectButtonName") ?: "Disconnect"
 
-        if (AppConfigs.NOTIFICATION_ICON_RESOURCE_NAME.isNotEmpty() && AppConfigs.NOTIFICATION_ICON_RESOURCE_TYPE.isNotEmpty()) {
-            config.NOTIFICATION_ICON_RESOURCE_NAME = AppConfigs.NOTIFICATION_ICON_RESOURCE_NAME
-            config.NOTIFICATION_ICON_RESOURCE_TYPE = AppConfigs.NOTIFICATION_ICON_RESOURCE_TYPE
+        if (AppConfigs.NOTIFICATION_ICON_RESOURCE_NAME.isNotEmpty() &&
+            AppConfigs.NOTIFICATION_ICON_RESOURCE_TYPE.isNotEmpty()
+        ) {
+            config.NOTIFICATION_ICON_RESOURCE_NAME =
+                AppConfigs.NOTIFICATION_ICON_RESOURCE_NAME
+            config.NOTIFICATION_ICON_RESOURCE_TYPE =
+                AppConfigs.NOTIFICATION_ICON_RESOURCE_TYPE
             config.APPLICATION_ICON = context.resources.getIdentifier(
                 AppConfigs.NOTIFICATION_ICON_RESOURCE_NAME,
                 AppConfigs.NOTIFICATION_ICON_RESOURCE_TYPE,
-                context.packageName
+                context.packageName,
             )
         }
 
         val proxyOnly = call.argument<Boolean>("proxy_only") == true
         AppConfigs.V2RAY_CONNECTION_MODE = if (proxyOnly) {
             AppConfigs.V2RAY_CONNECTION_MODES.PROXY_ONLY
-        } else AppConfigs.V2RAY_CONNECTION_MODES.VPN_TUN
+        } else {
+            AppConfigs.V2RAY_CONNECTION_MODES.VPN_TUN
+        }
 
         try {
             val jsonConfig = org.json.JSONObject(config.V2RAY_FULL_JSON_CONFIG)
@@ -174,11 +203,15 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
                 val vnext = settings?.optJSONArray("vnext")
                 if (vnext != null && vnext.length() > 0) {
                     val server = vnext.getJSONObject(0)
-                    config.CONNECTED_V2RAY_SERVER_ADDRESS = server.optString("address", "")
-                    config.CONNECTED_V2RAY_SERVER_PORT = server.optInt("port", 0).toString()
+                    config.CONNECTED_V2RAY_SERVER_ADDRESS =
+                        server.optString("address", "")
+                    config.CONNECTED_V2RAY_SERVER_PORT =
+                        server.optInt("port", 0).toString()
                 } else if (settings != null) {
-                    config.CONNECTED_V2RAY_SERVER_ADDRESS = settings.optString("address", "")
-                    config.CONNECTED_V2RAY_SERVER_PORT = settings.optInt("port", 0).toString()
+                    config.CONNECTED_V2RAY_SERVER_ADDRESS =
+                        settings.optString("address", "")
+                    config.CONNECTED_V2RAY_SERVER_PORT =
+                        settings.optInt("port", 0).toString()
                 }
             }
         } catch (_: Exception) {
@@ -188,8 +221,11 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
             .putExtra("COMMAND", AppConfigs.V2RAY_SERVICE_COMMANDS.START_SERVICE)
             .putExtra("V2RAY_CONFIG", config)
             .putExtra("PROXY_ONLY", proxyOnly)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
-        else context.startService(intent)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent)
+        } else {
+            context.startService(intent)
+        }
         result.success(null)
     }
 
@@ -200,34 +236,48 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
             return
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ActivityCompat.checkSelfPermission(currentActivity, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ActivityCompat.checkSelfPermission(
+                currentActivity,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) != PackageManager.PERMISSION_GRANTED
         ) {
             ActivityCompat.requestPermissions(
                 currentActivity,
                 arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                REQUEST_CODE_POST_NOTIFICATIONS
+                REQUEST_CODE_POST_NOTIFICATIONS,
             )
         }
         val request = VpnService.prepare(currentActivity)
         if (request != null) {
             pendingResult = result
-            currentActivity.startActivityForResult(request, REQUEST_CODE_VPN_PERMISSION)
+            currentActivity.startActivityForResult(
+                request,
+                REQUEST_CODE_VPN_PERMISSION,
+            )
         } else {
             result.success(true)
         }
     }
 
-    private fun tunnelStateMap(): Map<String, Any> = mapOf(
-        "state" to lastState,
-        "tunEstablished" to lastTunEstablished,
-        "fdDelivered" to lastFdDelivered,
-        "socksReady" to lastSocksReady,
-        "socksPort" to lastSocksPort,
-        "socksUser" to lastSocksUser,
-        "socksPass" to lastSocksPass,
-        "generation" to lastGeneration,
-        "error" to lastError
-    )
+    private fun tunnelStateMap(): Map<String, Any> {
+        val config = AppConfigs.V2RAY_CONFIG
+        val state = when (AppConfigs.V2RAY_STATE) {
+            AppConfigs.V2RAY_STATES.V2RAY_CONNECTED -> "CONNECTED"
+            AppConfigs.V2RAY_STATES.V2RAY_CONNECTING -> "CONNECTING"
+            AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED -> "DISCONNECTED"
+        }
+        return mapOf(
+            "state" to state,
+            "tunEstablished" to AppConfigs.TUN_ESTABLISHED,
+            "fdDelivered" to AppConfigs.FD_DELIVERED,
+            "socksReady" to AppConfigs.SOCKS_READY,
+            "socksPort" to (config?.LOCAL_SOCKS5_PORT ?: 0),
+            "socksUser" to config?.LOCAL_SOCKS5_USER.orEmpty(),
+            "socksPass" to config?.LOCAL_SOCKS5_PASS.orEmpty(),
+            "generation" to AppConfigs.RUNTIME_GENERATION,
+            "error" to AppConfigs.LAST_ERROR,
+        )
+    }
 
     private fun registerReceiver() {
         if (receiverRegistered) return
@@ -236,7 +286,10 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
                 override fun onReceive(ctx: Context?, intent: Intent?) {
                     if (intent == null) return
                     val state = if (Build.VERSION.SDK_INT >= 33) {
-                        intent.getSerializableExtra("STATE", AppConfigs.V2RAY_STATES::class.java)
+                        intent.getSerializableExtra(
+                            "STATE",
+                            AppConfigs.V2RAY_STATES::class.java,
+                        )
                     } else {
                         @Suppress("DEPRECATION")
                         intent.getSerializableExtra("STATE") as? AppConfigs.V2RAY_STATES
@@ -246,10 +299,14 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
                         AppConfigs.V2RAY_STATES.V2RAY_CONNECTING -> "CONNECTING"
                         else -> "DISCONNECTED"
                     }
-                    lastTunEstablished = intent.getBooleanExtra("TUN_ESTABLISHED", false)
-                    lastFdDelivered = intent.getBooleanExtra("FD_DELIVERED", false)
-                    lastSocksReady = intent.getBooleanExtra("SOCKS_READY", false)
-                    lastGeneration = intent.getLongExtra("RUNTIME_GENERATION", 0L)
+                    lastTunEstablished =
+                        intent.getBooleanExtra("TUN_ESTABLISHED", false)
+                    lastFdDelivered =
+                        intent.getBooleanExtra("FD_DELIVERED", false)
+                    lastSocksReady =
+                        intent.getBooleanExtra("SOCKS_READY", false)
+                    lastGeneration =
+                        intent.getLongExtra("RUNTIME_GENERATION", 0L)
                     lastError = intent.getStringExtra("LAST_ERROR").orEmpty()
                     if (lastState == "DISCONNECTED") {
                         lastSocksPort = 0
@@ -257,8 +314,10 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
                         lastSocksPass = ""
                     } else {
                         lastSocksPort = intent.getIntExtra("SOCKS_PORT", 0)
-                        lastSocksUser = intent.getStringExtra("SOCKS_USER").orEmpty()
-                        lastSocksPass = intent.getStringExtra("SOCKS_PASS").orEmpty()
+                        lastSocksUser =
+                            intent.getStringExtra("SOCKS_USER").orEmpty()
+                        lastSocksPass =
+                            intent.getStringExtra("SOCKS_PASS").orEmpty()
                     }
 
                     val data = arrayListOf(
@@ -267,7 +326,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
                         intent.getLongExtra("DOWNLOAD_SPEED", 0).toString(),
                         intent.getLongExtra("UPLOAD_TRAFFIC", 0).toString(),
                         intent.getLongExtra("DOWNLOAD_TRAFFIC", 0).toString(),
-                        lastState
+                        lastState,
                     )
                     vpnStatusSink?.success(data)
                 }
@@ -280,18 +339,26 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
                 filter,
                 AppConfigs.INTERNAL_STATUS_PERMISSION,
                 null,
-                Context.RECEIVER_NOT_EXPORTED
+                Context.RECEIVER_NOT_EXPORTED,
             )
         } else {
             @Suppress("DEPRECATION")
-            context.registerReceiver(xrayReceiver, filter, AppConfigs.INTERNAL_STATUS_PERMISSION, null)
+            context.registerReceiver(
+                xrayReceiver,
+                filter,
+                AppConfigs.INTERNAL_STATUS_PERMISSION,
+                null,
+            )
         }
         receiverRegistered = true
     }
 
     private fun unregisterReceiver() {
         if (!receiverRegistered || xrayReceiver == null) return
-        try { context.unregisterReceiver(xrayReceiver) } catch (_: Exception) {}
+        try {
+            context.unregisterReceiver(xrayReceiver)
+        } catch (_: Exception) {
+        }
         receiverRegistered = false
     }
 
@@ -314,7 +381,9 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
         activity = null
     }
 
-    override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
+    override fun onReattachedToActivityForConfigChanges(
+        binding: ActivityPluginBinding,
+    ) {
         activityBinding = binding
         activity = binding.activity
         binding.addActivityResultListener(this)
@@ -326,7 +395,11 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
         activity = null
     }
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
+    override fun onActivityResult(
+        requestCode: Int,
+        resultCode: Int,
+        data: Intent?,
+    ): Boolean {
         if (requestCode != REQUEST_CODE_VPN_PERMISSION) return false
         pendingResult?.success(resultCode == Activity.RESULT_OK)
         pendingResult = null
