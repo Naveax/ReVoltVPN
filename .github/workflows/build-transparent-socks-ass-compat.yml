@@ -1,0 +1,233 @@
+name: Build transparent SOCKS ASS compatibility
+
+on:
+  push:
+    branches:
+      - build/transparent-socks-ass-compat
+
+permissions:
+  contents: read
+
+concurrency:
+  group: transparent-socks-ass-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Set up Gradle 8.14
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+
+      - name: Generate local build config
+        shell: bash
+        run: |
+          cat > lib/logic/app_config.dart <<'DART'
+          abstract final class AppConfig {
+            AppConfig._();
+            static const String serverIp = '204.168.246.88';
+            static const String hivemindApiPublic = 'https://paladinvpn.duckdns.org/api';
+            static const String realityFp = 'chrome';
+            static const String vlessSecurity = 'reality';
+            static const String vlessType = 'xhttp';
+            static const String vlessPath = '/revolt';
+            static const String applicationId = 'com.paladinvpn.app';
+            static const String githubOwner = 'esefxdz';
+            static const String githubRepo = 'ReVoltVPN';
+            static const String githubReleasesUrl =
+                'https://github.com/$githubOwner/$githubRepo/releases/latest';
+            static const String adUnitId =
+                'ca-app-pub-5671224884648691/9198987725';
+          }
+          DART
+
+          # Manifest substitution only. Existing adsEnabled=false and fake
+          # callback/nonce flow are deliberately untouched.
+          cat > android/admob.properties <<'PROPS'
+          ADMOB_APP_ID=ca-app-pub-3940256099942544~3347511713
+          PROPS
+
+          {
+            printf 'flutter.sdk=%s\n' "$FLUTTER_ROOT"
+            printf 'sdk.dir=%s\n' "$ANDROID_HOME"
+          } > android/local.properties
+
+      - name: Generate temporary release signing key
+        shell: bash
+        run: |
+          keytool -genkeypair \
+            -keystore android/revolt-socks-compat.jks \
+            -storepass revoltsockscompat \
+            -keypass revoltsockscompat \
+            -alias revolt-socks-compat \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650 \
+            -dname "CN=ReVoltVPN SOCKS Compat,O=ReVoltVPN,C=US"
+
+          cat > android/key.properties <<'PROPS'
+          storePassword=revoltsockscompat
+          keyPassword=revoltsockscompat
+          keyAlias=revolt-socks-compat
+          storeFile=revolt-socks-compat.jks
+          PROPS
+
+      - name: Generate Gradle wrapper
+        shell: bash
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.14 --distribution-type all
+          chmod +x gradlew
+          ./gradlew --version
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Verify routing and untouched legacy invariants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          vpn = Path('lib/logic/vpn_connection.dart').read_text()
+          gradle = Path('android/app/build.gradle.kts').read_text()
+          manifest = Path('android/app/src/main/AndroidManifest.xml').read_text()
+          ad = Path('lib/logic/ad_manager.dart').read_text()
+          hivemind = Path('lib/logic/hivemind_service.dart').read_text()
+          mode_ui = Path('lib/screens/settings/in_settings/connection_mode.dart').read_text()
+          routing_ui = Path('lib/screens/settings/in_settings/app_routing.dart').read_text()
+
+          assert 'AppRoutingVpnService' not in manifest
+          assert 'flutter_vless_android_routing.dart' not in vpn
+          assert 'FlutterVlessAndroidRouting' not in vpn
+          assert 'patchFlutterVlessAllowedApps' not in gradle
+          assert '_compatibilitySelectedPlan()' in vpn
+          assert 'case ConnectionMode.ass:' in vpn
+          assert 'return _compatibilitySelectedPlan();' in vpn
+          assert 'packageName != _selfPackage && !installedSelected.contains(packageName)' in vpn
+          assert 'Discord is a' in vpn
+
+          proxy_block = vpn.split('case ConnectionMode.proxy:', 1)[1].split('case ConnectionMode.ass:', 1)[0]
+          assert 'proxyOnly: false' in proxy_block
+          assert 'blockedApps: null' in proxy_block
+          assert 'verifyLocalSocks: true' in proxy_block
+          assert 'transparent all-device mode' in proxy_block
+          assert 'Transparent all-app mode' in mode_ui
+          assert 'No app limiter is applied' in routing_ui
+
+          # Deliberately untouched legacy/dev AdMob + nonce behavior.
+          assert 'static const bool adsEnabled = false;' in ad
+          assert '?signature=test&key_id=test' in ad
+          assert 'HivemindService.setExpectedNonce(nonce)' in ad
+          assert '/admob/callback?signature=test&key_id=test' in hivemind
+
+          print('Transparent SOCKS + compatibility ASS invariants verified')
+          PY
+
+      - name: Generate unit tests
+        shell: bash
+        run: |
+          mkdir -p test
+          cat > test/socks_ass_compat_ci_test.dart <<'DART'
+          import 'package:flutter_test/flutter_test.dart';
+          import 'package:shared_preferences/shared_preferences.dart';
+          import 'package:revoltvpn/logic/connection_settings.dart';
+
+          void main() {
+            TestWidgetsFlutterBinding.ensureInitialized();
+
+            test('selected app choices normalize and persist', () async {
+              SharedPreferences.setMockInitialValues(<String, Object>{});
+              await ConnectionSettings.initialize();
+              await ConnectionSettings.setMode(ConnectionMode.ass);
+              await ConnectionSettings.setRoutingMode(AppRoutingMode.selected);
+              await ConnectionSettings.setAppPackages(<String>[
+                'com.android.chrome',
+                ' com.discord ',
+                'com.android.chrome',
+              ]);
+
+              expect(ConnectionSettings.mode, ConnectionMode.ass);
+              expect(ConnectionSettings.routingMode, AppRoutingMode.selected);
+              expect(
+                ConnectionSettings.appPackages,
+                <String>['com.android.chrome', 'com.discord'],
+              );
+            });
+
+            test('SOCKS mode does not erase saved app choices', () async {
+              SharedPreferences.setMockInitialValues(<String, Object>{});
+              await ConnectionSettings.initialize();
+              await ConnectionSettings.setAppPackages(<String>[
+                'com.android.chrome',
+                'com.discord',
+              ]);
+              await ConnectionSettings.setMode(ConnectionMode.proxy);
+              expect(ConnectionSettings.mode, ConnectionMode.proxy);
+              expect(ConnectionSettings.appPackages.length, 2);
+            });
+          }
+          DART
+
+      - name: Flutter analyze
+        run: flutter analyze
+
+      - name: Unit tests
+        run: flutter test test/socks_ass_compat_ci_test.dart
+
+      - name: Public API health
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --max-time 10 \
+            https://paladinvpn.duckdns.org/api/health
+          echo
+
+      - name: Build release APK
+        run: flutter build apk --release --build-name 3.3.4 --build-number 31
+
+      - name: Build release AAB
+        run: flutter build appbundle --release --build-name 3.3.4 --build-number 31
+
+      - name: Verify packaged VPN runtime
+        shell: bash
+        run: |
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libtun2socks.so'
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libxray.so'
+
+      - name: Package release artifacts
+        shell: bash
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk ReVoltVPN-3.3.4-transparent-socks-ass.apk
+          cp build/app/outputs/bundle/release/app-release.aab ReVoltVPN-3.3.4-transparent-socks-ass.aab
+          sha256sum ReVoltVPN-3.3.4-transparent-socks-ass.apk > ReVoltVPN-3.3.4-transparent-socks-ass.apk.sha256
+          sha256sum ReVoltVPN-3.3.4-transparent-socks-ass.aab > ReVoltVPN-3.3.4-transparent-socks-ass.aab.sha256
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReVoltVPN-3.3.4-transparent-socks-ass
+          path: |
+            ReVoltVPN-3.3.4-transparent-socks-ass.apk
+            ReVoltVPN-3.3.4-transparent-socks-ass.aab
+            ReVoltVPN-3.3.4-transparent-socks-ass.apk.sha256
+            ReVoltVPN-3.3.4-transparent-socks-ass.aab.sha256
+          retention-days: 3
+          if-no-files-found: error
