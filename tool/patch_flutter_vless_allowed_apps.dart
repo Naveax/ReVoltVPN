@@ -72,7 +72,7 @@ void _replaceOnce(
 
   final text = file.readAsStringSync();
   if (text.contains(marker)) {
-    stdout.writeln('[flutter_vless patch] already patched: ${file.path}');
+    stdout.writeln('[flutter_vless patch] already current: ${file.path}');
     return;
   }
   if (!text.contains(oldValue)) {
@@ -81,6 +81,32 @@ void _replaceOnce(
 
   file.writeAsStringSync(text.replaceFirst(oldValue, newValue));
   stdout.writeln('[flutter_vless patch] patched: ${file.path}');
+}
+
+void _replaceAny(
+  File file,
+  Map<String, String> replacements,
+  String marker,
+) {
+  if (!file.existsSync()) {
+    _fail('missing upstream source: ${file.path}');
+  }
+
+  var text = file.readAsStringSync();
+  if (text.contains(marker)) {
+    stdout.writeln('[flutter_vless patch] already current: ${file.path}');
+    return;
+  }
+
+  for (final entry in replacements.entries) {
+    if (!text.contains(entry.key)) continue;
+    text = text.replaceFirst(entry.key, entry.value);
+    file.writeAsStringSync(text);
+    stdout.writeln('[flutter_vless patch] patched/upgraded: ${file.path}');
+    return;
+  }
+
+  _fail('upstream/legacy patch shape not recognized in ${file.path}');
 }
 
 void main() {
@@ -114,13 +140,8 @@ void main() {
 ''',
     'private var allowedApps:',
   );
-  _replaceOnce(
-    pluginFile,
-    '''        when (call.method) {
-            "startVless" -> {
-''',
-    '''        when (call.method) {
-            "setAllowedApps" -> {
+
+  const newAllowedHandler = '''            "setAllowedApps" -> {
                 val requested = call.argument<ArrayList<String>>("allowed_apps") ?: ArrayList()
                 allowedApps = ArrayList(
                     requested
@@ -131,10 +152,28 @@ void main() {
                 )
                 result.success(null)
             }
+''';
+  const legacyAllowedHandler = '''            "setAllowedApps" -> {
+                val requested = call.argument<ArrayList<String>>("allowed_apps") ?: ArrayList()
+                allowedApps = ArrayList(
+                    requested.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+                )
+                result.success(null)
+            }
+''';
+  _replaceAny(
+    pluginFile,
+    <String, String>{
+      legacyAllowedHandler: newAllowedHandler,
+      '''        when (call.method) {
             "startVless" -> {
+''': '''        when (call.method) {
+$newAllowedHandler            "startVless" -> {
 ''',
-    '"setAllowedApps" ->',
+    },
+    'it.isNotEmpty() && it != context.packageName',
   );
+
   _replaceOnce(
     pluginFile,
     '''                config.BLOCKED_APPS = call.argument<ArrayList<String>>("blocked_apps") ?: ArrayList()
@@ -166,7 +205,7 @@ void main() {
     'Stopping stale Xray core before restart',
   );
 
-  const oldPolicy = '''          try {
+  const upstreamPolicy = '''          try {
     builder.addDisallowedApplication(packageName)
 } catch (e: Exception) {
     Log.e(TAG, "Failed to exclude app from VPN", e)
@@ -181,7 +220,33 @@ for (pkg in config.BLOCKED_APPS) {
     }
 }
 ''';
-  const newPolicy = '''            if (config.ALLOWED_APPS.isNotEmpty() && config.BLOCKED_APPS.isNotEmpty()) {
+  const legacyPatchedPolicy = '''            if (config.ALLOWED_APPS.isNotEmpty()) {
+                for (pkg in config.ALLOWED_APPS) {
+                    try {
+                        builder.addAllowedApplication(pkg)
+                        Log.d(TAG, "Allowed into VPN: $pkg")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to allow $pkg into VPN", e)
+                    }
+                }
+            } else {
+                try {
+                    builder.addDisallowedApplication(packageName)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to exclude app from VPN", e)
+                }
+
+                for (pkg in config.BLOCKED_APPS) {
+                    try {
+                        builder.addDisallowedApplication(pkg)
+                        Log.d(TAG, "Excluded from VPN: $pkg")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to exclude $pkg from VPN", e)
+                    }
+                }
+            }
+''';
+  const hardenedPolicy = '''            if (config.ALLOWED_APPS.isNotEmpty() && config.BLOCKED_APPS.isNotEmpty()) {
                 throw IllegalStateException("Allowed and blocked app policies cannot be mixed")
             }
 
@@ -216,11 +281,13 @@ for (pkg in config.BLOCKED_APPS) {
                 }
             }
 ''';
-  _replaceOnce(
+  _replaceAny(
     serviceFile,
-    oldPolicy,
-    newPolicy,
-    'builder.addAllowedApplication(pkg)',
+    const <String, String>{
+      legacyPatchedPolicy: hardenedPolicy,
+      upstreamPolicy: hardenedPolicy,
+    },
+    'Allowed and blocked app policies cannot be mixed',
   );
 
   stdout.writeln('[flutter_vless patch] allowed-app routing patch is ready');
