@@ -234,7 +234,7 @@ for (pkg in config.BLOCKED_APPS) {
         Log.e(TAG, "Failed to exclude $pkg from VPN", e)
     }
 }
-''';
+'''.replaceAll(r'\"', '"');
   const legacyPatchedPolicy = r'''            if (config.ALLOWED_APPS.isNotEmpty()) {
                 for (pkg in config.ALLOWED_APPS) {
                     try {
@@ -260,7 +260,7 @@ for (pkg in config.BLOCKED_APPS) {
                     }
                 }
             }
-''';
+'''.replaceAll(r'\"', '"');
   const hardenedPolicy = r'''            if (config.ALLOWED_APPS.isNotEmpty() && config.BLOCKED_APPS.isNotEmpty()) {
                 throw IllegalStateException("Allowed and blocked app policies cannot be mixed")
             }
@@ -295,10 +295,10 @@ for (pkg in config.BLOCKED_APPS) {
                     }
                 }
             }
-''';
+'''.replaceAll(r'\"', '"');
   _replaceAny(
     serviceFile,
-    const <String, String>{
+    <String, String>{
       legacyPatchedPolicy: hardenedPolicy,
       upstreamPolicy: hardenedPolicy,
     },
