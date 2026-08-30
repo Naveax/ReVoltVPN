@@ -18,6 +18,7 @@ import com.github.tfox.flutter_vless.xray.core.XrayCoreManager
 import com.github.tfox.flutter_vless.xray.dto.XrayConfig
 import com.github.tfox.flutter_vless.xray.service.XrayVPNService
 import com.github.tfox.flutter_vless.xray.utils.AppConfigs
+import com.github.tfox.flutter_vless.xray.utils.TunnelStateStore
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -98,7 +99,9 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
                 else context.startService(intent)
                 result.success(true)
             }
-            "getTunnelState" -> queryTunnelState(result)
+            // Authoritative readiness is persisted by the remote VPN process.
+            // Reading state must never start, stop, or otherwise poke the service.
+            "getTunnelState" -> result.success(TunnelStateStore.read(context))
             "setAllowedApps" -> {
                 val packages = call.argument<List<String>>("packages") ?: emptyList()
                 pendingAllowedApps = ArrayList(packages.filter { it.isNotBlank() }.distinct())
@@ -262,6 +265,8 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
         }
     }
 
+    // Retained for binary/API compatibility with in-flight builds, but no
+    // production readiness path calls this service-touching query anymore.
     private fun queryTunnelState(result: MethodChannel.Result) {
         val completed = AtomicBoolean(false)
         val receiver = object : ResultReceiver(mainHandler) {
