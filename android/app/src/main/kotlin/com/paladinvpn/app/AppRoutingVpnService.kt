@@ -32,13 +32,15 @@ class AppRoutingVpnService : VpnService() {
                     .orEmpty()
 
                 if (policy == POLICY_SELECTED && packages.isEmpty()) {
-                    stopRouting()
+                    failRouting("No selected applications are available")
                     return START_NOT_STICKY
                 }
 
+                routingState = STATE_STARTING
+                routingError = null
                 startForegroundNotification(policy)
                 startRouting(policy, packages)
-                return START_STICKY
+                return START_NOT_STICKY
             }
 
             else -> {
@@ -49,13 +51,15 @@ class AppRoutingVpnService : VpnService() {
     }
 
     private fun startRouting(policy: String, packages: List<String>) {
-        cleanup()
+        cleanupRuntime()
 
         try {
+            // Match flutter_vless' working Android TUN interface exactly. The bundled
+            // tun2socks runtime is built around this interface layout.
             val builder = Builder()
                 .setSession("ReVolt App Routing")
                 .setMtu(1500)
-                .addAddress("26.26.27.1", 30)
+                .addAddress("26.26.26.1", 30)
                 .addRoute("0.0.0.0", 0)
                 .addDnsServer("8.8.8.8")
                 .addDnsServer("1.1.1.1")
@@ -72,7 +76,7 @@ class AppRoutingVpnService : VpnService() {
             startRoutingProcess()
         } catch (e: Exception) {
             Log.e(TAG, "App routing start failed", e)
-            stopRouting()
+            failRouting(e.message ?: "App routing failed to start")
         }
     }
 
@@ -110,16 +114,15 @@ class AppRoutingVpnService : VpnService() {
                 }
             }
 
-            POLICY_ALL -> {
-                excludeOwnApp(builder)
-            }
-
+            POLICY_ALL -> excludeOwnApp(builder)
             else -> throw IllegalArgumentException("Unknown routing policy: $policy")
         }
     }
 
     private fun excludeOwnApp(builder: Builder) {
         try {
+            // Xray runs inside ReVolt. Letting ReVolt enter this wrapper would feed
+            // the SOCKS transport back into itself and create a routing loop.
             builder.addDisallowedApplication(packageName)
         } catch (e: Exception) {
             Log.w(TAG, "Could not exclude ReVolt from its own routing VPN", e)
@@ -127,17 +130,20 @@ class AppRoutingVpnService : VpnService() {
     }
 
     private fun startRoutingProcess() {
-        val tun = vpnInterface ?: return
+        val tun = vpnInterface ?: run {
+            failRouting("Routing interface is unavailable")
+            return
+        }
         val executable = File(applicationInfo.nativeLibraryDir, "libtun2socks.so")
         if (!executable.exists()) {
-            Log.e(TAG, "Routing binary not found")
-            stopRouting()
+            failRouting("Routing binary is missing")
             return
         }
 
         val socketFile = File(filesDir, SOCKET_FILE)
         socketFile.delete()
 
+        // Keep this command aligned with flutter_vless' Android implementation.
         val command = listOf(
             executable.absolutePath,
             "-sock-path", socketFile.absolutePath,
@@ -147,33 +153,49 @@ class AppRoutingVpnService : VpnService() {
         )
 
         try {
-            routingProcess = ProcessBuilder(command)
+            val process = ProcessBuilder(command)
                 .redirectErrorStream(true)
                 .directory(filesDir)
                 .start()
+            routingProcess = process
 
             Thread {
                 try {
-                    routingProcess?.inputStream?.bufferedReader()?.use { reader ->
-                        reader.forEachLine { line -> Log.d(TAG, line) }
+                    process.inputStream.bufferedReader().use { reader ->
+                        reader.forEachLine { line -> Log.d(TAG, "tun2socks: $line") }
                     }
-                    routingProcess?.waitFor()
+                    val exitCode = process.waitFor()
+                    if (running && routingProcess === process) {
+                        Log.e(TAG, "tun2socks exited unexpectedly: $exitCode")
+                        failRouting("tun2socks stopped unexpectedly")
+                    }
                 } catch (_: InterruptedException) {
                 } catch (e: Exception) {
-                    if (running) Log.e(TAG, "Routing process monitor failed", e)
+                    if (running && routingProcess === process) {
+                        Log.e(TAG, "Routing process monitor failed", e)
+                        failRouting("Routing process failed")
+                    }
                 }
             }.start()
 
-            sendDescriptor(tun.fileDescriptor, socketFile)
+            sendDescriptor(tun.fileDescriptor, socketFile, process)
         } catch (e: Exception) {
             Log.e(TAG, "Routing process start failed", e)
-            stopRouting()
+            failRouting(e.message ?: "Could not start routing process")
         }
     }
 
-    private fun sendDescriptor(fd: java.io.FileDescriptor, socketFile: File) {
+    private fun sendDescriptor(
+        fd: java.io.FileDescriptor,
+        socketFile: File,
+        process: Process,
+    ) {
         Thread {
-            repeat(10) { attempt ->
+            repeat(12) { attempt ->
+                if (!running || routingProcess !== process || !process.isAlive) {
+                    return@Thread
+                }
+
                 try {
                     Thread.sleep(300)
                     val socket = LocalSocket()
@@ -188,11 +210,15 @@ class AppRoutingVpnService : VpnService() {
                     socket.setFileDescriptorsForSend(null)
                     socket.shutdownOutput()
                     socket.close()
+
+                    routingState = STATE_RUNNING
+                    routingError = null
+                    Log.d(TAG, "Native routing is ready")
                     return@Thread
                 } catch (e: Exception) {
-                    if (attempt == 9 && running) {
+                    if (attempt == 11 && running) {
                         Log.e(TAG, "Descriptor transfer failed", e)
-                        stopRouting()
+                        failRouting("Could not attach the Android TUN interface")
                     }
                 }
             }
@@ -238,7 +264,7 @@ class AppRoutingVpnService : VpnService() {
         }
     }
 
-    private fun cleanup() {
+    private fun cleanupRuntime() {
         running = false
         try {
             routingProcess?.destroy()
@@ -255,14 +281,33 @@ class AppRoutingVpnService : VpnService() {
         File(filesDir, SOCKET_FILE).delete()
     }
 
-    private fun stopRouting() {
-        cleanup()
+    private fun failRouting(message: String) {
+        routingError = message
+        routingState = STATE_ERROR
+        cleanupRuntime()
         stopForeground(true)
         stopSelf()
     }
 
+    private fun stopRouting() {
+        cleanupRuntime()
+        routingError = null
+        routingState = STATE_IDLE
+        stopForeground(true)
+        stopSelf()
+    }
+
+    override fun onRevoke() {
+        stopRouting()
+        super.onRevoke()
+    }
+
     override fun onDestroy() {
-        cleanup()
+        cleanupRuntime()
+        if (routingState != STATE_ERROR) {
+            routingState = STATE_IDLE
+            routingError = null
+        }
         super.onDestroy()
     }
 
@@ -275,10 +320,27 @@ class AppRoutingVpnService : VpnService() {
         private const val POLICY_ALL = "all"
         private const val POLICY_EXCLUDE = "exclude"
         private const val POLICY_SELECTED = "selected"
+        private const val STATE_IDLE = "idle"
+        private const val STATE_STARTING = "starting"
+        private const val STATE_RUNNING = "running"
+        private const val STATE_ERROR = "error"
         private const val TAG = "ReVoltAppRouting"
-        private const val SOCKET_FILE = "revolt_app_routing.sock"
+        private const val SOCKET_FILE = "sock_path"
         private const val CHANNEL_ID = "revolt_app_routing"
         private const val NOTIFICATION_ID = 2407
         private const val SPECIAL_USE_TYPE = 0x40000000
+
+        @Volatile
+        private var routingState: String = STATE_IDLE
+
+        @Volatile
+        private var routingError: String? = null
+
+        fun statusSnapshot(): Map<String, Any?> {
+            return mapOf(
+                "state" to routingState,
+                "error" to routingError,
+            )
+        }
     }
 }
