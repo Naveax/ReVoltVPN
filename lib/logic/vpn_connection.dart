@@ -19,11 +19,13 @@ enum VpnStatus {
 
 class _RoutingPlan {
   final List<String>? blockedApps;
+  final List<String>? allowedApps;
   final bool selectedOnly;
   final bool verifyLocalSocks;
 
   const _RoutingPlan({
     required this.blockedApps,
+    this.allowedApps,
     this.selectedOnly = false,
     this.verifyLocalSocks = false,
   });
@@ -100,6 +102,7 @@ class VpnConnection extends ChangeNotifier {
   String? _lastBaseConfig;
   String _lastRemark = 'Revolt VPN';
   List<String>? _lastBlockedApps;
+  List<String>? _lastAllowedApps;
   bool _lastSelectedOnly = false;
   bool _lastVerifyLocalSocks = false;
   bool _restartInProgress = false;
@@ -175,8 +178,6 @@ class VpnConnection extends ChangeNotifier {
       debugPrint('[VPN] Xray core version: $coreVersion');
     } catch (_) {}
 
-    // App-process restoration is fail-closed. A working Xray/SOCKS process is
-    // insufficient; the remote VPN process must attest TUN+FD+SOCKS readiness.
     await _restoreActiveNativeTunnel();
   }
 
@@ -206,13 +207,15 @@ class VpnConnection extends ChangeNotifier {
     final packages = ConnectionSettings.appPackages;
 
     _lastBlockedApps = null;
+    _lastAllowedApps = null;
     _lastSelectedOnly = false;
     _lastVerifyLocalSocks = _activeMode == ConnectionMode.proxy;
     _selectedRoutingActive = false;
 
-    if (routingMode == AppRoutingMode.selected) {
-      _lastSelectedOnly = packages.isNotEmpty;
-      _selectedRoutingActive = packages.isNotEmpty;
+    if (routingMode == AppRoutingMode.selected && packages.isNotEmpty) {
+      _lastAllowedApps = List.of(packages);
+      _lastSelectedOnly = true;
+      _selectedRoutingActive = true;
       return;
     }
 
@@ -239,9 +242,6 @@ class VpnConnection extends ChangeNotifier {
   void _mapStatus(VlessStatus status) {
     switch (status.connectionState) {
       case VlessConnectionState.connected:
-        // Never trust the legacy CONNECTED event by itself. Native code now
-        // emits it only after readiness, but re-querying is deliberate defense
-        // in depth against stale/spurious state.
         unawaited(_confirmNativeConnectedSignal());
         break;
 
@@ -297,9 +297,7 @@ class VpnConnection extends ChangeNotifier {
       }
       _errorMessage = null;
       _setStatus(VpnStatus.connected, _connectedLabel);
-    } catch (_) {
-      // Fail closed: an unverifiable CONNECTED event never turns the UI green.
-    }
+    } catch (_) {}
   }
 
   Future<bool> connect({bool skipAdBypass = false}) async {
@@ -335,7 +333,6 @@ class VpnConnection extends ChangeNotifier {
       return false;
     }
 
-    // Auto, TUN and transparent SOCKS5 all use one Android VpnService/TUN.
     if (!kIsWeb) {
       final ok = await _vless.requestPermission();
       if (!ok) {
@@ -411,6 +408,7 @@ class VpnConnection extends ChangeNotifier {
         config: baseConfig,
         remark: remark,
         blockedApps: routingPlan.blockedApps,
+        allowedApps: routingPlan.allowedApps,
       );
 
       _setStatus(VpnStatus.connecting, 'Verifying VPN data path…');
@@ -430,6 +428,9 @@ class VpnConnection extends ChangeNotifier {
       _lastBlockedApps = routingPlan.blockedApps == null
           ? null
           : List.of(routingPlan.blockedApps!);
+      _lastAllowedApps = routingPlan.allowedApps == null
+          ? null
+          : List.of(routingPlan.allowedApps!);
       _lastSelectedOnly = routingPlan.selectedOnly;
       _lastVerifyLocalSocks = routingPlan.verifyLocalSocks;
       _selectedRoutingActive = routingPlan.selectedOnly;
@@ -461,19 +462,19 @@ class VpnConnection extends ChangeNotifier {
     switch (_activeMode) {
       case ConnectionMode.auto:
         if (routingMode == AppRoutingMode.selected) {
-          return _selectedCompatibilityPlan();
+          return _selectedStrictPlan();
         }
         return _tunPlan(routingMode, selected);
 
       case ConnectionMode.tun:
         if (routingMode == AppRoutingMode.selected) {
-          return _selectedCompatibilityPlan();
+          return _selectedStrictPlan();
         }
         return _tunPlan(routingMode, selected);
 
       case ConnectionMode.proxy:
         if (routingMode == AppRoutingMode.selected) {
-          return _selectedCompatibilityPlan(verifyLocalSocks: true);
+          return _selectedStrictPlan(verifyLocalSocks: true);
         }
         return _tunPlan(
           routingMode,
@@ -501,7 +502,7 @@ class VpnConnection extends ChangeNotifier {
     );
   }
 
-  Future<_RoutingPlan> _selectedCompatibilityPlan({
+  Future<_RoutingPlan> _selectedStrictPlan({
     bool verifyLocalSocks = false,
   }) async {
     final selected = ConnectionSettings.appPackages.toSet();
@@ -513,23 +514,17 @@ class VpnConnection extends ChangeNotifier {
     final availableSelected = apps
         .where((app) => selected.contains(app.packageName))
         .map((app) => app.packageName)
-        .toSet();
+        .toSet()
+        .toList()
+      ..sort();
 
     if (availableSelected.isEmpty) {
       throw StateError('None of the selected apps are installed.');
     }
 
-    // Compatibility Selected only deliberately keeps Android system/network
-    // helper packages in the VPN. Other launchable user apps are bypassed.
-    final blocked = apps
-        .map((app) => app.packageName)
-        .where((packageName) => !availableSelected.contains(packageName))
-        .toSet()
-        .toList()
-      ..sort();
-
     return _RoutingPlan(
-      blockedApps: blocked.isEmpty ? null : blocked,
+      blockedApps: null,
+      allowedApps: availableSelected,
       selectedOnly: true,
       verifyLocalSocks: verifyLocalSocks,
     );
@@ -539,7 +534,9 @@ class VpnConnection extends ChangeNotifier {
     required String config,
     required String remark,
     required List<String>? blockedApps,
+    required List<String>? allowedApps,
   }) async {
+    await NativeTunnelControl.setAllowedApps(allowedApps ?? const <String>[]);
     await _vless.startVless(
       remark: remark,
       config: config,
@@ -687,6 +684,7 @@ class VpnConnection extends ChangeNotifier {
               config: _lastBaseConfig!,
               remark: _lastRemark,
               blockedApps: _lastBlockedApps,
+              allowedApps: _lastAllowedApps,
             );
           }
 
@@ -794,6 +792,7 @@ class VpnConnection extends ChangeNotifier {
   void _clearRuntimeSnapshot() {
     _lastBaseConfig = null;
     _lastBlockedApps = null;
+    _lastAllowedApps = null;
     _lastSelectedOnly = false;
     _lastVerifyLocalSocks = false;
     _selectedRoutingActive = false;
