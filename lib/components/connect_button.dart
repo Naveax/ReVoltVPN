@@ -15,7 +15,7 @@ class ConnectButton extends StatefulWidget {
 class _ConnectButtonState extends State<ConnectButton>
     with SingleTickerProviderStateMixin {
   bool _busy = false;
-  DateTime _lastTap = DateTime.now();
+  DateTime _lastTap = DateTime.fromMillisecondsSinceEpoch(0);
   AnimationController? _pulse;
   Animation<double>? _pulseAnim;
 
