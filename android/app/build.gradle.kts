@@ -1,9 +1,70 @@
 import java.util.Properties
+import java.io.File
 import java.io.FileInputStream
 
 plugins {
     id("com.android.application")
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+val projectRootDir = rootProject.projectDir.parentFile
+val localPropertiesFile = rootProject.file("local.properties")
+val localProperties = Properties().apply {
+    if (localPropertiesFile.exists()) {
+        localPropertiesFile.inputStream().use { load(it) }
+    }
+}
+val flutterSdkPath = localProperties.getProperty("flutter.sdk")
+    ?: throw GradleException("flutter.sdk not set in android/local.properties")
+val dartExecutable = File(
+    flutterSdkPath,
+    if (System.getProperty("os.name").lowercase().contains("windows")) {
+        "bin/cache/dart-sdk/bin/dart.exe"
+    } else {
+        "bin/cache/dart-sdk/bin/dart"
+    },
+)
+val flutterVlessPatchScript = File(
+    projectRootDir,
+    "tool/patch_flutter_vless_allowed_apps.dart",
+)
+
+val patchFlutterVlessAllowedApps = tasks.register<Exec>("patchFlutterVlessAllowedApps") {
+    group = "build setup"
+    description = "Patch pinned flutter_vless_android 1.1.5 with native selected-app routing"
+    workingDir(projectRootDir)
+
+    doFirst {
+        if (!dartExecutable.isFile) {
+            throw GradleException("Flutter Dart executable not found: ${dartExecutable.absolutePath}")
+        }
+        if (!flutterVlessPatchScript.isFile) {
+            throw GradleException("flutter_vless patch script missing: ${flutterVlessPatchScript.absolutePath}")
+        }
+    }
+
+    commandLine(
+        dartExecutable.absolutePath,
+        "run",
+        flutterVlessPatchScript.absolutePath,
+    )
+}
+
+// App compilation and the transitive Android plugin compilation must both wait
+// for the pub-cache source patch. This makes plain `flutter build apk` behave
+// exactly like CI instead of relying on a hidden manual pre-build step.
+tasks.configureEach {
+    if (name == "preBuild") {
+        dependsOn(patchFlutterVlessAllowedApps)
+    }
+}
+
+gradle.projectsEvaluated {
+    val flutterVlessProject = rootProject.findProject(":flutter_vless_android")
+        ?: throw GradleException("flutter_vless_android Gradle project was not loaded")
+    flutterVlessProject.tasks.matching { it.name == "preBuild" }.configureEach {
+        dependsOn(patchFlutterVlessAllowedApps)
+    }
 }
 
 android {
