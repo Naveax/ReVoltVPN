@@ -1,0 +1,137 @@
+name: Validate release blockers
+
+on:
+  push:
+    branches:
+      - fix/release-blockers-native
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-blockers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+
+      - name: Generate build config
+        shell: bash
+        run: |
+          cat > lib/logic/app_config.dart <<'DART'
+          abstract final class AppConfig {
+            AppConfig._();
+            static const String serverIp = '204.168.246.88';
+            static const String hivemindApiPublic = 'https://paladinvpn.duckdns.org/api';
+            static const String realityFp = 'chrome';
+            static const String vlessSecurity = 'reality';
+            static const String vlessType = 'xhttp';
+            static const String vlessPath = '/revolt';
+            static const String applicationId = 'com.paladinvpn.app';
+            static const String githubOwner = 'esefxdz';
+            static const String githubRepo = 'ReVoltVPN';
+            static const String githubReleasesUrl = 'https://github.com/$githubOwner/$githubRepo/releases/latest';
+            static const String adUnitId = 'ca-app-pub-5671224884648691/9198987725';
+          }
+          DART
+          cat > android/admob.properties <<'PROPS'
+          ADMOB_APP_ID=ca-app-pub-3940256099942544~3347511713
+          PROPS
+          printf 'flutter.sdk=%s\nsdk.dir=%s\n' "$FLUTTER_ROOT" "$ANDROID_HOME" > android/local.properties
+
+      - name: Generate test signing key
+        shell: bash
+        run: |
+          keytool -genkeypair -keystore android/release-blockers.jks -storepass testpass123 -keypass testpass123 -alias test -keyalg RSA -keysize 2048 -validity 3650 -dname "CN=ReVolt Test,O=ReVolt,C=US"
+          cat > android/key.properties <<'PROPS'
+          storePassword=testpass123
+          keyPassword=testpass123
+          keyAlias=test
+          storeFile=release-blockers.jks
+          PROPS
+
+      - name: Generate Gradle wrapper
+        shell: bash
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.14 --distribution-type all
+          chmod +x gradlew
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Analyze patchers
+        run: |
+          dart analyze tool/patch_flutter_vless_allowed_apps.dart
+          dart analyze tool/patch_flutter_vless_runtime_readiness.dart
+
+      - name: Apply native patches twice
+        run: |
+          dart run tool/patch_flutter_vless_allowed_apps.dart
+          dart run tool/patch_flutter_vless_runtime_readiness.dart
+          dart run tool/patch_flutter_vless_allowed_apps.dart
+          dart run tool/patch_flutter_vless_runtime_readiness.dart
+
+      - name: Verify fail-closed native invariants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, urllib.parse
+          cfg=json.loads(pathlib.Path('.dart_tool/package_config.json').read_text())
+          p=next(x for x in cfg['packages'] if x['name']=='flutter_vless_android')
+          root=pathlib.Path(urllib.parse.urlparse(p['rootUri']).path)
+          if not root.is_absolute(): root=(pathlib.Path('.dart_tool')/root).resolve()
+          k=root/'android/src/main/kotlin/com/github/tfox/flutter_vless'
+          service=(k/'xray/service/XrayVPNService.kt').read_text()
+          core=(k/'xray/core/XrayCoreManager.kt').read_text()
+          plugin=(k/'FlutterVlessPlugin.kt').read_text()
+          assert 'VpnService.Builder.establish returned null' in service
+          assert 'Failed to hand TUN FD to tun2socks' in service
+          assert 'fun markTunnelReady' in core
+          assert 'Stay CONNECTING until XrayVPNService confirms TUN + FD handoff' in core
+          assert 'VPN permission revoked; failing closed' in service
+          assert 'tun2socks exited unexpectedly; stopping VPN' in service
+          assert 'Context.RECEIVER_NOT_EXPORTED' in plugin
+          assert 'Context.RECEIVER_EXPORTED' not in plugin
+          assert '"-loglevel", "warning"' in service
+          print('fail-closed native invariants OK')
+          PY
+
+      - name: Preserve intentional debug ad path
+        shell: bash
+        run: |
+          grep -F 'static const bool adsEnabled = false;' lib/logic/ad_manager.dart
+          grep -F '?signature=test&key_id=test' lib/logic/ad_manager.dart
+          grep -F '/admob/callback?signature=test&key_id=test' lib/logic/hivemind_service.dart
+
+      - name: Flutter analyze
+        run: flutter analyze --no-fatal-warnings
+
+      - name: Unit tests
+        run: flutter test
+
+      - name: Build release APK
+        run: flutter build apk --release --build-name 3.3.6 --build-number 33
+
+      - name: Verify packaged runtime
+        run: |
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep libtun2socks.so
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep libxray.so
