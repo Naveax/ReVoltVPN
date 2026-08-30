@@ -21,6 +21,70 @@ Uri? _trustedHttpsUri(String raw, Set<String> allowedHosts) {
   return uri;
 }
 
+class _ParsedVersion {
+  final List<int> core;
+  final List<String> preRelease;
+
+  const _ParsedVersion(this.core, this.preRelease);
+
+  static _ParsedVersion? tryParse(String input) {
+    var value = input.trim();
+    if (value.startsWith('v') || value.startsWith('V')) {
+      value = value.substring(1);
+    }
+    value = value.split('+').first;
+    final dash = value.indexOf('-');
+    final corePart = dash < 0 ? value : value.substring(0, dash);
+    final prePart = dash < 0 ? '' : value.substring(dash + 1);
+    final rawCore = corePart.split('.');
+    if (rawCore.isEmpty || rawCore.any((p) => int.tryParse(p) == null)) {
+      return null;
+    }
+    final core = rawCore.map(int.parse).toList(growable: false);
+    while (core.length < 3) {
+      core.add(0);
+    }
+    final pre = prePart.isEmpty
+        ? const <String>[]
+        : prePart.split('.').where((e) => e.isNotEmpty).toList(growable: false);
+    return _ParsedVersion(core, pre);
+  }
+
+  int compareTo(_ParsedVersion other) {
+    final length = core.length > other.core.length ? core.length : other.core.length;
+    for (var i = 0; i < length; i++) {
+      final left = i < core.length ? core[i] : 0;
+      final right = i < other.core.length ? other.core[i] : 0;
+      if (left != right) return left.compareTo(right);
+    }
+
+    if (preRelease.isEmpty && other.preRelease.isEmpty) return 0;
+    if (preRelease.isEmpty) return 1;
+    if (other.preRelease.isEmpty) return -1;
+
+    final preLength = preRelease.length > other.preRelease.length
+        ? preRelease.length
+        : other.preRelease.length;
+    for (var i = 0; i < preLength; i++) {
+      if (i >= preRelease.length) return -1;
+      if (i >= other.preRelease.length) return 1;
+      final left = preRelease[i];
+      final right = other.preRelease[i];
+      final leftNum = int.tryParse(left);
+      final rightNum = int.tryParse(right);
+      if (leftNum != null && rightNum != null) {
+        if (leftNum != rightNum) return leftNum.compareTo(rightNum);
+        continue;
+      }
+      if (leftNum != null) return -1;
+      if (rightNum != null) return 1;
+      final lexical = left.compareTo(right);
+      if (lexical != 0) return lexical;
+    }
+    return 0;
+  }
+}
+
 class PlayStoreUpdater {
   PlayStoreUpdater._();
 
@@ -83,7 +147,12 @@ class GitHubUpdater {
         return null;
       }
 
-      return rawTag.startsWith('v') ? rawTag.substring(1) : rawTag;
+      final normalized = rawTag.startsWith('v') ? rawTag.substring(1) : rawTag;
+      if (_ParsedVersion.tryParse(normalized) == null) {
+        debugPrint('[Updater] Release tag is not a supported version: $rawTag');
+        return null;
+      }
+      return normalized;
     } catch (e) {
       debugPrint('[Updater] GitHub API error: $e');
       return null;
@@ -134,14 +203,13 @@ class Updater {
   }
 
   static int _compareVersions(String a, String b) {
-    final aParts = a.split('.').map((p) => int.tryParse(p) ?? 0).toList();
-    final bParts = b.split('.').map((p) => int.tryParse(p) ?? 0).toList();
-    for (int i = 0; i < 3; i++) {
-      final diff = (aParts.length > i ? aParts[i] : 0) -
-          (bParts.length > i ? bParts[i] : 0);
-      if (diff != 0) return diff;
+    final left = _ParsedVersion.tryParse(a);
+    final right = _ParsedVersion.tryParse(b);
+    if (left == null || right == null) {
+      // Invalid local metadata should not invent an ordering.
+      return 0;
     }
-    return 0;
+    return left.compareTo(right);
   }
 
   static String _versionLabel(String v, bool isLocal) {
@@ -164,9 +232,12 @@ class Updater {
   }) async {
     final info = await PackageInfo.fromPlatform();
     final localVersion = info.version;
-    if (localVersion.isEmpty) {
-      _showSnackBar(messenger, 'Could not determine app version',
-          isError: true);
+    if (localVersion.isEmpty || _ParsedVersion.tryParse(localVersion) == null) {
+      _showSnackBar(
+        messenger,
+        'Could not determine app version',
+        isError: true,
+      );
       return;
     }
 
@@ -190,8 +261,10 @@ class Updater {
       context: navigator.context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.bgCard,
-        title: const Text('Update available',
-            style: TextStyle(color: AppColors.textWhite)),
+        title: const Text(
+          'Update available',
+          style: TextStyle(color: AppColors.textWhite),
+        ),
         content: Text(
           '${_versionLabel(latestVersion, false)} is available on $storeName.\n'
           'You have ${_versionLabel(localVersion, true)}.',
@@ -200,8 +273,10 @@ class Updater {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Later',
-                style: TextStyle(color: AppColors.slate70)),
+            child: const Text(
+              'Later',
+              style: TextStyle(color: AppColors.slate70),
+            ),
           ),
           TextButton(
             onPressed: () {
@@ -210,8 +285,10 @@ class Updater {
                   ? PlayStoreUpdater.open()
                   : GitHubUpdater.open();
             },
-            child: Text('Open $storeName',
-                style: const TextStyle(color: AppColors.accent)),
+            child: Text(
+              'Open $storeName',
+              style: const TextStyle(color: AppColors.accent),
+            ),
           ),
         ],
       ),
@@ -228,9 +305,11 @@ class Updater {
       SnackBar(
         content: Row(
           children: [
-            Icon(isError ? Icons.error_outline : Icons.check_circle,
-                color: isError ? AppColors.red : AppColors.green,
-                size: 18),
+            Icon(
+              isError ? Icons.error_outline : Icons.check_circle,
+              color: isError ? AppColors.red : AppColors.green,
+              size: 18,
+            ),
             const SizedBox(width: 8),
             Text(message),
           ],
