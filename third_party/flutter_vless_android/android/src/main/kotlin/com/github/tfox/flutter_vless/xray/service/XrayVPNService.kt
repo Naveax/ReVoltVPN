@@ -17,7 +17,6 @@ import com.github.tfox.flutter_vless.xray.utils.AppConfigs
 import java.io.File
 import java.net.ServerSocket
 import java.security.SecureRandom
-import java.util.ArrayList
 
 class XrayVPNService : VpnService() {
     private val runtimeLock = Any()
@@ -71,9 +70,6 @@ class XrayVPNService : VpnService() {
             }
 
             AppConfigs.V2RAY_SERVICE_COMMANDS.RESTART_SERVICE -> {
-                // After Flutter is recreated, this service object may also be a
-                // fresh instance while the daemon process still owns a private
-                // AppConfigs snapshot. Rehydrate both config and mode locally.
                 val config = currentConfig ?: AppConfigs.V2RAY_CONFIG
                 if (config == null) {
                     terminateService("No active runtime snapshot to restart")
@@ -143,7 +139,6 @@ class XrayVPNService : VpnService() {
             } catch (e: Exception) {
                 Log.e(TAG, "Runtime start failed", e)
                 AppConfigs.LAST_ERROR = e.message ?: "Runtime start failed"
-                // Initial setup failure is not a recoverable snapshot.
                 terminateServiceLocked(AppConfigs.LAST_ERROR, preserveConfig = false)
             }
         }
@@ -151,7 +146,7 @@ class XrayVPNService : VpnService() {
 
     private fun prepareRuntimeIsolation(config: XrayConfig) {
         config.LOCAL_SOCKS5_PORT = findFreePort()
-        config.LOCAL_API_PORT = findFreePort(excluding = config.LOCAL_SOCKS5_PORT)
+        config.LOCAL_API_PORT = 0
         config.LOCAL_HTTP_PORT = 0
         config.LOCAL_SOCKS5_USER = "rv_${randomToken(12)}"
         config.LOCAL_SOCKS5_PASS = randomToken(24)
@@ -164,15 +159,19 @@ class XrayVPNService : VpnService() {
         return Base64.encodeToString(raw, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
     }
 
-    private fun findFreePort(excluding: Int = -1): Int {
+    private fun findFreePort(): Int {
         repeat(8) {
             val port = ServerSocket(0).use { it.localPort }
-            if (port > 1024 && port != excluding) return port
+            if (port > 1024) return port
         }
         throw IllegalStateException("Could not allocate an isolated local port")
     }
 
     private fun setupVpn(config: XrayConfig, generation: Long) {
+        if (config.ALLOWED_APPS.isNotEmpty() && config.BLOCKED_APPS.isNotEmpty()) {
+            throw IllegalStateException("Allowed and blocked app routing cannot be combined")
+        }
+
         val builder = Builder()
         builder.setSession(config.REMARK)
         builder.setMtu(1500)
@@ -180,29 +179,38 @@ class XrayVPNService : VpnService() {
         builder.addAddress("fd00:26:26::1", 64)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
 
-        try {
-            builder.addDisallowedApplication(packageName)
-        } catch (e: Exception) {
-            throw IllegalStateException("Could not exclude ReVolt from its own VPN", e)
-        }
-
-        for (pkg in config.BLOCKED_APPS.distinct()) {
-            if (pkg == packageName) continue
+        if (config.ALLOWED_APPS.isNotEmpty()) {
+            for (pkg in config.ALLOWED_APPS.distinct()) {
+                if (pkg == packageName) {
+                    throw IllegalStateException("ReVolt cannot route itself through its own VPN")
+                }
+                try {
+                    builder.addAllowedApplication(pkg)
+                } catch (e: Exception) {
+                    throw IllegalStateException("Could not allow selected package $pkg", e)
+                }
+            }
+        } else {
             try {
-                builder.addDisallowedApplication(pkg)
+                builder.addDisallowedApplication(packageName)
             } catch (e: Exception) {
-                Log.w(TAG, "Could not bypass package $pkg", e)
+                throw IllegalStateException("Could not exclude ReVolt from its own VPN", e)
+            }
+
+            for (pkg in config.BLOCKED_APPS.distinct()) {
+                if (pkg == packageName) continue
+                try {
+                    builder.addDisallowedApplication(pkg)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not bypass package $pkg", e)
+                }
             }
         }
 
-        val serverIp = config.CONNECTED_V2RAY_SERVER_ADDRESS
-        if (!serverIp.isIpv4Literal()) {
-            throw IllegalStateException("VPN server address must be an IPv4 literal to avoid a routing loop")
-        }
-        for (route in excludeIp(serverIp)) {
-            val parts = route.split("/")
-            builder.addRoute(parts[0], parts[1].toInt())
-        }
+        // The VPN app itself is never routed into this TUN, so Xray's own
+        // server socket cannot loop back. Capture the complete IPv4/IPv6 space
+        // instead of punching a destination-IP hole in the user data path.
+        builder.addRoute("0.0.0.0", 0)
         builder.addRoute("::", 0)
         builder.addDnsServer("1.1.1.1")
         builder.addDnsServer("8.8.8.8")
@@ -253,7 +261,7 @@ class XrayVPNService : VpnService() {
         Thread {
             try {
                 process.inputStream.bufferedReader().use { reader ->
-                    reader.forEachLine { /* release output deliberately discarded */ }
+                    reader.forEachLine { }
                 }
                 val code = process.waitFor()
                 if (generation == currentGeneration && runtimeExpected && !stopping) {
@@ -428,44 +436,6 @@ class XrayVPNService : VpnService() {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start foreground service", e)
             false
-        }
-    }
-
-    private fun excludeIp(ip: String): List<String> {
-        val parts = ip.split(".").map { it.toInt() }
-        val target = (parts[0].toLong() shl 24) +
-            (parts[1].toLong() shl 16) +
-            (parts[2].toLong() shl 8) +
-            parts[3].toLong()
-        val routes = ArrayList<String>()
-        fun addRoutesExcluding(current: Long, prefix: Int) {
-            if (prefix >= 32) return
-            val nextPrefix = prefix + 1
-            val half = 1L shl (32 - nextPrefix)
-            val left = current
-            val right = current + half
-            if (target >= left && target < left + half) {
-                routes.add(longToIp(right) + "/$nextPrefix")
-                addRoutesExcluding(left, nextPrefix)
-            } else {
-                routes.add(longToIp(left) + "/$nextPrefix")
-                addRoutesExcluding(right, nextPrefix)
-            }
-        }
-        addRoutesExcluding(0L, 0)
-        return routes
-    }
-
-    private fun longToIp(ip: Long): String =
-        "${(ip shr 24) and 0xFF}.${(ip shr 16) and 0xFF}.${(ip shr 8) and 0xFF}.${ip and 0xFF}"
-
-    private fun String.isIpv4Literal(): Boolean {
-        val parts = split(".")
-        if (parts.size != 4) return false
-        return parts.all {
-            it.isNotEmpty() &&
-                it.all(Char::isDigit) &&
-                (it.toIntOrNull() ?: -1) in 0..255
         }
     }
 
