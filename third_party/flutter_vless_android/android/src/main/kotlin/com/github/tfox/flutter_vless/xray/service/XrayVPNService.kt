@@ -48,7 +48,10 @@ class XrayVPNService : VpnService() {
             return START_NOT_STICKY
         }
 
-        startForegroundSafely("Starting secure tunnel…")
+        if (!startForegroundSafely("Starting secure tunnel…")) {
+            failBeforeRuntime("Could not start foreground VPN service")
+            return START_NOT_STICKY
+        }
 
         when (command) {
             AppConfigs.V2RAY_SERVICE_COMMANDS.START_SERVICE -> {
@@ -68,15 +71,17 @@ class XrayVPNService : VpnService() {
             }
 
             AppConfigs.V2RAY_SERVICE_COMMANDS.RESTART_SERVICE -> {
-                // After the Flutter process is recreated, this service instance
-                // may be new while the daemon process still owns the last private
-                // config snapshot. Never expose the snapshot outside this process.
+                // After Flutter is recreated, this service object may also be a
+                // fresh instance while the daemon process still owns a private
+                // AppConfigs snapshot. Rehydrate both config and mode locally.
                 val config = currentConfig ?: AppConfigs.V2RAY_CONFIG
                 if (config == null) {
                     terminateService("No active runtime snapshot to restart")
                     return START_NOT_STICKY
                 }
                 currentConfig = config
+                currentProxyOnly =
+                    AppConfigs.V2RAY_CONNECTION_MODE == AppConfigs.V2RAY_CONNECTION_MODES.PROXY_ONLY
                 Thread { startRuntime(config, currentProxyOnly) }.start()
             }
 
@@ -86,6 +91,13 @@ class XrayVPNService : VpnService() {
             }
         }
         return START_STICKY
+    }
+
+    private fun failBeforeRuntime(reason: String) {
+        AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
+        AppConfigs.resetReadiness(reason)
+        XrayCoreManager.sendStateBroadcast(this)
+        stopSelf()
     }
 
     private fun startRuntime(config: XrayConfig, proxyOnly: Boolean) {
@@ -225,7 +237,8 @@ class XrayVPNService : VpnService() {
         if (socketFile.exists() && !socketFile.delete()) {
             throw IllegalStateException("Could not remove stale tun2socks socket")
         }
-        val proxy = "socks5://${config.LOCAL_SOCKS5_USER}:${config.LOCAL_SOCKS5_PASS}@127.0.0.1:${config.LOCAL_SOCKS5_PORT}"
+        val proxy =
+            "socks5://${config.LOCAL_SOCKS5_USER}:${config.LOCAL_SOCKS5_PASS}@127.0.0.1:${config.LOCAL_SOCKS5_PORT}"
         val process = ProcessBuilder(
             arrayListOf(
                 executable,
@@ -268,7 +281,10 @@ class XrayVPNService : VpnService() {
         val fd = pfd.fileDescriptor
         val sockPath = File(filesDir, "sock_path").absolutePath
         for (attempt in 1..12) {
-            if (generation != currentGeneration || stopping || tun2socksProcess?.isAlive != true) return false
+            if (generation != currentGeneration ||
+                stopping ||
+                tun2socksProcess?.isAlive != true
+            ) return false
             var socket: LocalSocket? = null
             try {
                 Thread.sleep(if (attempt == 1) 120L else 250L)
@@ -281,7 +297,9 @@ class XrayVPNService : VpnService() {
                 socket.shutdownOutput()
                 socket.close()
                 Thread.sleep(250)
-                return generation == currentGeneration && !stopping && tun2socksProcess?.isAlive == true
+                return generation == currentGeneration &&
+                    !stopping &&
+                    tun2socksProcess?.isAlive == true
             } catch (_: Exception) {
                 try { socket?.close() } catch (_: Exception) {}
             }
@@ -378,10 +396,14 @@ class XrayVPNService : VpnService() {
         super.onDestroy()
     }
 
-    private fun startForegroundSafely(text: String) {
+    private fun startForegroundSafely(text: String): Boolean {
         val channelId = "vpn_service_channel"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(channelId, "VPN Service", NotificationManager.IMPORTANCE_LOW)
+            val channel = NotificationChannel(
+                channelId,
+                "VPN Service",
+                NotificationManager.IMPORTANCE_LOW,
+            )
             channel.lockscreenVisibility = Notification.VISIBILITY_PRIVATE
             getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
         }
@@ -396,21 +418,25 @@ class XrayVPNService : VpnService() {
             .setOngoing(true)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .build()
-        try {
+        return try {
             if (Build.VERSION.SDK_INT >= 34) {
                 startForeground(1, notification, FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
             } else {
                 startForeground(1, notification)
             }
+            true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start foreground service", e)
+            false
         }
     }
 
     private fun excludeIp(ip: String): List<String> {
         val parts = ip.split(".").map { it.toInt() }
-        val target = (parts[0].toLong() shl 24) + (parts[1].toLong() shl 16) +
-            (parts[2].toLong() shl 8) + parts[3].toLong()
+        val target = (parts[0].toLong() shl 24) +
+            (parts[1].toLong() shl 16) +
+            (parts[2].toLong() shl 8) +
+            parts[3].toLong()
         val routes = ArrayList<String>()
         fun addRoutesExcluding(current: Long, prefix: Int) {
             if (prefix >= 32) return
@@ -436,7 +462,11 @@ class XrayVPNService : VpnService() {
     private fun String.isIpv4Literal(): Boolean {
         val parts = split(".")
         if (parts.size != 4) return false
-        return parts.all { it.isNotEmpty() && it.all(Char::isDigit) && (it.toIntOrNull() ?: -1) in 0..255 }
+        return parts.all {
+            it.isNotEmpty() &&
+                it.all(Char::isDigit) &&
+                (it.toIntOrNull() ?: -1) in 0..255
+        }
     }
 
     companion object {
