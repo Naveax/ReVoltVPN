@@ -647,7 +647,7 @@ class VpnConnection extends ChangeNotifier {
             if (!await _waitForNativeConnected()) {
               throw StateError('VPN runtime did not recover');
             }
-            if (_lastVerifyLocalSocks && !await _waitForLocalSocks()) {
+            if (_lastVerifyLocalSocks && !(await _waitForLocalSocks())) {
               throw StateError('Local SOCKS5 gateway did not recover');
             }
           }
@@ -740,7 +740,7 @@ class VpnConnection extends ChangeNotifier {
 
     await _clearAndroidAllowlist();
 
-    if (timOut) {
+    if (timedOut) {
       debugPrint('[VPN] stopVless() timed out after 5 s.');
       _errorMessage = 'VPN did not shut down cleanly.\nPlease restart the app.';
       _clearRuntimeSnapshot();
