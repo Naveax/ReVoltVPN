@@ -21,6 +21,71 @@ Uri? _trustedHttpsUri(String raw, Set<String> allowedHosts) {
   return uri;
 }
 
+final class _SemVer implements Comparable<_SemVer> {
+  final int major;
+  final int minor;
+  final int patch;
+  final List<String> prerelease;
+
+  const _SemVer(this.major, this.minor, this.patch, this.prerelease);
+
+  static _SemVer? parse(String input) {
+    final value = input.trim().replaceFirst(RegExp(r'^v'), '');
+    final withoutBuild = value.split('+').first;
+    final pieces = withoutBuild.split('-');
+    final core = pieces.first.split('.');
+    if (core.length != 3) return null;
+    final major = int.tryParse(core[0]);
+    final minor = int.tryParse(core[1]);
+    final patch = int.tryParse(core[2]);
+    if (major == null || minor == null || patch == null) return null;
+    final prerelease = pieces.length > 1
+        ? pieces.skip(1).join('-').split('.').where((e) => e.isNotEmpty).toList()
+        : const <String>[];
+    return _SemVer(major, minor, patch, prerelease);
+  }
+
+  @override
+  int compareTo(_SemVer other) {
+    for (final pair in <(int, int)>[
+      (major, other.major),
+      (minor, other.minor),
+      (patch, other.patch),
+    ]) {
+      final diff = pair.$1.compareTo(pair.$2);
+      if (diff != 0) return diff;
+    }
+
+    if (prerelease.isEmpty && other.prerelease.isEmpty) return 0;
+    if (prerelease.isEmpty) return 1;
+    if (other.prerelease.isEmpty) return -1;
+
+    final max = prerelease.length > other.prerelease.length
+        ? prerelease.length
+        : other.prerelease.length;
+    for (var i = 0; i < max; i++) {
+      if (i >= prerelease.length) return -1;
+      if (i >= other.prerelease.length) return 1;
+      final a = prerelease[i];
+      final b = other.prerelease[i];
+      final ai = int.tryParse(a);
+      final bi = int.tryParse(b);
+      if (ai != null && bi != null) {
+        final diff = ai.compareTo(bi);
+        if (diff != 0) return diff;
+      } else if (ai != null) {
+        return -1;
+      } else if (bi != null) {
+        return 1;
+      } else {
+        final diff = a.compareTo(b);
+        if (diff != 0) return diff;
+      }
+    }
+    return 0;
+  }
+}
+
 class PlayStoreUpdater {
   PlayStoreUpdater._();
 
@@ -83,7 +148,12 @@ class GitHubUpdater {
         return null;
       }
 
-      return rawTag.startsWith('v') ? rawTag.substring(1) : rawTag;
+      final normalized = rawTag.startsWith('v') ? rawTag.substring(1) : rawTag;
+      if (_SemVer.parse(normalized) == null) {
+        debugPrint('[Updater] Unsupported semantic version: $rawTag');
+        return null;
+      }
+      return normalized;
     } catch (e) {
       debugPrint('[Updater] GitHub API error: $e');
       return null;
@@ -133,15 +203,11 @@ class Updater {
     return _cachedSource!;
   }
 
-  static int _compareVersions(String a, String b) {
-    final aParts = a.split('.').map((p) => int.tryParse(p) ?? 0).toList();
-    final bParts = b.split('.').map((p) => int.tryParse(p) ?? 0).toList();
-    for (int i = 0; i < 3; i++) {
-      final diff = (aParts.length > i ? aParts[i] : 0) -
-          (bParts.length > i ? bParts[i] : 0);
-      if (diff != 0) return diff;
-    }
-    return 0;
+  static int? _compareVersions(String a, String b) {
+    final av = _SemVer.parse(a);
+    final bv = _SemVer.parse(b);
+    if (av == null || bv == null) return null;
+    return av.compareTo(bv);
   }
 
   static String _versionLabel(String v, bool isLocal) {
@@ -176,7 +242,12 @@ class Updater {
       return;
     }
 
-    if (_compareVersions(localVersion, latestVersion) >= 0) {
+    final comparison = _compareVersions(localVersion, latestVersion);
+    if (comparison == null) {
+      _showSnackBar(messenger, 'Could not compare app versions', isError: true);
+      return;
+    }
+    if (comparison >= 0) {
       _showSnackBar(messenger, 'Up to date');
       return;
     }
