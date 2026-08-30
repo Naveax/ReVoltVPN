@@ -71,9 +71,6 @@ class XrayVPNService : VpnService() {
             }
 
             AppConfigs.V2RAY_SERVICE_COMMANDS.RESTART_SERVICE -> {
-                // After Flutter is recreated, this service object may also be a
-                // fresh instance while the daemon process still owns a private
-                // AppConfigs snapshot. Rehydrate both config and mode locally.
                 val config = currentConfig ?: AppConfigs.V2RAY_CONFIG
                 if (config == null) {
                     terminateService("No active runtime snapshot to restart")
@@ -120,14 +117,21 @@ class XrayVPNService : VpnService() {
 
             try {
                 if (!XrayCoreManager.startCore(this, config, generation)) {
-                    throw IllegalStateException(AppConfigs.LAST_ERROR.ifEmpty { "Xray failed to start" })
+                    throw IllegalStateException(
+                        AppConfigs.LAST_ERROR.ifEmpty { "Xray failed to start" },
+                    )
                 }
 
+                // Process-alive is not listener-ready. Confirm the authenticated
+                // local proxy before starting tun2socks, otherwise a fast device
+                // can race Xray's listener creation and tear the VPN down.
+                if (!waitForSocks(config, generation, attempts = 40)) {
+                    throw IllegalStateException("Authenticated Local SOCKS5 did not become ready")
+                }
+                AppConfigs.SOCKS_READY = true
+                XrayCoreManager.sendStateBroadcast(this)
+
                 if (proxyOnly) {
-                    if (!waitForSocks(config, generation)) {
-                        throw IllegalStateException("Local SOCKS5 did not become ready")
-                    }
-                    AppConfigs.SOCKS_READY = true
                     runtimeExpected = true
                     if (!XrayCoreManager.markProxyOnlyConnected(this, config, generation)) {
                         throw IllegalStateException("Proxy-only readiness state was incomplete")
@@ -143,7 +147,6 @@ class XrayVPNService : VpnService() {
             } catch (e: Exception) {
                 Log.e(TAG, "Runtime start failed", e)
                 AppConfigs.LAST_ERROR = e.message ?: "Runtime start failed"
-                // Initial setup failure is not a recoverable snapshot.
                 terminateServiceLocked(AppConfigs.LAST_ERROR, preserveConfig = false)
             }
         }
@@ -161,7 +164,10 @@ class XrayVPNService : VpnService() {
     private fun randomToken(bytes: Int): String {
         val raw = ByteArray(bytes)
         random.nextBytes(raw)
-        return Base64.encodeToString(raw, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+        return Base64.encodeToString(
+            raw,
+            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING,
+        )
     }
 
     private fun findFreePort(excluding: Int = -1): Int {
@@ -177,7 +183,6 @@ class XrayVPNService : VpnService() {
         builder.setSession(config.REMARK)
         builder.setMtu(1500)
         builder.addAddress("26.26.26.1", 30)
-        builder.addAddress("fd00:26:26::1", 64)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
 
         try {
@@ -203,9 +208,8 @@ class XrayVPNService : VpnService() {
             val parts = route.split("/")
             builder.addRoute(parts[0], parts[1].toInt())
         }
-        builder.addRoute("::", 0)
-        builder.addDnsServer("1.1.1.1")
         builder.addDnsServer("8.8.8.8")
+        builder.addDnsServer("1.1.1.1")
 
         val established = builder.establish()
             ?: throw IllegalStateException("Android refused to establish the VPN interface")
@@ -223,16 +227,13 @@ class XrayVPNService : VpnService() {
         }
         AppConfigs.FD_DELIVERED = true
         XrayCoreManager.sendStateBroadcast(this)
-
-        if (!waitForSocks(config, generation)) {
-            throw IllegalStateException("Authenticated SOCKS5 ingress did not become ready")
-        }
-        AppConfigs.SOCKS_READY = true
-        XrayCoreManager.sendStateBroadcast(this)
     }
 
     private fun startTun2socks(config: XrayConfig, generation: Long) {
-        val executable = File(applicationInfo.nativeLibraryDir, "libtun2socks.so").absolutePath
+        val executable = File(
+            applicationInfo.nativeLibraryDir,
+            "libtun2socks.so",
+        ).absolutePath
         val socketFile = File(filesDir, "sock_path")
         if (socketFile.exists() && !socketFile.delete()) {
             throw IllegalStateException("Could not remove stale tun2socks socket")
@@ -245,21 +246,21 @@ class XrayVPNService : VpnService() {
                 "-sock-path", socketFile.absolutePath,
                 "-proxy", proxy,
                 "-mtu", "1500",
-                "-loglevel", "warning"
-            )
+                "-loglevel", "warning",
+            ),
         ).redirectErrorStream(true).directory(filesDir).start()
         tun2socksProcess = process
 
         Thread {
             try {
                 process.inputStream.bufferedReader().use { reader ->
-                    reader.forEachLine { /* release output deliberately discarded */ }
+                    reader.forEachLine { /* production output intentionally discarded */ }
                 }
                 val code = process.waitFor()
                 if (generation == currentGeneration && runtimeExpected && !stopping) {
                     Log.e(TAG, "tun2socks exited unexpectedly with code $code")
                     terminateService(
-                        "tun2socks exited unexpectedly",
+                        "tun2socks exited unexpectedly (code $code)",
                         preserveConfig = true,
                     )
                 }
@@ -267,10 +268,7 @@ class XrayVPNService : VpnService() {
             } catch (e: Exception) {
                 if (generation == currentGeneration && runtimeExpected && !stopping) {
                     Log.e(TAG, "tun2socks monitor failed", e)
-                    terminateService(
-                        "tun2socks monitor failed",
-                        preserveConfig = true,
-                    )
+                    terminateService("tun2socks monitor failed", preserveConfig = true)
                 }
             }
         }.start()
@@ -280,23 +278,30 @@ class XrayVPNService : VpnService() {
         val pfd = mInterface ?: return false
         val fd = pfd.fileDescriptor
         val sockPath = File(filesDir, "sock_path").absolutePath
-        for (attempt in 1..12) {
+        for (attempt in 1..10) {
             if (generation != currentGeneration ||
                 stopping ||
                 tun2socksProcess?.isAlive != true
             ) return false
             var socket: LocalSocket? = null
             try {
-                Thread.sleep(if (attempt == 1) 120L else 250L)
+                // Match the known-good upstream timing. The Unix listener is
+                // created asynchronously by tun2socks after process launch.
+                Thread.sleep(500L)
                 socket = LocalSocket()
-                socket.connect(LocalSocketAddress(sockPath, LocalSocketAddress.Namespace.FILESYSTEM))
+                socket.connect(
+                    LocalSocketAddress(
+                        sockPath,
+                        LocalSocketAddress.Namespace.FILESYSTEM,
+                    ),
+                )
                 socket.setFileDescriptorsForSend(arrayOf(fd))
                 socket.outputStream.write(32)
                 socket.outputStream.flush()
                 socket.setFileDescriptorsForSend(null)
                 socket.shutdownOutput()
                 socket.close()
-                Thread.sleep(250)
+                Thread.sleep(150L)
                 return generation == currentGeneration &&
                     !stopping &&
                     tun2socksProcess?.isAlive == true
@@ -307,27 +312,32 @@ class XrayVPNService : VpnService() {
         return false
     }
 
-    private fun waitForSocks(config: XrayConfig, generation: Long): Boolean {
-        repeat(20) {
-            if (generation != currentGeneration || stopping || !XrayCoreManager.isXrayRunning()) return false
-            if (XrayCoreManager.probeSocks(
+    private fun waitForSocks(
+        config: XrayConfig,
+        generation: Long,
+        attempts: Int,
+    ): Boolean {
+        repeat(attempts) {
+            if (generation != currentGeneration ||
+                stopping ||
+                !XrayCoreManager.isXrayRunning()
+            ) return false
+            if (
+                XrayCoreManager.probeSocks(
                     config.LOCAL_SOCKS5_PORT,
                     config.LOCAL_SOCKS5_USER,
                     config.LOCAL_SOCKS5_PASS,
-                    timeoutMs = 500
+                    timeoutMs = 500,
                 )
             ) return true
-            Thread.sleep(100)
+            Thread.sleep(100L)
         }
         return false
     }
 
     fun handleXrayCoreExit(generation: Long) {
         if (generation != currentGeneration || stopping) return
-        terminateService(
-            "Xray core exited unexpectedly",
-            preserveConfig = true,
-        )
+        terminateService("Xray core exited unexpectedly", preserveConfig = true)
     }
 
     private fun shutdownRuntimeInternal(broadcast: Boolean, keepConfig: Boolean) {
@@ -335,8 +345,11 @@ class XrayVPNService : VpnService() {
         try {
             val process = tun2socksProcess
             process?.destroy()
-            if (process != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && process.isAlive) {
-                Thread.sleep(100)
+            if (process != null &&
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                process.isAlive
+            ) {
+                Thread.sleep(100L)
                 if (process.isAlive) process.destroyForcibly()
             }
         } catch (_: Exception) {}
@@ -363,18 +376,12 @@ class XrayVPNService : VpnService() {
         }
     }
 
-    private fun terminateServiceLocked(
-        reason: String,
-        preserveConfig: Boolean,
-    ) {
+    private fun terminateServiceLocked(reason: String, preserveConfig: Boolean) {
         if (stopping) return
         stopping = true
         AppConfigs.LAST_ERROR = if (reason == "Stop requested") "" else reason
         currentGeneration++
-        shutdownRuntimeInternal(
-            broadcast = true,
-            keepConfig = preserveConfig,
-        )
+        shutdownRuntimeInternal(broadcast = true, keepConfig = preserveConfig)
         try { stopForeground(true) } catch (_: Exception) {}
         stopSelf()
     }
@@ -405,7 +412,8 @@ class XrayVPNService : VpnService() {
                 NotificationManager.IMPORTANCE_LOW,
             )
             channel.lockscreenVisibility = Notification.VISIBILITY_PRIVATE
-            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
+            getSystemService(NotificationManager::class.java)
+                ?.createNotificationChannel(channel)
         }
         val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, channelId)
