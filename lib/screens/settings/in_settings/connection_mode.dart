@@ -15,8 +15,6 @@ class ConnectionModeTile extends StatefulWidget {
 }
 
 class _ConnectionModeTileState extends State<ConnectionModeTile> {
-  static const String localSocksAddress = '127.0.0.1:10807';
-
   ConnectionMode _mode = ConnectionSettings.mode;
   bool _testingLocalSocks = false;
   LocalSocksTestResult? _lastSocksTest;
@@ -75,7 +73,7 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
     if (_testingLocalSocks) return;
     setState(() => _testingLocalSocks = true);
 
-    final result = await LocalSocksTester.test();
+    final result = await vpn.testLocalSocks();
     if (!mounted) return;
 
     setState(() {
@@ -94,14 +92,15 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
       case ConnectionMode.auto:
         return 'Auto: All/Exclude uses the stable TUN path. Selected only uses compatibility per-app routing.';
       case ConnectionMode.tun:
-        return 'TUN: Android VPN routing. Selected only keeps Android network helpers available for app compatibility.';
+        return 'TUN: Android VPN routing. Native TUN and tun2socks readiness are verified before Secured is shown.';
       case ConnectionMode.proxy:
-        return 'SOCKS5: transparent gateway. Normal apps are routed automatically while $localSocksAddress stays available.';
+        return 'SOCKS5: transparent gateway. The local SOCKS listener uses a rotating session port and session credentials.';
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final vpn = context.watch<VpnConnection>();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -137,11 +136,13 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
           ),
         ),
         if (_mode == ConnectionMode.proxy)
-          const Padding(
-            padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
             child: Text(
-              'Transparent routing + SOCKS5: 127.0.0.1:10807 · HTTP: 127.0.0.1:10808',
-              style: TextStyle(color: AppColors.textMuted, fontSize: 12),
+              vpn.status == VpnStatus.connected && vpn.localSocksPort != null
+                  ? 'Transparent routing · isolated Local SOCKS5 session active'
+                  : 'Transparent routing · Local SOCKS5 is isolated per connection',
+              style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
             ),
           ),
         Padding(
