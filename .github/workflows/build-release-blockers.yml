@@ -80,6 +80,7 @@ jobs:
           dart analyze tool/patch_flutter_vless_allowed_apps.dart
           dart analyze tool/patch_flutter_vless_runtime_readiness.dart
           dart analyze tool/patch_flutter_vless_surface_hardening.dart
+          dart analyze tool/patch_flutter_vless_stop_ack.dart
 
       - name: Apply native patches twice
         run: |
@@ -87,6 +88,7 @@ jobs:
             dart run tool/patch_flutter_vless_allowed_apps.dart
             dart run tool/patch_flutter_vless_runtime_readiness.dart
             dart run tool/patch_flutter_vless_surface_hardening.dart
+            dart run tool/patch_flutter_vless_stop_ack.dart
           done
 
       - name: Verify fail-closed native invariants
@@ -102,6 +104,7 @@ jobs:
           service=(k/'xray/service/XrayVPNService.kt').read_text()
           core=(k/'xray/core/XrayCoreManager.kt').read_text()
           plugin=(k/'FlutterVlessPlugin.kt').read_text()
+          config=(k/'xray/dto/XrayConfig.kt').read_text()
           assert 'VpnService.Builder.establish returned null' in service
           assert 'Failed to hand TUN FD to tun2socks' in service
           assert 'fun markTunnelReady' in core
@@ -112,8 +115,13 @@ jobs:
           assert 'Context.RECEIVER_EXPORTED' not in plugin
           assert '"-loglevel", "warning"' in service
           assert 'ReVolt does not expose an HTTP proxy inbound.' in core
-          assert 'Local SOCKS5 port collision on' in core
-          assert 'private var tunnelReadySeen = false' in plugin
+          assert 'Missing session SOCKS credentials' in core
+          assert 'put("auth", "password")' in core
+          assert 'var LOCAL_SOCKS_USERNAME:' in config
+          assert 'getLocalProxyInfo' in plugin
+          assert 'config.LOCAL_API_PORT = 40000 + secureRandom.nextInt(10000)' in plugin
+          assert '"STOP_IN_PROGRESS"' in plugin
+          assert 'pendingStopResult?.success(null)' in plugin
           assert 'This app process must first observe a post-TUN CONNECTED broadcast.' in plugin
           print('fail-closed native invariants OK')
           PY
