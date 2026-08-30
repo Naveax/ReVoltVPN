@@ -1,0 +1,148 @@
+name: VPN startup diagnostic APK
+
+on:
+  push:
+    branches:
+      - diag/startup-shutdown-reason
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vpn-startup-diagnostic-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Set up Gradle 8.14
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+          cache-read-only: true
+
+      - name: Generate local build configuration
+        shell: bash
+        run: |
+          cat > lib/logic/app_config.dart <<'DART'
+          abstract final class AppConfig {
+            AppConfig._();
+            static const String serverIp = '204.168.246.88';
+            static const String hivemindApiPublic = 'https://paladinvpn.duckdns.org/api';
+            static const String realityFp = 'chrome';
+            static const String vlessSecurity = 'reality';
+            static const String vlessType = 'xhttp';
+            static const String vlessPath = '/revolt';
+            static const String applicationId = 'com.paladinvpn.app';
+            static const String githubOwner = 'esefxdz';
+            static const String githubRepo = 'ReVoltVPN';
+            static const String githubReleasesUrl =
+                'https://github.com/$githubOwner/$githubRepo/releases/latest';
+            static const String adUnitId =
+                'ca-app-pub-5671224884648691/9198987725';
+          }
+          DART
+
+          cat > android/admob.properties <<'PROPS'
+          ADMOB_APP_ID=ca-app-pub-3940256099942544~3347511713
+          PROPS
+
+          {
+            printf 'flutter.sdk=%s\n' "$FLUTTER_ROOT"
+            printf 'sdk.dir=%s\n' "$ANDROID_HOME"
+          } > android/local.properties
+
+      - name: Generate temporary test release key
+        shell: bash
+        run: |
+          keytool -genkeypair \
+            -keystore android/revolt-diagnostic.jks \
+            -storepass revoltdiagnostic \
+            -keypass revoltdiagnostic \
+            -alias revolt-diagnostic \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650 \
+            -dname "CN=ReVoltVPN Diagnostic,O=ReVoltVPN,C=US"
+
+          cat > android/key.properties <<'PROPS'
+          storePassword=revoltdiagnostic
+          keyPassword=revoltdiagnostic
+          keyAlias=revolt-diagnostic
+          storeFile=revolt-diagnostic.jks
+          PROPS
+
+      - name: Generate Gradle wrapper
+        shell: bash
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.14 --distribution-type all
+          chmod +x gradlew
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Verify diagnostic instrumentation
+        shell: bash
+        run: |
+          test -f third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/utils/DiagnosticStatusReceiver.kt
+          grep -q 'APP_STOP_DURING_STARTUP' third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/utils/DiagnosticStatusReceiver.kt
+          grep -q 'FD_HANDOFF_FAIL' third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/utils/DiagnosticStatusReceiver.kt
+          grep -q 'SOCKS_READINESS_FAIL' third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/utils/DiagnosticStatusReceiver.kt
+          grep -q 'DiagnosticStatusReceiver' third_party/flutter_vless_android/android/src/main/AndroidManifest.xml
+
+      - name: Flutter analyze
+        run: flutter analyze --no-fatal-warnings
+
+      - name: Unit tests
+        run: flutter test
+
+      - name: Kotlin release compile smoke test
+        shell: bash
+        run: |
+          cd android
+          ./gradlew :app:compileReleaseKotlin --stacktrace
+
+      - name: Build diagnostic release APK
+        run: flutter build apk --release --build-name 3.3.9 --build-number 35
+
+      - name: Verify packaged VPN runtime
+        shell: bash
+        run: |
+          test -s build/app/outputs/flutter-apk/app-release.apk
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libtun2socks.so'
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libxray.so'
+
+      - name: Package APK
+        shell: bash
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk ReVoltVPN-3.3.9-startup-diagnostic.apk
+          sha256sum ReVoltVPN-3.3.9-startup-diagnostic.apk > ReVoltVPN-3.3.9-startup-diagnostic.apk.sha256
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReVoltVPN-3.3.9-startup-diagnostic
+          path: |
+            ReVoltVPN-3.3.9-startup-diagnostic.apk
+            ReVoltVPN-3.3.9-startup-diagnostic.apk.sha256
+          retention-days: 3
+          if-no-files-found: error
