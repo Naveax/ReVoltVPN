@@ -29,11 +29,6 @@ class NativeTunnelState {
     final generation = (map['generation'] as num?)?.toInt() ?? 0;
     final error = map['error']?.toString() ?? '';
     final rawState = map['state']?.toString() ?? 'UNKNOWN';
-
-    // A freshly recreated Flutter process has not received a status broadcast
-    // from the remote VPN process yet. Treat its zero-generation default as
-    // UNKNOWN, not as authoritative DISCONNECTED. This keeps restoration
-    // fail-closed without racing the first native status broadcast.
     final state = rawState == 'DISCONNECTED' && generation == 0 && error.isEmpty
         ? 'UNKNOWN'
         : rawState;
@@ -79,6 +74,17 @@ abstract final class NativeTunnelControl {
       throw StateError('Native VPN state payload is invalid.');
     }
     return NativeTunnelState.fromMap(Map<Object?, Object?>.from(raw));
+  }
+
+  static Future<void> setAllowedApps(List<String> packages) async {
+    final ok = await _channel.invokeMethod<bool>(
+          'setAllowedApps',
+          <String, Object>{'packages': packages},
+        ) ??
+        false;
+    if (!ok) {
+      throw StateError('Native app routing policy was rejected.');
+    }
   }
 
   static Future<bool> waitUntilReady({
