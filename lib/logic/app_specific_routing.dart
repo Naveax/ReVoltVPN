@@ -1,13 +1,18 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+enum NativeRoutingPolicy { all, exclude, selected }
+
 abstract final class AppSpecificRouting {
   AppSpecificRouting._();
 
   static const MethodChannel _channel =
       MethodChannel('com.revoltvpn.app/app_routing');
 
-  static Future<void> start(Iterable<String> packages) async {
+  static Future<void> start({
+    required NativeRoutingPolicy policy,
+    Iterable<String> packages = const <String>[],
+  }) async {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
 
     final values = packages
@@ -17,13 +22,16 @@ abstract final class AppSpecificRouting {
         .toList()
       ..sort();
 
-    if (values.isEmpty) {
+    if (policy == NativeRoutingPolicy.selected && values.isEmpty) {
       throw StateError('Select at least one app.');
     }
 
     await _channel.invokeMethod<void>(
       'start',
-      <String, Object>{'packages': values},
+      <String, Object>{
+        'policy': policy.name,
+        'packages': values,
+      },
     );
   }
 
