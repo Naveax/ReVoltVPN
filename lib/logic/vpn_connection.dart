@@ -6,6 +6,7 @@ import 'package:revoltvpn/logic/connection_settings.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/installed_apps_service.dart';
 import 'package:revoltvpn/logic/local_socks_tester.dart';
+import 'package:revoltvpn/logic/native_tunnel_control.dart';
 import 'package:revoltvpn/logic/network_monitor.dart';
 
 enum VpnStatus {
@@ -72,6 +73,9 @@ class VpnConnection extends ChangeNotifier {
 
   String? _lastRecoveryReason;
   String? get lastRecoveryReason => _lastRecoveryReason;
+
+  NativeTunnelState? _lastNativeState;
+  int? get localSocksPort => _lastNativeState?.socksPort;
 
   String get activeRoutingDescription {
     if (_activeMode == ConnectionMode.proxy) {
@@ -152,8 +156,6 @@ class VpnConnection extends ChangeNotifier {
 
     _networkSubscription = NetworkMonitor.changes.listen(
       (snapshot) {
-        // ConnectivityManager is informational only. Restarting from every
-        // callback caused the old VPN-created-network reconnect loop.
         _networkTransport = snapshot.transport;
         _networkValidated = snapshot.validated;
         notifyListeners();
@@ -171,15 +173,32 @@ class VpnConnection extends ChangeNotifier {
     try {
       final coreVersion = await _vless.getCoreVersion();
       debugPrint('[VPN] Xray core version: $coreVersion');
-
-      final delay = await _vless.getConnectedServerDelay();
-      if (delay > 0) {
-        _lastHealthLatencyMs = delay;
-        _isStartupRestoration = true;
-        _restoreRoutingPresentationFromSettings();
-        _setStatus(VpnStatus.connected, _connectedLabel);
-      }
     } catch (_) {}
+
+    // App-process restoration is fail-closed. A working Xray/SOCKS process is
+    // insufficient; the remote VPN process must attest TUN+FD+SOCKS readiness.
+    await _restoreActiveNativeTunnel();
+  }
+
+  Future<void> _restoreActiveNativeTunnel() async {
+    for (var attempt = 0; attempt < 12; attempt++) {
+      try {
+        final native = await NativeTunnelControl.getState();
+        _lastNativeState = native;
+        if (native.fullyReady) {
+          _isStartupRestoration = true;
+          _restoreRoutingPresentationFromSettings();
+          _errorMessage = null;
+          _setStatus(VpnStatus.connected, _connectedLabel);
+          unawaited(_refreshLocalSocksLatency());
+          return;
+        }
+        if (native.state == 'DISCONNECTED' && attempt >= 2) return;
+      } catch (_) {
+        if (attempt >= 2) return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
   }
 
   void _restoreRoutingPresentationFromSettings() {
@@ -211,7 +230,7 @@ class VpnConnection extends ChangeNotifier {
       case ConnectionMode.proxy:
         return _selectedRoutingActive
             ? 'SOCKS5 · selected apps secured'
-            : 'SOCKS5 gateway active';
+            : 'SOCKS5 gateway secured';
       case ConnectionMode.tun:
         return _selectedRoutingActive ? 'Selected apps secured' : 'Secured';
     }
@@ -220,17 +239,20 @@ class VpnConnection extends ChangeNotifier {
   void _mapStatus(VlessStatus status) {
     switch (status.connectionState) {
       case VlessConnectionState.connected:
-        _setStatus(VpnStatus.connected, _connectedLabel);
+        // Never trust the legacy CONNECTED event by itself. Native code now
+        // emits it only after readiness, but re-querying is deliberate defense
+        // in depth against stale/spurious state.
+        unawaited(_confirmNativeConnectedSignal());
         break;
 
       case VlessConnectionState.disconnected:
-        // Repeated DISCONNECTED broadcasts during an Extreme recovery debounce
-        // must not clear the config snapshot the pending recovery needs.
         if (_restartInProgress || (_restartTimer?.isActive ?? false)) return;
 
+        final hasRecoverySnapshot =
+            _lastBaseConfig != null || _isStartupRestoration;
         final canRecover = !_userDisconnecting &&
             _activeResilienceMode == ResilienceMode.extreme &&
-            _lastBaseConfig != null &&
+            hasRecoverySnapshot &&
             _status == VpnStatus.connected;
         if (canRecover) {
           _scheduleRuntimeRestart('Runtime disconnected');
@@ -242,13 +264,12 @@ class VpnConnection extends ChangeNotifier {
         break;
 
       case VlessConnectionState.connecting:
-        if (!_restartInProgress) {
+        if (!_restartInProgress && _status != VpnStatus.connected) {
           _setStatus(VpnStatus.connecting, 'Establishing tunnel…');
         }
         break;
 
       case VlessConnectionState.disconnecting:
-        _isStartupRestoration = false;
         if (!_restartInProgress) {
           _setStatus(VpnStatus.disconnecting, 'Tearing down…');
         }
@@ -264,6 +285,23 @@ class VpnConnection extends ChangeNotifier {
     }
   }
 
+  Future<void> _confirmNativeConnectedSignal() async {
+    if (_userDisconnecting) return;
+    try {
+      final native = await NativeTunnelControl.getState();
+      _lastNativeState = native;
+      if (!native.fullyReady) return;
+      if (_lastBaseConfig == null && !_restartInProgress) {
+        _isStartupRestoration = true;
+        _restoreRoutingPresentationFromSettings();
+      }
+      _errorMessage = null;
+      _setStatus(VpnStatus.connected, _connectedLabel);
+    } catch (_) {
+      // Fail closed: an unverifiable CONNECTED event never turns the UI green.
+    }
+  }
+
   Future<bool> connect({bool skipAdBypass = false}) async {
     if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
       return false;
@@ -275,6 +313,7 @@ class VpnConnection extends ChangeNotifier {
     _reconnectCount = 0;
     _lastRecoveryReason = null;
     _lastHealthLatencyMs = null;
+    _lastNativeState = null;
     _selectedRoutingActive = false;
 
     await ConnectionSettings.initialize();
@@ -297,7 +336,6 @@ class VpnConnection extends ChangeNotifier {
     }
 
     // Auto, TUN and transparent SOCKS5 all use one Android VpnService/TUN.
-    // SOCKS5 remains available locally at 127.0.0.1:10807 behind that wrapper.
     if (!kIsWeb) {
       final ok = await _vless.requestPermission();
       if (!ok) {
@@ -367,8 +405,6 @@ class VpnConnection extends ChangeNotifier {
       final baseConfig = parsed.getFullConfiguration();
       final remark = parsed.remark.isNotEmpty ? parsed.remark : 'Revolt VPN';
 
-      // Set this before the native callback can report CONNECTED so the first
-      // visible label already reflects Selected only accurately.
       _selectedRoutingActive = routingPlan.selectedOnly;
 
       await _startRuntime(
@@ -377,15 +413,15 @@ class VpnConnection extends ChangeNotifier {
         blockedApps: routingPlan.blockedApps,
       );
 
-      _setStatus(VpnStatus.connecting, 'Waiting for VPN interface…');
+      _setStatus(VpnStatus.connecting, 'Verifying VPN data path…');
       if (!await _waitForNativeConnected()) {
-        throw StateError('VPN runtime did not report CONNECTED');
+        throw StateError('Native TUN/FD/SOCKS readiness was not confirmed');
       }
 
       if (routingPlan.verifyLocalSocks) {
         _setStatus(VpnStatus.connecting, 'Checking Local SOCKS5…');
         if (!await _waitForLocalSocksListener()) {
-          throw StateError('Local SOCKS5 listener did not become ready');
+          throw StateError('Authenticated Local SOCKS5 did not become ready');
         }
       }
 
@@ -397,9 +433,14 @@ class VpnConnection extends ChangeNotifier {
       _lastSelectedOnly = routingPlan.selectedOnly;
       _lastVerifyLocalSocks = routingPlan.verifyLocalSocks;
       _selectedRoutingActive = routingPlan.selectedOnly;
+      _isStartupRestoration = false;
     } catch (e) {
       debugPrint('[VPN] Tunnel start error: $e');
-      await _stopRuntime();
+      try {
+        await _stopRuntime();
+      } catch (stopError) {
+        debugPrint('[VPN] Failed-start cleanup error: $stopError');
+      }
       _clearRuntimeSnapshot();
       _errorMessage = _activeMode == ConnectionMode.proxy
           ? 'SOCKS5 gateway failed to start.\nTry reconnecting.'
@@ -408,6 +449,7 @@ class VpnConnection extends ChangeNotifier {
       return false;
     }
 
+    _errorMessage = null;
     _setStatus(VpnStatus.connected, _connectedLabel);
     return true;
   }
@@ -430,8 +472,6 @@ class VpnConnection extends ChangeNotifier {
         return _tunPlan(routingMode, selected);
 
       case ConnectionMode.proxy:
-        // SOCKS5 is a transparent gateway: Android captures ordinary app
-        // traffic into the same local SOCKS ingress used by Xray/tun2socks.
         if (routingMode == AppRoutingMode.selected) {
           return _selectedCompatibilityPlan(verifyLocalSocks: true);
         }
@@ -479,10 +519,8 @@ class VpnConnection extends ChangeNotifier {
       throw StateError('None of the selected apps are installed.');
     }
 
-    // Compatibility Selected only uses the plugin's proven blocklist path:
-    // every other launchable user app bypasses the VPN, while Android system
-    // helpers (DNS resolver, Play Services, network stack, etc.) remain able to
-    // support selected apps such as Discord.
+    // Compatibility Selected only deliberately keeps Android system/network
+    // helper packages in the VPN. Other launchable user apps are bypassed.
     final blocked = apps
         .map((app) => app.packageName)
         .where((packageName) => !availableSelected.contains(packageName))
@@ -510,39 +548,95 @@ class VpnConnection extends ChangeNotifier {
     );
   }
 
+  Future<bool> _waitForNativeConnected() async {
+    try {
+      final ready = await NativeTunnelControl.waitUntilReady();
+      _lastNativeState = await NativeTunnelControl.getState();
+      return ready && _lastNativeState!.fullyReady;
+    } catch (e) {
+      debugPrint('[VPN] Native readiness check failed: $e');
+      return false;
+    }
+  }
+
   Future<bool> _waitForLocalSocksListener() async {
-    for (var attempt = 0; attempt < 4; attempt++) {
-      final result = await LocalSocksTester.testListener();
+    try {
+      final native = await NativeTunnelControl.getState();
+      _lastNativeState = native;
+      if (!native.fullyReady) return false;
+      final result = await LocalSocksTester.testListener(
+        port: native.socksPort,
+        username: native.socksUser,
+        password: native.socksPass,
+      );
+      if (!result.ok) return false;
+      _lastHealthLatencyMs = result.latencyMs;
+      notifyListeners();
+      return true;
+    } catch (e) {
+      debugPrint('[VPN] Local SOCKS readiness failed: $e');
+      return false;
+    }
+  }
+
+  Future<void> _refreshLocalSocksLatency() async {
+    try {
+      final native = await NativeTunnelControl.getState();
+      _lastNativeState = native;
+      if (!native.fullyReady) return;
+      final result = await LocalSocksTester.testListener(
+        port: native.socksPort,
+        username: native.socksUser,
+        password: native.socksPass,
+      );
       if (result.ok) {
         _lastHealthLatencyMs = result.latencyMs;
         notifyListeners();
-        return true;
       }
-      if (attempt < 3) {
-        await Future.delayed(const Duration(milliseconds: 250));
-      }
-    }
-    return false;
+    } catch (_) {}
   }
 
-  Future<bool> _waitForNativeConnected() async {
-    // startVless() queues the Android foreground service. Wait for the native
-    // service/core broadcast rather than treating MethodChannel completion as
-    // proof that a TUN interface was established.
-    for (var attempt = 0; attempt < 24; attempt++) {
-      if (_status == VpnStatus.connected) return true;
-      if (_status == VpnStatus.error) return false;
-      if (_cancelled || _userDisconnecting) return false;
-      await Future.delayed(const Duration(milliseconds: 250));
+  Future<LocalSocksTestResult> testLocalSocks() async {
+    if (kIsWeb || _status != VpnStatus.connected) {
+      return const LocalSocksTestResult(
+        ok: false,
+        latencyMs: null,
+        message: 'Connect first, then test Local SOCKS5.',
+      );
     }
-    return _status == VpnStatus.connected;
+    try {
+      final native = await NativeTunnelControl.getState();
+      _lastNativeState = native;
+      if (!native.fullyReady) {
+        return const LocalSocksTestResult(
+          ok: false,
+          latencyMs: null,
+          message: 'Native VPN data path is not fully ready.',
+        );
+      }
+      final result = await LocalSocksTester.test(
+        port: native.socksPort,
+        username: native.socksUser,
+        password: native.socksPass,
+      );
+      if (result.ok) _lastHealthLatencyMs = result.latencyMs;
+      notifyListeners();
+      return result;
+    } catch (_) {
+      return const LocalSocksTestResult(
+        ok: false,
+        latencyMs: null,
+        message: 'Could not read the active Local SOCKS5 session.',
+      );
+    }
   }
 
   void _scheduleRuntimeRestart(String reason) {
+    final hasRecoverySnapshot = _lastBaseConfig != null || _isStartupRestoration;
     if (_activeResilienceMode != ResilienceMode.extreme ||
         _restartInProgress ||
         _userDisconnecting ||
-        _lastBaseConfig == null ||
+        !hasRecoverySnapshot ||
         (_restartTimer?.isActive ?? false)) {
       return;
     }
@@ -555,7 +649,10 @@ class VpnConnection extends ChangeNotifier {
   }
 
   Future<void> _restartActiveRuntime(String reason) async {
-    if (_restartInProgress || _userDisconnecting || _lastBaseConfig == null) {
+    final nativeSnapshotRecovery = _lastBaseConfig == null && _isStartupRestoration;
+    if (_restartInProgress ||
+        _userDisconnecting ||
+        (_lastBaseConfig == null && !nativeSnapshotRecovery)) {
       return;
     }
 
@@ -566,7 +663,7 @@ class VpnConnection extends ChangeNotifier {
       for (var attempt = 1;
           attempt <= _maxExtremeRecoveryAttempts;
           attempt++) {
-        if (_userDisconnecting || _lastBaseConfig == null) return;
+        if (_userDisconnecting) return;
 
         try {
           debugPrint(
@@ -574,22 +671,27 @@ class VpnConnection extends ChangeNotifier {
             '$attempt/$_maxExtremeRecoveryAttempts: $reason',
           );
 
-          await _stopRuntime();
-          if (_userDisconnecting) return;
-
-          await Future.delayed(
-            Duration(milliseconds: attempt == 1 ? 600 : 900),
-          );
-          if (_userDisconnecting || _lastBaseConfig == null) return;
-
-          await _startRuntime(
-            config: _lastBaseConfig!,
-            remark: _lastRemark,
-            blockedApps: _lastBlockedApps,
-          );
+          if (nativeSnapshotRecovery) {
+            final restarted = await NativeTunnelControl.restartCurrentRuntime();
+            if (!restarted) {
+              throw StateError('Native runtime snapshot is unavailable');
+            }
+          } else {
+            await _stopRuntime();
+            if (_userDisconnecting) return;
+            await Future<void>.delayed(
+              Duration(milliseconds: attempt == 1 ? 600 : 900),
+            );
+            if (_userDisconnecting || _lastBaseConfig == null) return;
+            await _startRuntime(
+              config: _lastBaseConfig!,
+              remark: _lastRemark,
+              blockedApps: _lastBlockedApps,
+            );
+          }
 
           if (!await _waitForNativeConnected()) {
-            throw StateError('VPN runtime did not recover');
+            throw StateError('VPN runtime did not recover its native data path');
           }
           if (_lastVerifyLocalSocks &&
               !(await _waitForLocalSocksListener())) {
@@ -610,7 +712,14 @@ class VpnConnection extends ChangeNotifier {
             '[VPN] Extreme recovery attempt '
             '$attempt/$_maxExtremeRecoveryAttempts failed: $e',
           );
-          await _stopRuntime();
+
+          if (!nativeSnapshotRecovery) {
+            try {
+              await _stopRuntime();
+            } catch (stopError) {
+              lastError = stopError;
+            }
+          }
           if (_userDisconnecting) return;
 
           if (attempt < _maxExtremeRecoveryAttempts) {
@@ -618,7 +727,7 @@ class VpnConnection extends ChangeNotifier {
               VpnStatus.connecting,
               'Reconnecting… (${attempt + 1}/$_maxExtremeRecoveryAttempts)',
             );
-            await Future.delayed(const Duration(milliseconds: 700));
+            await Future<void>.delayed(const Duration(milliseconds: 700));
           }
         }
       }
@@ -635,9 +744,11 @@ class VpnConnection extends ChangeNotifier {
   }
 
   Future<void> _stopRuntime() async {
-    try {
-      await _vless.stopVless().timeout(const Duration(seconds: 5));
-    } catch (_) {}
+    await _vless.stopVless().timeout(const Duration(seconds: 5));
+    if (!await NativeTunnelControl.waitUntilStopped()) {
+      throw StateError('Native VPN runtime did not stop cleanly');
+    }
+    _lastNativeState = await NativeTunnelControl.getState();
   }
 
   Future<void> disconnect() async {
@@ -663,23 +774,10 @@ class VpnConnection extends ChangeNotifier {
       return;
     }
 
-    bool timedOut = false;
     try {
-      await _vless.stopVless().timeout(
-            const Duration(seconds: 5),
-            onTimeout: () => timedOut = true,
-          );
+      await _stopRuntime();
     } catch (e) {
-      debugPrint('[VPN] VLESS stop error: $e');
-      _errorMessage = 'VPN shutdown error.\nPlease restart the app.';
-      _clearRuntimeSnapshot();
-      _setStatus(VpnStatus.error, 'Shutdown failed');
-      _userDisconnecting = false;
-      return;
-    }
-
-    if (timedOut) {
-      debugPrint('[VPN] stopVless() timed out after 5 s.');
+      debugPrint('[VPN] VLESS stop verification error: $e');
       _errorMessage = 'VPN did not shut down cleanly.\nPlease restart the app.';
       _clearRuntimeSnapshot();
       _setStatus(VpnStatus.error, 'Shutdown failed');
@@ -700,6 +798,7 @@ class VpnConnection extends ChangeNotifier {
     _lastVerifyLocalSocks = false;
     _selectedRoutingActive = false;
     _lastHealthLatencyMs = null;
+    _lastNativeState = null;
     _isStartupRestoration = false;
   }
 
@@ -720,9 +819,7 @@ class VpnConnection extends ChangeNotifier {
     _restartTimer?.cancel();
     _networkSubscription?.cancel();
     if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
-      try {
-        _vless.stopVless();
-      } catch (_) {}
+      unawaited(_vless.stopVless());
     }
     super.dispose();
   }
