@@ -66,9 +66,15 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "start" -> {
+                        val policy = call.argument<String>("policy") ?: "selected"
+                        if (policy !in setOf("all", "exclude", "selected")) {
+                            result.error("BAD_POLICY", "Unknown app routing policy.", null)
+                            return@setMethodCallHandler
+                        }
+
                         val requested = call.argument<List<String>>("packages").orEmpty()
                         val packages = installedPackages(requested)
-                        if (packages.isEmpty()) {
+                        if (policy == "selected" && packages.isEmpty()) {
                             result.error(
                                 "NO_APPS",
                                 "No selected applications are installed.",
@@ -79,6 +85,7 @@ class MainActivity : FlutterActivity() {
 
                         val intent = Intent(this, AppRoutingVpnService::class.java).apply {
                             action = AppRoutingVpnService.ACTION_START
+                            putExtra(AppRoutingVpnService.EXTRA_POLICY, policy)
                             putStringArrayListExtra(
                                 AppRoutingVpnService.EXTRA_PACKAGES,
                                 ArrayList(packages),
@@ -126,37 +133,29 @@ class MainActivity : FlutterActivity() {
         val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                emitNetworkState(manager, network, "available")
+                emitBestPhysicalNetwork(manager, "available")
             }
 
             override fun onLost(network: Network) {
-                emitNetworkState(manager, null, "lost")
+                emitBestPhysicalNetwork(manager, "lost")
             }
 
             override fun onCapabilitiesChanged(
                 network: Network,
                 capabilities: NetworkCapabilities,
             ) {
-                emitNetworkState(manager, network, "changed", capabilities)
+                emitBestPhysicalNetwork(manager, "changed")
             }
         }
 
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                manager.registerDefaultNetworkCallback(callback)
-            } else {
-                val request = NetworkRequest.Builder()
-                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    .build()
-                manager.registerNetworkCallback(request, callback)
-            }
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                .build()
+            manager.registerNetworkCallback(request, callback)
             networkCallback = callback
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                emitNetworkState(manager, manager.activeNetwork, "initial")
-            } else {
-                emitLegacyNetworkState(manager, "initial")
-            }
+            emitBestPhysicalNetwork(manager, "initial")
         } catch (e: Exception) {
             networkEvents?.error("NETWORK_MONITOR", e.message, null)
         }
@@ -172,57 +171,81 @@ class MainActivity : FlutterActivity() {
         networkCallback = null
     }
 
-    private fun emitNetworkState(
+    private fun emitBestPhysicalNetwork(
         manager: ConnectivityManager,
-        network: Network?,
         reason: String,
-        providedCapabilities: NetworkCapabilities? = null,
     ) {
-        val capabilities = providedCapabilities ?: network?.let { manager.getNetworkCapabilities(it) }
-        val transport = when {
-            capabilities == null -> "none"
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "vpn"
-            else -> "other"
-        }
-        val validated = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
-        } else {
-            network != null && capabilities != null
+        val best = manager.allNetworks
+            .mapNotNull { network ->
+                val capabilities = manager.getNetworkCapabilities(network)
+                    ?: return@mapNotNull null
+                if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+                    return@mapNotNull null
+                }
+                if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) ||
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                ) {
+                    return@mapNotNull null
+                }
+                Triple(network, capabilities, physicalNetworkScore(capabilities))
+            }
+            .maxByOrNull { it.third }
+
+        if (best == null) {
+            emitNetworkPayload(
+                mapOf<String, Any>(
+                    "reason" to reason,
+                    "transport" to "none",
+                    "connected" to false,
+                    "validated" to false,
+                    "metered" to false,
+                    "timestamp" to System.currentTimeMillis(),
+                ),
+            )
+            return
         }
 
-        emitNetworkPayload(
-            mapOf<String, Any>(
-                "reason" to reason,
-                "transport" to transport,
-                "connected" to (network != null && capabilities != null),
-                "validated" to validated,
-                "metered" to manager.isActiveNetworkMetered,
-                "timestamp" to System.currentTimeMillis(),
-            ),
-        )
+        emitNetworkState(best.first, best.second, reason)
     }
 
-    @Suppress("DEPRECATION")
-    private fun emitLegacyNetworkState(manager: ConnectivityManager, reason: String) {
-        val info = manager.activeNetworkInfo
-        val connected = info?.isConnected == true
-        val transport = when (info?.type) {
-            ConnectivityManager.TYPE_WIFI -> "wifi"
-            ConnectivityManager.TYPE_MOBILE -> "cellular"
-            ConnectivityManager.TYPE_ETHERNET -> "ethernet"
-            else -> if (connected) "other" else "none"
+    private fun physicalNetworkScore(capabilities: NetworkCapabilities): Int {
+        var score = 0
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        ) {
+            score += 100
         }
+        score += when {
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> 40
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> 30
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> 20
+            else -> 10
+        }
+        return score
+    }
+
+    private fun emitNetworkState(
+        network: Network,
+        capabilities: NetworkCapabilities,
+        reason: String,
+    ) {
+        val transport = when {
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+            else -> "other"
+        }
+        val validated = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        val metered = !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
 
         emitNetworkPayload(
             mapOf<String, Any>(
                 "reason" to reason,
                 "transport" to transport,
-                "connected" to connected,
-                "validated" to connected,
-                "metered" to manager.isActiveNetworkMetered,
+                "connected" to true,
+                "validated" to validated,
+                "metered" to metered,
                 "timestamp" to System.currentTimeMillis(),
             ),
         )
