@@ -5,7 +5,7 @@ Versions follow [semver](https://semver.org/): MAJOR.MINOR.PATCH
 
 ---
 
-## [3.3.0] — Unreleased
+## [3.3.0] — 2026-08-30
 
 ### Added
 - Session countdown in the VPN notification, updated each second while connected.
