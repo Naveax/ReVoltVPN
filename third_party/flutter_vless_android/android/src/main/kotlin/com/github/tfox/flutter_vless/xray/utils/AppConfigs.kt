@@ -8,7 +8,7 @@ object AppConfigs {
     const val INTERNAL_STATUS_PERMISSION = "com.github.tfox.flutter_vless.permission.INTERNAL_STATUS"
 
     enum class V2RAY_SERVICE_COMMANDS : Serializable {
-        START_SERVICE, STOP_SERVICE, RESTART_SERVICE
+        START_SERVICE, STOP_SERVICE, RESTART_SERVICE, QUERY_STATE
     }
 
     enum class V2RAY_STATES : Serializable {
