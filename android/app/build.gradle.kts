@@ -41,6 +41,9 @@ val patchFlutterVlessAllowedApps = tasks.register<Exec>("patchFlutterVlessAllowe
         if (!flutterVlessPatchScript.isFile) {
             throw GradleException("flutter_vless patch script missing: ${flutterVlessPatchScript.absolutePath}")
         }
+        if (!File(projectRootDir, ".dart_tool/package_config.json").isFile) {
+            throw GradleException("Flutter package metadata missing. Run `flutter pub get` before Android compilation.")
+        }
     }
 
     commandLine(
@@ -60,11 +63,15 @@ tasks.configureEach {
 }
 
 gradle.projectsEvaluated {
-    val flutterVlessProject = rootProject.findProject(":flutter_vless_android")
-        ?: throw GradleException("flutter_vless_android Gradle project was not loaded")
-    flutterVlessProject.tasks.matching { it.name == "preBuild" }.configureEach {
-        dependsOn(patchFlutterVlessAllowedApps)
-    }
+    // `gradle wrapper` may run before Flutter has generated plugin metadata.
+    // That setup command must remain usable; once flutter pub get has loaded the
+    // plugin project, wire its Android preBuild to the same patch task.
+    rootProject.findProject(":flutter_vless_android")
+        ?.tasks
+        ?.matching { it.name == "preBuild" }
+        ?.configureEach {
+            dependsOn(patchFlutterVlessAllowedApps)
+        }
 }
 
 android {
