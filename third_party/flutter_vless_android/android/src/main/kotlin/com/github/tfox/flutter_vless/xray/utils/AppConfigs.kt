@@ -5,6 +5,7 @@ import java.io.Serializable
 
 object AppConfigs {
     const val V2RAY_CONNECTION_INFO = "com.github.tfox.flutter_vless.xray.V2RAY_CONNECTION_INFO"
+    const val INTERNAL_STATUS_PERMISSION = "com.github.tfox.flutter_vless.permission.INTERNAL_STATUS"
 
     enum class V2RAY_SERVICE_COMMANDS : Serializable {
         START_SERVICE, STOP_SERVICE, RESTART_SERVICE
