@@ -35,6 +35,7 @@ class SessionTimer extends ChangeNotifier {
   static const int _pollIntervalSeconds = 5;
 
   int _lastUsedBytes = 0;
+  DateTime? _lastSuccessfulSyncAt;
   double _currentSpeedKBps = 0.0;
 
   SessionTimer({required this.vpnConnection}) {
@@ -95,7 +96,6 @@ class SessionTimer extends ChangeNotifier {
   }
 
   void _onVpnConnectionChanged() {
-    // Restore timer if VPN was already running at app launch.
     if (vpnConnection.status == VpnStatus.connected &&
         !isRunning &&
         vpnConnection.isStartupRestoration) {
@@ -103,7 +103,6 @@ class SessionTimer extends ChangeNotifier {
       return;
     }
 
-    // Resume after brief tunnel disconnection.
     if (vpnConnection.status == VpnStatus.connected &&
         !isRunning &&
         !_isDisconnecting &&
@@ -117,8 +116,6 @@ class SessionTimer extends ChangeNotifier {
     if (!hadActiveSession || _isDisconnecting) return;
 
     if (vpnConnection.status == VpnStatus.error) {
-      // VpnConnection already cleans up failed runtimes. Do not call
-      // disconnect() again here or the useful error state/message gets erased.
       _stopForVpnFailure('VPN entered error state');
       return;
     }
@@ -138,6 +135,7 @@ class SessionTimer extends ChangeNotifier {
     _currentSpeedKBps = 0.0;
     _remainingSeconds = 0;
     _hasSyncedOnce = false;
+    _lastSuccessfulSyncAt = null;
     _consecutiveFailures = 0;
     _offlineSeconds = 0;
     notifyListeners();
@@ -147,6 +145,7 @@ class SessionTimer extends ChangeNotifier {
     _remainingSeconds = 0;
     _usedBytes = 0;
     _lastUsedBytes = 0;
+    _lastSuccessfulSyncAt = null;
     _currentSpeedKBps = 0.0;
     _tickCount = 0;
     _hasSyncedOnce = false;
@@ -154,9 +153,6 @@ class SessionTimer extends ChangeNotifier {
     _offlineSeconds = 0;
     _isDisconnecting = false;
 
-    // This is a genuinely new VPN session, so the one-support-reward allowance
-    // starts fresh. Increment the epoch so a stale async storage load from app
-    // startup cannot overwrite the new-session state.
     _supportStateEpoch++;
     _supportRewardClaimed = false;
     _supportRewardStateLoaded = true;
@@ -212,6 +208,7 @@ class SessionTimer extends ChangeNotifier {
     _currentSpeedKBps = 0.0;
     _remainingSeconds = 0;
     _hasSyncedOnce = false;
+    _lastSuccessfulSyncAt = null;
     notifyListeners();
 
     await vpnConnection.disconnect();
@@ -258,13 +255,18 @@ class SessionTimer extends ChangeNotifier {
         );
         _usedBytes = _readNonNegativeInt(data['used_bytes'], _usedBytes);
 
-        final int deltaBytes = _usedBytes - _lastUsedBytes;
-        if (_hasSyncedOnce && deltaBytes > 0) {
-          _currentSpeedKBps = (deltaBytes / _pollIntervalSeconds) / 1000;
-        } else if (!_hasSyncedOnce) {
+        final now = DateTime.now();
+        final deltaBytes = _usedBytes - _lastUsedBytes;
+        final elapsedSeconds = _lastSuccessfulSyncAt == null
+            ? 0.0
+            : now.difference(_lastSuccessfulSyncAt!).inMilliseconds / 1000.0;
+        if (_hasSyncedOnce && deltaBytes > 0 && elapsedSeconds > 0) {
+          _currentSpeedKBps = (deltaBytes / elapsedSeconds) / 1000;
+        } else if (!_hasSyncedOnce || deltaBytes <= 0) {
           _currentSpeedKBps = 0.0;
         }
         _lastUsedBytes = _usedBytes;
+        _lastSuccessfulSyncAt = now;
 
         final capExhausted = data['cap_exhausted'] == true;
         if (capExhausted) {
