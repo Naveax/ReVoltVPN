@@ -16,6 +16,7 @@ import androidx.core.app.NotificationCompat
 import com.github.tfox.flutter_vless.xray.dto.XrayConfig
 import com.github.tfox.flutter_vless.xray.service.XrayVPNService
 import com.github.tfox.flutter_vless.xray.utils.AppConfigs
+import com.github.tfox.flutter_vless.xray.utils.TunnelStateStore
 import com.github.tfox.flutter_vless.xray.utils.Utilities
 import org.json.JSONArray
 import org.json.JSONObject
@@ -319,6 +320,11 @@ object XrayCoreManager {
         context: Context,
         traffic: LongArray = longArrayOf(0, 0, 0, 0),
     ) {
+        // Persist readiness before the best-effort UI event. This file is the
+        // authoritative cross-process state source; a missed broadcast can no
+        // longer make Flutter tear down an otherwise healthy tunnel.
+        TunnelStateStore.write(context)
+
         val config = AppConfigs.V2RAY_CONFIG
         val intent = Intent(AppConfigs.V2RAY_CONNECTION_INFO)
             .setPackage(context.packageName)
