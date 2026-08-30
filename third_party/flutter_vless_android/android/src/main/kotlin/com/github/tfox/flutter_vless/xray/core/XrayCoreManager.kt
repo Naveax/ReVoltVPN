@@ -35,25 +35,6 @@ object XrayCoreManager {
     private var activeGeneration = 0L
     private var countDownTimer: CountDownTimer? = null
     private var seconds = 0
-    private var lastProxyUplink = 0L
-    private var lastProxyDownlink = 0L
-
-    private fun nextFreePort(preferredPort: Int, usedPorts: Set<Int>): Int {
-        var port = if (preferredPort > 0) preferredPort else 20000
-        while (usedPorts.contains(port)) port++
-        return port
-    }
-
-    private fun uniqueInboundTag(inbounds: JSONArray, preferredTag: String): String {
-        val tags = mutableSetOf<String>()
-        for (i in 0 until inbounds.length()) {
-            inbounds.optJSONObject(i)?.optString("tag")?.takeIf { it.isNotEmpty() }?.let(tags::add)
-        }
-        if (preferredTag !in tags) return preferredTag
-        var index = 1
-        while ("${preferredTag}_$index" in tags) index++
-        return "${preferredTag}_$index"
-    }
 
     private fun normalizeRuntimeConfig(value: Any?): Any? = when (value) {
         is JSONObject -> {
@@ -72,7 +53,11 @@ object XrayCoreManager {
                 val normalizedValue = normalizeRuntimeConfig(value.opt(key))
                 normalized.put(
                     targetKey,
-                    if (targetKey == "network" && normalizedValue is String) normalizedValue.lowercase() else normalizedValue
+                    if (targetKey == "network" && normalizedValue is String) {
+                        normalizedValue.lowercase()
+                    } else {
+                        normalizedValue
+                    }
                 )
             }
             normalized
@@ -99,7 +84,9 @@ object XrayCoreManager {
                 .put("encryption", settings.optString("encryption", "none"))
                 .put("flow", settings.optString("flow", ""))
                 .put("level", settings.optInt("level", 8))
-            val server = JSONObject().put("address", address).put("port", port)
+            val server = JSONObject()
+                .put("address", address)
+                .put("port", port)
                 .put("users", JSONArray().put(user))
             outbound.put("settings", JSONObject().put("vnext", JSONArray().put(server)))
         }
@@ -107,103 +94,80 @@ object XrayCoreManager {
 
     private fun sanitizeLogPaths(configJson: JSONObject, filesDir: File) {
         val log = configJson.optJSONObject("log") ?: return
-        if (log.optString("access").isNotEmpty()) log.put("access", File(filesDir, "access.log").absolutePath)
-        if (log.optString("error").isNotEmpty()) log.put("error", File(filesDir, "error.log").absolutePath)
+        if (log.optString("access").isNotEmpty()) {
+            log.put("access", File(filesDir, "access.log").absolutePath)
+        }
+        if (log.optString("error").isNotEmpty()) {
+            log.put("error", File(filesDir, "error.log").absolutePath)
+        }
+    }
+
+    private fun removeInboundScopedRules(configJson: JSONObject) {
+        val routing = configJson.optJSONObject("routing") ?: return
+        val source = routing.optJSONArray("rules") ?: return
+        val clean = JSONArray()
+        for (i in 0 until source.length()) {
+            val rule = source.optJSONObject(i) ?: continue
+            if (rule.has("inboundTag")) continue
+            clean.put(rule)
+        }
+        routing.put("rules", clean)
     }
 
     internal fun buildRuntimeConfigJson(config: XrayConfig, filesDir: File): JSONObject {
-        val configJson = normalizeRuntimeConfig(JSONObject(config.V2RAY_FULL_JSON_CONFIG)) as JSONObject
+        if (config.LOCAL_SOCKS5_PORT <= 0 ||
+            config.LOCAL_SOCKS5_USER.isEmpty() ||
+            config.LOCAL_SOCKS5_PASS.isEmpty()
+        ) {
+            throw IllegalStateException("Isolated SOCKS5 credentials are required")
+        }
+
+        val configJson = normalizeRuntimeConfig(
+            JSONObject(config.V2RAY_FULL_JSON_CONFIG)
+        ) as JSONObject
         normalizeVlessOutbounds(configJson)
         sanitizeLogPaths(configJson, filesDir)
 
-        configJson.put("api", JSONObject().put("tag", "api").put("services", JSONArray().put("StatsService")))
-        configJson.put("stats", JSONObject())
-        configJson.put(
-            "policy",
-            JSONObject()
-                .put("levels", JSONObject().put("8", JSONObject().put("statsUserUplink", true).put("statsUserDownlink", true)))
-                .put(
-                    "system",
+        // ReVolt does not expose Xray's management API. Session/account usage is
+        // obtained from the backend, so a localhost StatsService listener is an
+        // unnecessary cross-app attack surface.
+        configJson.remove("api")
+        configJson.remove("stats")
+        configJson.remove("policy")
+
+        // No inbound supplied by a remote/server config is trusted. The app owns
+        // the complete client-side listener surface and creates exactly one
+        // authenticated loopback SOCKS5 ingress for tun2socks and local tests.
+        config.LOCAL_HTTP_PORT = 0
+        config.LOCAL_API_PORT = 0
+        val socksSettings = JSONObject()
+            .put("auth", "password")
+            .put("udp", true)
+            .put(
+                "accounts",
+                JSONArray().put(
                     JSONObject()
-                        .put("statsInboundUplink", true)
-                        .put("statsInboundDownlink", true)
-                        .put("statsOutboundUplink", true)
-                        .put("statsOutboundDownlink", true)
+                        .put("user", config.LOCAL_SOCKS5_USER)
+                        .put("pass", config.LOCAL_SOCKS5_PASS)
                 )
-        )
+            )
 
-        // ReVolt owns its local control inbounds. Strip imported loopback proxy/API
-        // listeners so a stale config cannot reopen a fixed no-auth surface.
-        val original = configJson.optJSONArray("inbounds") ?: JSONArray()
-        val inbounds = JSONArray()
-        val usedPorts = mutableSetOf<Int>()
-        for (i in 0 until original.length()) {
-            val inbound = original.optJSONObject(i) ?: continue
-            val protocol = inbound.optString("protocol")
-            val listen = inbound.optString("listen")
-            val isLoopback = listen.isEmpty() || listen == "127.0.0.1" || listen == "localhost"
-            val tag = inbound.optString("tag")
-            if (isLoopback && (protocol == "socks" || protocol == "http" || tag == "api")) continue
-            val port = inbound.optInt("port", -1)
-            if (port > 0) usedPorts.add(port)
-            inbounds.put(inbound)
-        }
-
-        config.LOCAL_SOCKS5_PORT = nextFreePort(config.LOCAL_SOCKS5_PORT, usedPorts)
-        val socksSettings = JSONObject().put("udp", true)
-        if (config.LOCAL_SOCKS5_USER.isNotEmpty()) {
-            socksSettings
-                .put("auth", "password")
-                .put(
-                    "accounts",
-                    JSONArray().put(
-                        JSONObject()
-                            .put("user", config.LOCAL_SOCKS5_USER)
-                            .put("pass", config.LOCAL_SOCKS5_PASS)
-                    )
-                )
-        } else {
-            socksSettings.put("auth", "noauth")
-        }
-        inbounds.put(
+        val inbounds = JSONArray().put(
             JSONObject()
-                .put("tag", uniqueInboundTag(inbounds, "socks"))
+                .put("tag", "revolt-socks")
                 .put("port", config.LOCAL_SOCKS5_PORT)
                 .put("listen", "127.0.0.1")
                 .put("protocol", "socks")
                 .put("settings", socksSettings)
                 .put(
                     "sniffing",
-                    JSONObject().put("enabled", true).put("destOverride", JSONArray().put("http").put("tls"))
+                    JSONObject()
+                        .put("enabled", true)
+                        .put("destOverride", JSONArray().put("http").put("tls"))
                 )
         )
-        usedPorts.add(config.LOCAL_SOCKS5_PORT)
-
-        // HTTP inbound is intentionally absent. ReVolt does not use it.
-        config.LOCAL_HTTP_PORT = 0
-
-        config.LOCAL_API_PORT = nextFreePort(config.LOCAL_API_PORT, usedPorts)
-        val apiInboundTag = uniqueInboundTag(inbounds, "api")
-        inbounds.put(
-            JSONObject()
-                .put("tag", apiInboundTag)
-                .put("port", config.LOCAL_API_PORT)
-                .put("listen", "127.0.0.1")
-                .put("protocol", "dokodemo-door")
-                .put("settings", JSONObject().put("address", "127.0.0.1"))
-        )
         configJson.put("inbounds", inbounds)
-
-        val routing = configJson.optJSONObject("routing") ?: JSONObject()
-        val rules = routing.optJSONArray("rules") ?: JSONArray()
-        rules.put(
-            JSONObject()
-                .put("type", "field")
-                .put("inboundTag", JSONArray().put(apiInboundTag))
-                .put("outboundTag", "api")
-        )
-        routing.put("rules", rules)
-        configJson.put("routing", routing)
+        removeInboundScopedRules(configJson)
         return configJson
     }
 
@@ -250,19 +214,18 @@ object XrayCoreManager {
                 return false
             }
 
-            // Monitor this exact process instance. Never re-read a global process
-            // handle from an older generation after a fast reconnect.
             Thread {
                 try {
                     process.inputStream.bufferedReader().use { reader ->
-                        reader.forEachLine { /* production output deliberately discarded */ }
+                        reader.forEachLine { }
                     }
                     val exitCode = process.waitFor()
                     var unexpected = false
                     synchronized(processLock) {
                         if (xrayProcess === process && activeGeneration == generation) {
                             xrayProcess = null
-                            unexpected = AppConfigs.V2RAY_STATE != AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
+                            unexpected =
+                                AppConfigs.V2RAY_STATE != AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
                         }
                     }
                     if (unexpected) {
@@ -286,11 +249,12 @@ object XrayCoreManager {
         synchronized(processLock) {
             if (activeGeneration != generation || xrayProcess?.isAlive != true) return false
         }
-        if (!AppConfigs.TUN_ESTABLISHED || !AppConfigs.FD_DELIVERED || !AppConfigs.SOCKS_READY) return false
+        if (!AppConfigs.TUN_ESTABLISHED ||
+            !AppConfigs.FD_DELIVERED ||
+            !AppConfigs.SOCKS_READY
+        ) return false
         AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_CONNECTED
         AppConfigs.LAST_ERROR = ""
-        lastProxyUplink = 0L
-        lastProxyDownlink = 0L
         startTimer(context)
         showNotification(context, config)
         sendStateBroadcast(context)
@@ -304,8 +268,6 @@ object XrayCoreManager {
         if (!AppConfigs.SOCKS_READY) return false
         AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_CONNECTED
         AppConfigs.LAST_ERROR = ""
-        lastProxyUplink = 0L
-        lastProxyDownlink = 0L
         startTimer(context)
         showNotification(context, config)
         sendStateBroadcast(context)
@@ -331,11 +293,14 @@ object XrayCoreManager {
         }
         AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
         stopTimer()
-        (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIFICATION_ID)
+        (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+            .cancel(NOTIFICATION_ID)
         if (broadcast) sendStateBroadcast(context)
     }
 
-    fun isXrayRunning(): Boolean = synchronized(processLock) { xrayProcess?.isAlive == true }
+    fun isXrayRunning(): Boolean = synchronized(processLock) {
+        xrayProcess?.isAlive == true
+    }
 
     private fun startTimer(context: Context) {
         countDownTimer?.cancel()
@@ -343,7 +308,7 @@ object XrayCoreManager {
         countDownTimer = object : CountDownTimer(Long.MAX_VALUE, 1000) {
             override fun onTick(millisUntilFinished: Long) {
                 seconds++
-                sendStateBroadcast(context, getV2rayTraffic(context))
+                sendStateBroadcast(context)
             }
             override fun onFinish() = Unit
         }.start()
@@ -353,11 +318,12 @@ object XrayCoreManager {
         countDownTimer?.cancel()
         countDownTimer = null
         seconds = 0
-        lastProxyUplink = 0L
-        lastProxyDownlink = 0L
     }
 
-    fun sendStateBroadcast(context: Context, traffic: LongArray = longArrayOf(0, 0, 0, 0)) {
+    fun sendStateBroadcast(
+        context: Context,
+        traffic: LongArray = longArrayOf(0, 0, 0, 0),
+    ) {
         val config = AppConfigs.V2RAY_CONFIG
         val intent = Intent(AppConfigs.V2RAY_CONNECTION_INFO)
             .setPackage(context.packageName)
@@ -379,38 +345,9 @@ object XrayCoreManager {
     }
 
     fun getV2rayTraffic(context: Context): LongArray {
-        if (!AppConfigs.isFullyReady()) return longArrayOf(0, 0, 0, 0)
-        val port = AppConfigs.V2RAY_CONFIG?.LOCAL_API_PORT ?: return longArrayOf(0, 0, 0, 0)
-        if (port <= 0) return longArrayOf(0, 0, 0, 0)
-        val xrayPath = File(context.applicationInfo.nativeLibraryDir, "libxray.so").absolutePath
-        return try {
-            val process = ProcessBuilder(
-                xrayPath, "api", "statsquery", "--server=127.0.0.1:$port", "--pattern", ""
-            ).start()
-            val output = process.inputStream.bufferedReader().readText()
-            if (!process.waitFor(2, TimeUnit.SECONDS)) {
-                process.destroy()
-                return longArrayOf(0, 0, 0, 0)
-            }
-            if (output.isEmpty()) return longArrayOf(0, 0, 0, 0)
-            val stats = JSONObject(output).optJSONArray("stat") ?: return longArrayOf(0, 0, 0, 0)
-            var up = 0L
-            var down = 0L
-            for (i in 0 until stats.length()) {
-                val stat = stats.getJSONObject(i)
-                when (stat.optString("name")) {
-                    "outbound>>>proxy>>>traffic>>>uplink" -> up = stat.optLong("value")
-                    "outbound>>>proxy>>>traffic>>>downlink" -> down = stat.optLong("value")
-                }
-            }
-            val upSpeed = (up - lastProxyUplink).coerceAtLeast(0)
-            val downSpeed = (down - lastProxyDownlink).coerceAtLeast(0)
-            lastProxyUplink = up
-            lastProxyDownlink = down
-            longArrayOf(upSpeed, downSpeed, up, down)
-        } catch (_: Exception) {
-            longArrayOf(0, 0, 0, 0)
-        }
+        @Suppress("UNUSED_VARIABLE")
+        val ignored = context
+        return longArrayOf(0, 0, 0, 0)
     }
 
     private fun readExactly(input: InputStream, count: Int): ByteArray {
@@ -432,7 +369,7 @@ object XrayCoreManager {
         targetPort: Int = 443,
         timeoutMs: Int = 2000
     ): Boolean {
-        if (port <= 0) return false
+        if (port <= 0 || user.isEmpty() || pass.isEmpty()) return false
         var socket: Socket? = null
         return try {
             socket = Socket()
@@ -440,34 +377,33 @@ object XrayCoreManager {
             socket.soTimeout = timeoutMs
             val input = socket.getInputStream()
             val output = socket.getOutputStream()
-            if (user.isNotEmpty()) {
-                output.write(byteArrayOf(0x05, 0x01, 0x02))
-                output.flush()
-                val greeting = readExactly(input, 2)
-                if (greeting[0].toInt() != 0x05 || greeting[1].toInt() != 0x02) return false
-                val u = user.toByteArray(Charsets.UTF_8)
-                val p = pass.toByteArray(Charsets.UTF_8)
-                if (u.size > 255 || p.size > 255) return false
-                output.write(byteArrayOf(0x01, u.size.toByte()))
-                output.write(u)
-                output.write(byteArrayOf(p.size.toByte()))
-                output.write(p)
-                output.flush()
-                val auth = readExactly(input, 2)
-                if (auth[0].toInt() != 0x01 || auth[1].toInt() != 0x00) return false
-            } else {
-                output.write(byteArrayOf(0x05, 0x01, 0x00))
-                output.flush()
-                val greeting = readExactly(input, 2)
-                if (greeting[0].toInt() != 0x05 || greeting[1].toInt() != 0x00) return false
-            }
+
+            output.write(byteArrayOf(0x05, 0x01, 0x02))
+            output.flush()
+            val greeting = readExactly(input, 2)
+            if (greeting[0].toInt() != 0x05 || greeting[1].toInt() != 0x02) return false
+            val u = user.toByteArray(Charsets.UTF_8)
+            val p = pass.toByteArray(Charsets.UTF_8)
+            if (u.isEmpty() || u.size > 255 || p.isEmpty() || p.size > 255) return false
+            output.write(byteArrayOf(0x01, u.size.toByte()))
+            output.write(u)
+            output.write(byteArrayOf(p.size.toByte()))
+            output.write(p)
+            output.flush()
+            val auth = readExactly(input, 2)
+            if (auth[0].toInt() != 0x01 || auth[1].toInt() != 0x00) return false
 
             if (targetHost != null) {
                 val host = targetHost.toByteArray(Charsets.UTF_8)
                 if (host.size > 255) return false
                 output.write(byteArrayOf(0x05, 0x01, 0x00, 0x03, host.size.toByte()))
                 output.write(host)
-                output.write(byteArrayOf(((targetPort shr 8) and 0xff).toByte(), (targetPort and 0xff).toByte()))
+                output.write(
+                    byteArrayOf(
+                        ((targetPort shr 8) and 0xff).toByte(),
+                        (targetPort and 0xff).toByte()
+                    )
+                )
                 output.flush()
                 val reply = readExactly(input, 4)
                 if (reply[0].toInt() != 0x05 || reply[1].toInt() != 0x00) return false
@@ -483,7 +419,13 @@ object XrayCoreManager {
     fun measureSocksDelay(port: Int, user: String, pass: String, url: String): Long {
         return try {
             val parsed = URL(url)
-            val targetPort = if (parsed.port > 0) parsed.port else if (parsed.protocol == "http") 80 else 443
+            val targetPort = if (parsed.port > 0) {
+                parsed.port
+            } else if (parsed.protocol == "http") {
+                80
+            } else {
+                443
+            }
             val started = System.currentTimeMillis()
             if (!probeSocks(port, user, pass, parsed.host, targetPort, 5000)) return -1L
             System.currentTimeMillis() - started
@@ -497,17 +439,18 @@ object XrayCoreManager {
         var tempFile: File? = null
         return try {
             val socksPort = ServerSocket(0).use { it.localPort }
-            val apiPort = ServerSocket(0).use { it.localPort }
             val delayUser = "rv_delay"
             val delayPass = UUID.randomUUID().toString()
             val config = XrayConfig(
                 V2RAY_FULL_JSON_CONFIG = configJson,
                 LOCAL_SOCKS5_PORT = socksPort,
-                LOCAL_API_PORT = apiPort,
                 LOCAL_SOCKS5_USER = delayUser,
                 LOCAL_SOCKS5_PASS = delayPass
             )
-            tempFile = File(context.filesDir, "temp_delay_config_${System.nanoTime()}.json")
+            tempFile = File(
+                context.filesDir,
+                "temp_delay_config_${System.nanoTime()}.json",
+            )
             tempFile.writeText(buildRuntimeConfigJson(config, context.filesDir).toString())
             Utilities.copyAssets(context)
             val executable = File(context.applicationInfo.nativeLibraryDir, "libxray.so")
@@ -529,20 +472,31 @@ object XrayCoreManager {
 
     private fun showNotification(context: XrayVPNService, config: XrayConfig) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ActivityCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ActivityCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.POST_NOTIFICATIONS,
+            ) != PackageManager.PERMISSION_GRANTED
         ) return
 
         val channelId = createNotificationChannel(context, config.APPLICATION_NAME)
-        val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
-            action = "FROM_DISCONNECT_BTN"
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
-        }
+        val launchIntent = context.packageManager
+            .getLaunchIntentForPackage(context.packageName)
+            ?.apply {
+                action = "FROM_DISCONNECT_BTN"
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_NEW_TASK
+            }
         val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         val contentPendingIntent = PendingIntent.getActivity(context, 0, launchIntent, flags)
         val stopIntent = Intent(context, XrayVPNService::class.java)
             .putExtra("COMMAND", AppConfigs.V2RAY_SERVICE_COMMANDS.STOP_SERVICE)
         val stopPendingIntent = PendingIntent.getService(context, 0, stopIntent, flags)
-        val smallIcon = if (config.APPLICATION_ICON != 0) config.APPLICATION_ICON else android.R.drawable.ic_dialog_info
+        val smallIcon = if (config.APPLICATION_ICON != 0) {
+            config.APPLICATION_ICON
+        } else {
+            android.R.drawable.ic_dialog_info
+        }
         val notification = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(smallIcon)
             .setContentTitle(config.REMARK)
@@ -559,10 +513,15 @@ object XrayCoreManager {
     private fun createNotificationChannel(context: Context, appName: String): String {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return ""
         val channelId = "XRAY_SERVICE_CHANNEL"
-        val channel = NotificationChannel(channelId, "$appName Background Service", NotificationManager.IMPORTANCE_LOW)
+        val channel = NotificationChannel(
+            channelId,
+            "$appName Background Service",
+            NotificationManager.IMPORTANCE_LOW,
+        )
         channel.lightColor = Color.BLUE
         channel.lockscreenVisibility = Notification.VISIBILITY_PRIVATE
-        (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
+        (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+            .createNotificationChannel(channel)
         return channelId
     }
 }
