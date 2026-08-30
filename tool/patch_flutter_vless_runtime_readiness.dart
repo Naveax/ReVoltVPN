@@ -226,7 +226,7 @@ void main() {
         }.start()
     }
 ''',
-    '''    private fun sendFd(): Boolean {
+    r'''    private fun sendFd(): Boolean {
         val fd = mInterface?.fileDescriptor ?: return false
         val sockFile = File(filesDir, "sock_path").absolutePath
         repeat(10) { attempt ->
@@ -251,7 +251,7 @@ void main() {
         return false
     }
 ''',
-    'TUN FD handoff attempt ${attempt + 1}/10 failed',
+    r'TUN FD handoff attempt ${attempt + 1}/10 failed',
   );
 
   replaceOnce(
