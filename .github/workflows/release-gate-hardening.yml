@@ -110,8 +110,9 @@ jobs:
           service = (root / 'third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt').read_text()
           core = (root / 'third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/core/XrayCoreManager.kt').read_text()
           plugin = (root / 'third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/FlutterVlessPlugin.kt').read_text()
-          appcfg = (root / 'third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/utils/AppConfigs.kt').read_text()
+          dto = (root / 'third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/dto/XrayConfig.kt').read_text()
           manifest = (root / 'third_party/flutter_vless_android/android/src/main/AndroidManifest.xml').read_text()
+          runtime_gradle = (root / 'third_party/flutter_vless_android/android/build.gradle').read_text()
           pubspec = (root / 'pubspec.yaml').read_text()
           vpn = (root / 'lib/logic/vpn_connection.dart').read_text()
           native = (root / 'lib/logic/native_tunnel_control.dart').read_text()
@@ -120,7 +121,7 @@ jobs:
           ad = (root / 'lib/logic/ad_manager.dart').read_text()
           hivemind = (root / 'lib/logic/hivemind_service.dart').read_text()
 
-          # P0 fail-closed TUN / FD / SOCKS readiness.
+          # Fail-closed TUN / FD / SOCKS readiness.
           assert 'builder.establish()' in service
           assert 'Android refused to establish the VPN interface' in service
           assert 'AppConfigs.TUN_ESTABLISHED = true' in service
@@ -131,13 +132,29 @@ jobs:
           assert 'handleXrayCoreExit' in service
           assert 'override fun onRevoke()' in service
           assert '"-loglevel", "warning"' in service
-          assert 'startForegroundSafely' in service and 'Could not start foreground VPN service' in service
+          assert 'Could not start foreground VPN service' in service
+
+          # Regression gate: a config-parsing quirk must not make every mode die.
+          assert 'VPN server address must be an IPv4 literal' not in service
+          assert 'excludeIp(serverIp)' not in service
+          assert 'builder.addRoute("0.0.0.0", 0)' in service
+          assert 'builder.addRoute("::", 0)' in service
+
+          # Strict selected-only is real Android UID/package allowlisting.
+          assert 'var ALLOWED_APPS:' in dto
+          assert '"setAllowedApps"' in plugin
+          assert 'config.ALLOWED_APPS = ArrayList(pendingAllowedApps)' in plugin
+          assert 'builder.addAllowedApplication(pkg)' in service
+          assert 'Allowed and blocked app routing cannot be combined' in service
+          assert 'NativeTunnelControl.setAllowedApps' in vpn
+          assert '_selectedStrictPlan' in vpn
+          assert '_selectedCompatibilityPlan' not in vpn
 
           # Xray state becomes CONNECTED only after full readiness.
-          assert 'if (!AppConfigs.TUN_ESTABLISHED || !AppConfigs.FD_DELIVERED || !AppConfigs.SOCKS_READY) return false' in core
+          assert 'AppConfigs.TUN_ESTABLISHED' in core
+          assert 'AppConfigs.FD_DELIVERED' in core
+          assert 'AppConfigs.SOCKS_READY' in core
           assert 'AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_CONNECTED' in core
-          assert 'auth", "password"' in core
-          assert 'config.LOCAL_HTTP_PORT = 0' in core
 
           # Private status bridge.
           assert 'RECEIVER_NOT_EXPORTED' in plugin
@@ -155,22 +172,36 @@ jobs:
           assert 'socksReady &&' in native
           assert "? 'UNKNOWN'" in native
 
-          # Local proxy isolation / no fixed endpoint contract.
+          # Local listener surface: one authenticated random SOCKS listener only.
           assert 'SecureRandom' in service
           assert 'findFreePort()' in service
           assert 'LOCAL_SOCKS5_USER' in service
           assert 'LOCAL_SOCKS5_PASS' in service
+          assert 'config.LOCAL_HTTP_PORT = 0' in core
+          assert 'config.LOCAL_API_PORT = 0' in core
+          assert 'configJson.remove("api")' in core
+          assert 'configJson.remove("stats")' in core
+          assert 'configJson.put("inbounds", inbounds)' in core
+          assert 'JSONObject().put("auth", "password")' not in core  # formatting guard below
+          assert '.put("auth", "password")' in core
           assert '127.0.0.1:10807' not in mode_ui
           assert 'HTTP: 127.0.0.1:10808' not in mode_ui
 
-          # Build isolation: vendored Android implementation, no Pub cache mutation.
+          # No remote/server-provided inbound survives runtime config construction.
+          assert 'val original = configJson.optJSONArray("inbounds")' not in core
+          assert 'removeInboundScopedRules(configJson)' in core
+
+          # Build isolation: vendored implementation, no global Pub cache mutation.
           assert 'flutter_vless_android:' in pubspec
           assert 'path: third_party/flutter_vless_android' in pubspec
-          assert not (root / 'tools/patch_flutter_vless_allowed_apps.dart').exists()
-          gradle = (root / 'android/app/build.gradle.kts').read_text()
-          assert 'patchFlutterVlessAllowedApps' not in gradle
+          assert not (root / 'tool/patch_flutter_vless_allowed_apps.dart').exists()
+          app_gradle = (root / 'android/app/build.gradle.kts').read_text()
+          assert 'patchFlutterVlessAllowedApps' not in app_gradle
 
-          # Previously reported speed accounting issue.
+          # Updated Xray runtime is explicitly pinned.
+          assert 'xray-android:26.7.28' in runtime_gradle
+
+          # Speed accounting uses actual successful-poll elapsed time.
           assert '_lastSuccessfulSyncAt' in timer
           assert 'now.difference(previousSyncAt).inMilliseconds' in timer
 
@@ -180,7 +211,7 @@ jobs:
           assert "storedMode == 'ass'" in settings
           assert 'ConnectionMode.ass' not in vpn
 
-          # Deliberately preserved debug AdMob/nonce path. Do not silently harden it here.
+          # Deliberately preserved debug AdMob/nonce path.
           assert 'static const bool adsEnabled = false;' in ad
           assert '?signature=test&key_id=test' in ad
           assert 'HivemindService.setExpectedNonce(nonce)' in ad
@@ -202,7 +233,7 @@ jobs:
           ./gradlew :app:compileReleaseKotlin --stacktrace
 
       - name: Build release APK
-        run: flutter build apk --release --build-name 3.3.6 --build-number 33
+        run: flutter build apk --release --build-name 3.3.7 --build-number 34
 
       - name: Verify packaged VPN runtime
         shell: bash
@@ -214,15 +245,15 @@ jobs:
       - name: Package APK
         shell: bash
         run: |
-          cp build/app/outputs/flutter-apk/app-release.apk ReVoltVPN-3.3.6-release-gate.apk
-          sha256sum ReVoltVPN-3.3.6-release-gate.apk > ReVoltVPN-3.3.6-release-gate.apk.sha256
+          cp build/app/outputs/flutter-apk/app-release.apk ReVoltVPN-3.3.7-hardened.apk
+          sha256sum ReVoltVPN-3.3.7-hardened.apk > ReVoltVPN-3.3.7-hardened.apk.sha256
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ReVoltVPN-3.3.6-release-gate-apk
+          name: ReVoltVPN-3.3.7-hardened-apk
           path: |
-            ReVoltVPN-3.3.6-release-gate.apk
-            ReVoltVPN-3.3.6-release-gate.apk.sha256
+            ReVoltVPN-3.3.7-hardened.apk
+            ReVoltVPN-3.3.7-hardened.apk.sha256
           retention-days: 3
           if-no-files-found: error
