@@ -22,20 +22,25 @@ class AppRoutingVpnService : VpnService() {
                 stopRouting()
                 return START_NOT_STICKY
             }
+
             ACTION_START -> {
-                startForegroundNotification()
+                val policy = intent.getStringExtra(EXTRA_POLICY) ?: POLICY_SELECTED
                 val packages = intent.getStringArrayListExtra(EXTRA_PACKAGES)
                     ?.map(String::trim)
                     ?.filter(String::isNotEmpty)
                     ?.distinct()
                     .orEmpty()
-                if (packages.isEmpty()) {
+
+                if (policy == POLICY_SELECTED && packages.isEmpty()) {
                     stopRouting()
                     return START_NOT_STICKY
                 }
-                startRouting(packages)
+
+                startForegroundNotification(policy)
+                startRouting(policy, packages)
                 return START_STICKY
             }
+
             else -> {
                 stopSelf()
                 return START_NOT_STICKY
@@ -43,8 +48,9 @@ class AppRoutingVpnService : VpnService() {
         }
     }
 
-    private fun startRouting(packages: List<String>) {
+    private fun startRouting(policy: String, packages: List<String>) {
         cleanup()
+
         try {
             val builder = Builder()
                 .setSession("ReVolt App Routing")
@@ -58,17 +64,7 @@ class AppRoutingVpnService : VpnService() {
                 builder.setMetered(false)
             }
 
-            var added = 0
-            for (appPackage in packages) {
-                if (appPackage == packageName) continue
-                try {
-                    builder.addAllowedApplication(appPackage)
-                    added++
-                } catch (e: Exception) {
-                    Log.w(TAG, "Could not add package $appPackage", e)
-                }
-            }
-            if (added == 0) throw IllegalStateException("No valid selected apps")
+            applyAppPolicy(builder, policy, packages)
 
             vpnInterface = builder.establish()
                 ?: throw IllegalStateException("Could not establish routing interface")
@@ -77,6 +73,56 @@ class AppRoutingVpnService : VpnService() {
         } catch (e: Exception) {
             Log.e(TAG, "App routing start failed", e)
             stopRouting()
+        }
+    }
+
+    private fun applyAppPolicy(
+        builder: Builder,
+        policy: String,
+        packages: List<String>,
+    ) {
+        when (policy) {
+            POLICY_SELECTED -> {
+                var added = 0
+                for (appPackage in packages) {
+                    if (appPackage == packageName) continue
+                    try {
+                        builder.addAllowedApplication(appPackage)
+                        added++
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not allow package $appPackage", e)
+                    }
+                }
+                if (added == 0) {
+                    throw IllegalStateException("No valid selected apps")
+                }
+            }
+
+            POLICY_EXCLUDE -> {
+                excludeOwnApp(builder)
+                for (appPackage in packages) {
+                    if (appPackage == packageName) continue
+                    try {
+                        builder.addDisallowedApplication(appPackage)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not exclude package $appPackage", e)
+                    }
+                }
+            }
+
+            POLICY_ALL -> {
+                excludeOwnApp(builder)
+            }
+
+            else -> throw IllegalArgumentException("Unknown routing policy: $policy")
+        }
+    }
+
+    private fun excludeOwnApp(builder: Builder) {
+        try {
+            builder.addDisallowedApplication(packageName)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not exclude ReVolt from its own routing VPN", e)
         }
     }
 
@@ -91,6 +137,7 @@ class AppRoutingVpnService : VpnService() {
 
         val socketFile = File(filesDir, SOCKET_FILE)
         socketFile.delete()
+
         val command = listOf(
             executable.absolutePath,
             "-sock-path", socketFile.absolutePath,
@@ -104,6 +151,7 @@ class AppRoutingVpnService : VpnService() {
                 .redirectErrorStream(true)
                 .directory(filesDir)
                 .start()
+
             Thread {
                 try {
                     routingProcess?.inputStream?.bufferedReader()?.use { reader ->
@@ -115,6 +163,7 @@ class AppRoutingVpnService : VpnService() {
                     if (running) Log.e(TAG, "Routing process monitor failed", e)
                 }
             }.start()
+
             sendDescriptor(tun.fileDescriptor, socketFile)
         } catch (e: Exception) {
             Log.e(TAG, "Routing process start failed", e)
@@ -150,7 +199,7 @@ class AppRoutingVpnService : VpnService() {
         }.start()
     }
 
-    private fun startForegroundNotification() {
+    private fun startForegroundNotification(policy: String) {
         val manager = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             manager?.createNotificationChannel(
@@ -161,8 +210,15 @@ class AppRoutingVpnService : VpnService() {
                 ),
             )
         }
+
         val icon = resources.getIdentifier("notification_icon", "drawable", packageName)
             .takeIf { it != 0 } ?: android.R.drawable.stat_sys_warning
+        val routingText = when (policy) {
+            POLICY_ALL -> "SOCKS routing active"
+            POLICY_EXCLUDE -> "SOCKS routing with exclusions active"
+            else -> "Selected app routing active"
+        }
+
         val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
         } else {
@@ -170,7 +226,7 @@ class AppRoutingVpnService : VpnService() {
             Notification.Builder(this)
         }
             .setContentTitle("ReVolt VPN")
-            .setContentText("Selected app routing active")
+            .setContentText(routingText)
             .setSmallIcon(icon)
             .setOngoing(true)
             .build()
@@ -184,10 +240,18 @@ class AppRoutingVpnService : VpnService() {
 
     private fun cleanup() {
         running = false
-        try { routingProcess?.destroy() } catch (_: Exception) {}
+        try {
+            routingProcess?.destroy()
+        } catch (_: Exception) {
+        }
         routingProcess = null
-        try { vpnInterface?.close() } catch (_: Exception) {}
+
+        try {
+            vpnInterface?.close()
+        } catch (_: Exception) {
+        }
         vpnInterface = null
+
         File(filesDir, SOCKET_FILE).delete()
     }
 
@@ -205,7 +269,12 @@ class AppRoutingVpnService : VpnService() {
     companion object {
         const val ACTION_START = "com.revoltvpn.app.routing.START"
         const val ACTION_STOP = "com.revoltvpn.app.routing.STOP"
+        const val EXTRA_POLICY = "policy"
         const val EXTRA_PACKAGES = "packages"
+
+        private const val POLICY_ALL = "all"
+        private const val POLICY_EXCLUDE = "exclude"
+        private const val POLICY_SELECTED = "selected"
         private const val TAG = "ReVoltAppRouting"
         private const val SOCKET_FILE = "revolt_app_routing.sock"
         private const val CHANNEL_ID = "revolt_app_routing"
