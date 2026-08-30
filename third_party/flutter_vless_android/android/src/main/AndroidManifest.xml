@@ -1,6 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.github.tfox.flutter_vless">
 
+    <permission
+        android:name="com.github.tfox.flutter_vless.permission.INTERNAL_STATUS"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="com.github.tfox.flutter_vless.permission.INTERNAL_STATUS" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
