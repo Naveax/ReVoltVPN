@@ -20,8 +20,7 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="specialUse"
-            android:permission="android.permission.BIND_VPN_SERVICE"
-            android:process=":RunSoLibXrayDaemon">
+            android:permission="android.permission.BIND_VPN_SERVICE">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="vpn" />
