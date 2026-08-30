@@ -15,13 +15,21 @@ abstract final class ConnectionSettings {
 
   static ConnectionMode _mode = ConnectionMode.auto;
   static AppRoutingMode _routingMode = AppRoutingMode.all;
-  static ResilienceMode _resilienceMode = ResilienceMode.standard;
+  static ResilienceMode _configuredResilienceMode = ResilienceMode.standard;
   static List<String> _appPackages = const <String>[];
   static bool _initialized = false;
 
   static ConnectionMode get mode => _mode;
   static AppRoutingMode get routingMode => _routingMode;
-  static ResilienceMode get resilienceMode => _resilienceMode;
+
+  // Device testing showed the extra Extreme startup validator could leave the
+  // data plane half-usable even though the server profile itself was healthy.
+  // Keep both choices on the exact same proven runtime path for now. The UI
+  // still remembers the user's choice so safer recovery logic can be restored
+  // later without migrating preferences.
+  static ResilienceMode get resilienceMode => ResilienceMode.standard;
+  static ResilienceMode get configuredResilienceMode => _configuredResilienceMode;
+
   static List<String> get appPackages => List.unmodifiable(_appPackages);
 
   static Future<void> initialize() async {
@@ -56,7 +64,7 @@ abstract final class ConnectionSettings {
       _routingMode = AppRoutingMode.all;
     }
 
-    _resilienceMode =
+    _configuredResilienceMode =
         prefs.getString(_resilienceModeKey) == ResilienceMode.extreme.name
             ? ResilienceMode.extreme
             : ResilienceMode.standard;
@@ -86,7 +94,7 @@ abstract final class ConnectionSettings {
   }
 
   static Future<void> setResilienceMode(ResilienceMode mode) async {
-    _resilienceMode = mode;
+    _configuredResilienceMode = mode;
     _initialized = true;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_resilienceModeKey, mode.name);
