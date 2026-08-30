@@ -8,10 +8,11 @@ class SpeedBox extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<SessionTimer>(
-      builder: (context, timer, _) {
-        final speed = timer.currentSpeedKBps > 0.5
-            ? '${timer.currentSpeedKBps.toStringAsFixed(1)} KB/s'
+    return Selector<SessionTimer, double>(
+      selector: (_, timer) => timer.currentSpeedKBps,
+      builder: (context, speedKBps, _) {
+        final speed = speedKBps > 0.5
+            ? '${speedKBps.toStringAsFixed(1)} KB/s'
             : 'Idle';
 
         return Container(

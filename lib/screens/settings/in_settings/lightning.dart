@@ -4,12 +4,13 @@ import 'package:revoltvpn/logic/app_colors.dart';
 
 // ── lib/screens/settings/in_settings/lightning.dart ─────────────────────────
 // Toggle for the lightning strike overlay on the main screen.
-//
-// Same architecture as haptic.dart: exports a top-level bool read synchronously
-// by lib/components/lightning.dart. Default: true (lightning is on — opt-out).
 
-// lib/components/lightning.dart reads this in its build method.
-bool lightningEnabled = true;
+final ValueNotifier<bool> lightningEnabled = ValueNotifier(true);
+
+Future<void> loadLightningPref() async {
+  final prefs = await SharedPreferences.getInstance();
+  lightningEnabled.value = prefs.getBool('lightning_effect_enabled') ?? true;
+}
 
 class LightningToggleTile extends StatefulWidget {
   const LightningToggleTile({super.key});
@@ -28,16 +29,14 @@ class _LightningToggleTileState extends State<LightningToggleTile> {
   }
 
   Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
-    final value = prefs.getBool('lightning_effect_enabled') ?? true;
-    lightningEnabled = value;
-    if (mounted) setState(() => _on = value);
+    await loadLightningPref();
+    if (mounted) setState(() => _on = lightningEnabled.value);
   }
 
   Future<void> _toggle(bool value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('lightning_effect_enabled', value);
-    lightningEnabled = value;
+    lightningEnabled.value = value;
     setState(() => _on = value);
   }
 

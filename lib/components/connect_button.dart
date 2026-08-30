@@ -1,5 +1,5 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
@@ -15,7 +15,7 @@ class ConnectButton extends StatefulWidget {
 }
 
 class _ConnectButtonState extends State<ConnectButton>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   bool _busy = false;
   DateTime _lastTap = DateTime.now();
   AnimationController? _pulse;
@@ -29,6 +29,7 @@ class _ConnectButtonState extends State<ConnectButton>
     final pulse = AnimationController(vsync: this, duration: const Duration(milliseconds: 2000));
     _pulse = pulse;
     _pulseAnim = Tween(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: pulse, curve: Curves.easeInOut));
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<VpnConnection>().addListener(_onVpnChanged);
     });
@@ -36,6 +37,7 @@ class _ConnectButtonState extends State<ConnectButton>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     context.read<VpnConnection>().removeListener(_onVpnChanged);
     _pulse?.dispose();
     super.dispose();
@@ -48,6 +50,20 @@ class _ConnectButtonState extends State<ConnectButton>
     } else {
       _pulse?.stop();
       _pulse?.reset();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!mounted) return;
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      _pulse?.stop();
+    } else if (state == AppLifecycleState.resumed) {
+      final vpn = context.read<VpnConnection>();
+      if (vpn.status == VpnStatus.connected) {
+        _pulse?.repeat(reverse: true);
+      }
     }
   }
 
@@ -65,7 +81,7 @@ class _ConnectButtonState extends State<ConnectButton>
     if (vpn.status == VpnStatus.connected || vpn.status == VpnStatus.connecting) {
       _busy = false;
       await timer.disconnect();
-      if (hapticEnabled) HapticFeedback.lightImpact();
+      unawaited(Haptics.connectionChanged());
       return;
     }
 
@@ -85,7 +101,7 @@ class _ConnectButtonState extends State<ConnectButton>
       final ok = await vpn.connect();
       if (ok) {
         timer.start();
-        if (hapticEnabled) HapticFeedback.lightImpact();
+        unawaited(Haptics.connectionChanged());
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -105,15 +121,36 @@ class _ConnectButtonState extends State<ConnectButton>
           child: _pulseAnim != null
               ? AnimatedBuilder(
                   animation: _pulseAnim!,
-                  builder: (_, __) => _buildCircle(isConnected, spinning, _pulseValue),
+                  child: _buildInner(spinning),
+                  builder: (_, child) =>
+                      _buildCircle(isConnected, _pulseValue, child),
                 )
-              : _buildCircle(isConnected, spinning, 0),
+              : _buildCircle(isConnected, 0, _buildInner(spinning)),
         );
       },
     );
   }
 
-  Widget _buildCircle(bool isConnected, bool spinning, double pulse) {
+  Widget _buildInner(bool spinning) {
+    if (spinning) {
+      return const Center(
+        child: SizedBox(
+          width: 36,
+          height: 36,
+          child: CircularProgressIndicator(
+            strokeWidth: 2.5,
+            color: AppColors.accent70,
+          ),
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.all(14),
+      child: Image.asset('assets/brand.png', fit: BoxFit.contain),
+    );
+  }
+
+  Widget _buildCircle(bool isConnected, double pulse, Widget? child) {
     final glowAlpha = isConnected ? ((0.3 + pulse * 0.25) * 255).round() : 0;
     final glowRadius = isConnected ? 18.0 + (pulse * 14) : 0.0;
 
@@ -128,21 +165,17 @@ class _ConnectButtonState extends State<ConnectButton>
           width: isConnected ? 2.5 : 1.5,
         ),
         boxShadow: isConnected
-            ? [BoxShadow(color: Color.fromARGB(glowAlpha, 255, 214, 0), blurRadius: glowRadius, spreadRadius: glowRadius * 0.3)]
+            ? [
+                BoxShadow(
+                  color: Color.fromARGB(glowAlpha, 255, 214, 0),
+                  blurRadius: glowRadius,
+                  spreadRadius: glowRadius * 0.3,
+                )
+              ]
             : [],
       ),
       clipBehavior: Clip.hardEdge,
-      child: spinning
-          ? const Center(
-              child: SizedBox(
-                width: 36, height: 36,
-                child: CircularProgressIndicator(strokeWidth: 2.5, color: AppColors.accent70),
-              ),
-            )
-          : Padding(
-              padding: const EdgeInsets.all(14),
-              child: Image.asset('assets/brand.png', fit: BoxFit.contain),
-            ),
+      child: child,
     );
   }
 }

@@ -8,26 +8,11 @@ abstract final class AppConfig {
   // ── Server ───────────────────────────────────────────────────────────
   /// Your server's public IP.  The VPN tunnel is pinned to this.
   static const String serverIp = '0.0.0.0';  // ◄── REPLACE
-
-  // ── Bootstrap (first-connect config fetch) ────────────────────────────
-  /// Hardcoded Reality config.  App connects with this, fetches the real
-  /// per-session VLESS URL through the tunnel, then reconnects.
-  static String get bootstrapVlessUrl =>
-      'vless://$bootstrapUuid@$serverIp:8443'
-      '?security=reality&type=xhttp&path=/revolt'
-      '&pbk=$realityPbk&sni=www.github.com&sid=$realitySid&fp=chrome'
-      '#ReVoltVPN';
-
-  /// Generate with `xray uuid` on the server.  Must match xray_config_reality.json.
-  static const String bootstrapUuid = '00000000-0000-0000-0000-000000000000';  // ◄── REPLACE
-
-  /// Server's Reality public key (from `xray x25519`).
-  static const String realityPbk = 'REPLACE_WITH_YOUR_PUBLIC_KEY';
-
-  /// Must be in xray_config_reality.json shortIds[].
-  static const String realitySid = 'abc123';
+  static const String hivemindApiPublic = 'https://YOUR_DOMAIN/api';  // ◄── REPLACE
 
   // ── Reality (VPN tunnel) ──────────────────────────────────────────────
+  //  Credentials (public key, shortId) come from /session/status, not from
+  //  here.  Only the transport parameters below are compiled in.
   /// The server picks a random SNI per session from REALITY_SNI_POOL.
   /// The client does NOT hardcode one — server is always the source of truth.
 

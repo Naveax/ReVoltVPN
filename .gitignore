@@ -5,63 +5,24 @@
 #  everything else is excluded by extension or directory rather than by being
 #  listed individually. A new file is therefore ignored by default instead of
 #  needing to be named here, and this file does not enumerate what it protects.
-#
-#  Machine-local exclusions live in .git/info/exclude, which is never committed.
+
 # =============================================================================
 
-# ── OS & editor ────────────────────────────────────────────────────────────
-*.swp
-.DS_Store
-.atom/
-.history
-.svn/
-.java-version
-.idea/
-.vscode/
-
-# ── Flutter / Dart build output ────────────────────────────────────────────
-.dart_tool/
-.flutter-plugins
-.flutter-plugins-dependencies
-.pub-cache/
-.pub/
-build/
-**/build/
-local_packages/*/build/
-local_packages/*/.dart_tool/
-*.dart_tool/
-**/doc/api/
-**/ios/Flutter/.last_build_id
-
-# ── Android build output ───────────────────────────────────────────────────
-**/android/**/gradle-wrapper.jar
-**/android/.gradle
-**/android/captures/
-**/android/gradlew
-**/android/gradlew.bat
-**/android/local.properties
-**/android/**/GeneratedPluginRegistrant.java
-**/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
-**/android/.cxx/
-**/android/app/build/
-**/android/app/crashlytics-build.properties
-
-# ── Python bytecode ────────────────────────────────────────────────────────
-__pycache__/
-*.pyc
-
-# ── Credentials & machine-local config ─────────────────────────────────────
+# ── Secrets ────────────────────────────────────────────────────────────────
 *.keystore
 *.jks
 android/key.properties
 android/admob.properties
+
+#  Real IPs and IDs. app_config.example.dart is the committed template.
 lib/logic/app_config.dart
-devtools_options.yaml
 
 # ── File types the shipped app does not contain ────────────────────────────
-#  Server code, infrastructure configs, captures, archives and logs. None of
-#  these extensions are tracked, so a blanket rule is safe and stays safe.
+#  Server code, infrastructure configs, captures, archives, dumps and logs.
+#  None of these extensions are tracked, so a blanket rule is safe and stays
+#  safe — it covers files that do not exist yet.
 *.py
+*.pyc
 *.json
 *.conf
 *.sh
@@ -81,10 +42,58 @@ devtools_options.yaml
 !/CONTRIBUTING.md
 !/PRIVACY_POLICY.md
 
-# ── Local working directories ──────────────────────────────────────────────
-#  Working material that is not part of the app. Needs a committed rule rather
-#  than a local-only one, because it can hold source-file types the extension
-#  rules above deliberately do not cover.
+# ── Working directories ────────────────────────────────────────────────────
+#  Material that is not part of the app. These need directory rules rather
+#  than type rules, because they can hold source-file types the rules above
+#  deliberately do not cover.
 .local/
+internal/
+hivemind/
+scraped/
 backup/
+backups/
 lib/logic/backup/
+
+# ── Flutter / Dart build output ────────────────────────────────────────────
+.dart_tool/
+*.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+build/
+**/build/
+local_packages/*/build/
+local_packages/*/.dart_tool/
+**/doc/api/
+**/ios/Flutter/.last_build_id
+
+# ── Android build output ───────────────────────────────────────────────────
+**/android/.gradle
+**/android/.cxx/
+**/android/app/build/
+**/android/captures/
+**/android/gradlew
+**/android/gradlew.bat
+**/android/local.properties
+**/android/**/gradle-wrapper.jar
+**/android/**/GeneratedPluginRegistrant.java
+**/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
+**/android/app/crashlytics-build.properties
+
+# ── Editors, tooling & OS ──────────────────────────────────────────────────
+.claude/
+.codewhale/
+.idea/
+.vscode/
+.atom/
+.history
+.svn/
+.java-version
+.DS_Store
+*.swp
+__pycache__/
+devtools_options.yaml
+
+#why are you even looking at this file? it's a secret. go away.
+whatsthis

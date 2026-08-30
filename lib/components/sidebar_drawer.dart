@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
@@ -126,8 +127,9 @@ class _SidebarDrawerState extends State<SidebarDrawer> {
               icon: Icons.settings,
               label: 'Settings',
               onTap: () {
+                final navigator = Navigator.of(context, rootNavigator: true);
                 Navigator.of(context).pop();
-                SettingsButton.open(context);
+                SettingsButton.openWithNavigator(navigator);
               },
             ),
 
@@ -135,8 +137,12 @@ class _SidebarDrawerState extends State<SidebarDrawer> {
               icon: Icons.system_update_alt,
               label: 'Check for updates',
               onTap: () {
+                final navigator = Navigator.of(context, rootNavigator: true);
+                final messenger = ScaffoldMessenger.of(context);
                 Navigator.of(context).pop();
-                Updater.check(context);
+                unawaited(
+                  Updater.check(navigator: navigator, messenger: messenger),
+                );
               },
             ),
 

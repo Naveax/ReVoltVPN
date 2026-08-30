@@ -37,11 +37,24 @@ class _LightningEffectState extends State<LightningEffect>
   void initState() {
     super.initState();
     _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 400));
-    _scheduleNext();
+    lightningEnabled.addListener(_onEnabledChanged);
+    if (lightningEnabled.value) _scheduleNext();
+  }
+
+  void _onEnabledChanged() {
+    if (lightningEnabled.value) {
+      _scheduleNext();
+    } else {
+      _timer?.cancel();
+      _ctrl.stop();
+      _bolt = null;
+    }
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    lightningEnabled.removeListener(_onEnabledChanged);
     _timer?.cancel();
     _ctrl.dispose();
     super.dispose();
@@ -54,13 +67,13 @@ class _LightningEffectState extends State<LightningEffect>
   }
 
   void _strike() {
-    if (!mounted) return;
+    if (!mounted || !lightningEnabled.value) return;
     _bolt = LightningBolt.random(_random);
     _ctrl.forward(from: 0.0);
 
     if (_random.nextDouble() < widget.doubleChance) {
       Future.delayed(const Duration(milliseconds: 120), () {
-        if (mounted) {
+        if (mounted && lightningEnabled.value) {
           _bolt = LightningBolt.random(_random);
           _ctrl.forward(from: 0.0);
         }
@@ -78,7 +91,7 @@ class _LightningEffectState extends State<LightningEffect>
 
   @override
   Widget build(BuildContext context) {
-    if (!lightningEnabled) return const SizedBox.shrink();
+    if (!lightningEnabled.value) return const SizedBox.shrink();
     return AnimatedBuilder(
       animation: _ctrl,
       builder: (_, child) {

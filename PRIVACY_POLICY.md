@@ -15,9 +15,13 @@ We collect the minimum required to operate the service:
 - A randomly generated device ID created on your phone. This is not linked to your identity in any way.
 - Your connection duration and data usage for the current session, linked to your device ID. This is used solely to enforce the per-session quota (see below).
 
+## What our server sees
+
+To start, check, or refresh your session, the app contacts our API directly rather than through the VPN tunnel. Our server therefore sees the IP address you are connecting from, alongside your device ID, for as long as the app is running. This is a necessary consequence of how sessions are issued and kept alive — it is separate from your browsing traffic, which is carried inside the tunnel and is described below.
+
 ## Session quotas
 
-Each session lasts up to **2 hours** or **10 GB** of data — whichever comes first. When your session expires or hits the data cap, the tunnel disconnects. You can start a new session by watching another ad. Session data (duration and bytes transferred) is stored in memory and deleted when your session ends.
+Each session lasts up to **2 hours** or **10 GB** of data — whichever comes first. When your session expires or hits the data cap, the tunnel disconnects. You can start a new session by watching another ad. Session records (duration and bytes transferred) are held on our server for the life of your session and removed when it ends.
 
 Support ads (the "Support us" button) extend an active session by 30 minutes and add extra data allowance.
 
@@ -34,7 +38,7 @@ We keep a short in-memory log buffer (last 200 lines) for debugging and server h
 
 ## Ads & Consent
 
-ReVoltVPN uses Google AdMob to display rewarded video ads. On first launch, users in the European Economic Area (EEA) and United Kingdom are shown a consent dialog (provided by Google's User Messaging Platform) that lets them choose whether to allow personalized ads. This consent choice is stored on your device and can be changed at any time by reinstalling the app. Google may collect data as part of ad delivery. Please refer to Google's Privacy Policy for details.
+ReVoltVPN uses Google AdMob to display rewarded video ads. Where required — for users in the European Economic Area (EEA) and United Kingdom — a consent dialog provided by Google's User Messaging Platform is shown before the first ad is requested, letting you choose whether to allow personalized ads. This choice is stored on your device and can be reviewed at any time from the "Ad Consent" entry in the sidebar menu. Google may collect data as part of ad delivery. Please refer to Google's Privacy Policy for details.
 
 ## Your traffic
 

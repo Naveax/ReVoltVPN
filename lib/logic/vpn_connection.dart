@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_vless/flutter_vless.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 
@@ -11,7 +12,7 @@ enum VpnStatus {
   error,
 }
 
-class VpnConnection extends ChangeNotifier {
+class VpnConnection extends ChangeNotifier with WidgetsBindingObserver {
   bool _cancelled = false;
   VpnStatus _status = VpnStatus.disconnected;
   VpnStatus get status => _status;
@@ -36,6 +37,7 @@ class VpnConnection extends ChangeNotifier {
   Future<void> get ready => _readyCompleter.future;
 
   VpnConnection() {
+    WidgetsBinding.instance.addObserver(this);
     _init();
   }
 
@@ -71,9 +73,7 @@ class VpnConnection extends ChangeNotifier {
       debugPrint('[VPN] VLESS init error (expected on emulator): $e');
     }
 
-    _checkHealth();
-    _healthTimer =
-        Timer.periodic(const Duration(seconds: 30), (_) => _checkHealth());
+    _startHealthPolling();
 
     try {
       final coreVersion = await _vless.getCoreVersion();
@@ -251,13 +251,37 @@ class VpnConnection extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _startHealthPolling() {
+    _healthTimer?.cancel();
+    _checkHealthIfIdle();
+    _healthTimer = Timer.periodic(
+        const Duration(seconds: 30), (_) => _checkHealthIfIdle());
+  }
+
+  Future<void> _checkHealthIfIdle() async {
+    // A live tunnel already proves reachability.
+    if (_status == VpnStatus.connected) return;
+    await _checkHealth();
+  }
+
   Future<void> _checkHealth() async {
     _serverReachable = await HivemindService.checkHealth();
     notifyListeners();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      _healthTimer?.cancel();
+    } else if (state == AppLifecycleState.resumed) {
+      _startHealthPolling();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _healthTimer?.cancel();
     if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
       try {

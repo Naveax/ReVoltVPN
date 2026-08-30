@@ -5,9 +5,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 // Server data model and ChangeNotifier — shared by StatusBar (shows current
 // server name/flag) and SelectionScreen (lets user pick a server).
 //
-// Each server is defined by its tunnel IP/port. Reality keys (public key,
-// shortId, fingerprint) come from AppConfig — all servers share the same
-// Reality keypair and bootstrap UUID (same operator, different locations).
+// Each server is defined by its tunnel IP/port. Reality credentials (public
+// key, shortId) come from /session/status per session; only the transport
+// parameters live in AppConfig.
 //
 // When multi-server ships:
 //   - _all becomes a fetched list (from /api/servers or bundled config)

@@ -34,9 +34,10 @@ class _SupportButtonState extends State<SupportButton> {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<SessionTimer>(
-      builder: (context, timer, _) {
-        if (!timer.isRunning && !timer.hasSyncedOnce) {
+    return Selector<SessionTimer, bool>(
+      selector: (_, timer) => timer.isRunning || timer.hasSyncedOnce,
+      builder: (context, visible, _) {
+        if (!visible) {
           return const SizedBox.shrink();
         }
 

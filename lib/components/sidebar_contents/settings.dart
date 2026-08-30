@@ -12,9 +12,7 @@ class SettingsButton extends StatelessWidget {
 
   // Opens the settings page sliding in from the right — matches the
   // sidebar end-drawer animation so it feels like one continuous motion.
-  static void open(BuildContext context) {
-    Navigator.of(context).push(
-      PageRouteBuilder(
+  static PageRoute<void> _route() => PageRouteBuilder<void>(
         transitionDuration: const Duration(milliseconds: 300),
         reverseTransitionDuration: const Duration(milliseconds: 250),
         pageBuilder: (_, __, ___) => const SettingsScreen(),
@@ -23,15 +21,21 @@ class SettingsButton extends StatelessWidget {
             position: Tween<Offset>(
               begin: const Offset(1.0, 0.0),
               end: Offset.zero,
-            ).animate(CurvedAnimation(
-              parent: animation,
-              curve: Curves.easeOut,
-            )),
+            ).animate(
+              CurvedAnimation(parent: animation, curve: Curves.easeOut),
+            ),
             child: child,
           );
         },
-      ),
-    );
+      );
+
+  static void openWithNavigator(NavigatorState navigator) {
+    if (!navigator.mounted) return;
+    navigator.push(_route());
+  }
+
+  static void open(BuildContext context) {
+    openWithNavigator(Navigator.of(context, rootNavigator: true));
   }
 
   @override

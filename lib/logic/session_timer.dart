@@ -1,14 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
+import 'package:revoltvpn/logic/notification_service.dart';
 
-class SessionTimer extends ChangeNotifier {
+class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _timer;
   int _tickCount = 0;
+  bool _appBackgrounded = false;
 
   final VpnConnection vpnConnection;
 
@@ -25,11 +27,14 @@ class SessionTimer extends ChangeNotifier {
   int _offlineSeconds = 0;
 
   static const int _pollIntervalSeconds = 5;
+  static const int _backgroundPollIntervalSeconds = 30;
 
-  int    _lastUsedBytes     = 0;
-  double _currentSpeedKBps  = 0.0;
+  int      _lastUsedBytes    = 0;
+  double   _currentSpeedKBps = 0.0;
+  DateTime? _lastSyncAt;
 
   SessionTimer({required this.vpnConnection}) {
+    WidgetsBinding.instance.addObserver(this);
     vpnConnection.addListener(_onVpnConnectionChanged);
   }
 
@@ -77,11 +82,14 @@ class SessionTimer extends ChangeNotifier {
     _usedBytes           = 0;
     _lastUsedBytes       = 0;
     _currentSpeedKBps    = 0.0;
+    _lastSyncAt          = null;
+    NotificationService.reset();
     _tickCount           = 0;
     _hasSyncedOnce       = false;
     _consecutiveFailures = 0;
     _offlineSeconds      = 0;
     _isDisconnecting     = false;
+    _appBackgrounded     = false;
 
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), _tick);
@@ -92,10 +100,9 @@ class SessionTimer extends ChangeNotifier {
 
   void _tick(Timer t) {
     if (_isDisconnecting) return;
-    if (_hasSyncedOnce && _consecutiveFailures < _maxConsecutiveFailures) {
-      if (_remainingSeconds > 0) {
-        _remainingSeconds--;
-      }
+    // A local clock: poll failures are about the network, not the clock.
+    if (_hasSyncedOnce && _remainingSeconds > 0) {
+      _remainingSeconds--;
     }
 
     if (_consecutiveFailures >= _maxConsecutiveFailures) {
@@ -112,11 +119,22 @@ class SessionTimer extends ChangeNotifier {
     }
 
     _tickCount++;
-    if (_tickCount % _pollIntervalSeconds == 0) {
+    final pollInterval = _appBackgrounded
+        ? _backgroundPollIntervalSeconds
+        : _pollIntervalSeconds;
+    if (_tickCount % pollInterval == 0) {
       _syncWithHivemind();
     }
 
     notifyListeners();
+
+    // Gated on a live tunnel. The plugin cancels the notification when the
+    // service stops, and re-posting after that leaves an ongoing notification
+    // the user cannot swipe away below Android 14.
+    if (_hasSyncedOnce &&
+        vpnConnection.status == VpnStatus.connected) {
+      NotificationService.updateTimer(formatted);
+    }
   }
 
   Future<void> disconnect({String reason = 'User requested'}) async {
@@ -133,6 +151,8 @@ class SessionTimer extends ChangeNotifier {
     _currentSpeedKBps = 0.0;
     _remainingSeconds = 0;
     _hasSyncedOnce = false;
+    _lastSyncAt = null;
+    NotificationService.reset();
     notifyListeners();
 
     await vpnConnection.disconnect();
@@ -163,9 +183,17 @@ class SessionTimer extends ChangeNotifier {
         _remainingSeconds = data['expires_in_seconds'] ?? _remainingSeconds;
         _usedBytes        = data['used_bytes']        ?? _usedBytes;
 
+        // Measure the real gap between polls: the interval is 5 s in the
+        // foreground, 30 s in the background, and arbitrary on a resume sync.
+        final now      = DateTime.now();
+        final lastSync = _lastSyncAt;
+        _lastSyncAt    = now;
+
         final int deltaBytes = _usedBytes - _lastUsedBytes;
-        if (_hasSyncedOnce && deltaBytes > 0) {
-          _currentSpeedKBps = (deltaBytes / _pollIntervalSeconds) / 1000;
+        if (_hasSyncedOnce && deltaBytes > 0 && lastSync != null) {
+          final elapsed = now.difference(lastSync).inMilliseconds / 1000.0;
+          _currentSpeedKBps =
+              elapsed > 0 ? (deltaBytes / elapsed) / 1000 : _currentSpeedKBps;
         } else if (!_hasSyncedOnce) {
           _currentSpeedKBps = 0.0;
         }
@@ -200,6 +228,7 @@ class SessionTimer extends ChangeNotifier {
   }
 
   void _resumeTicking() {
+    _lastSyncAt = null;
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), _tick);
     _isDisconnecting = false;
@@ -208,7 +237,22 @@ class SessionTimer extends ChangeNotifier {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      // Keep ticking, but slow the poll — the 5 s one wakes the radio.
+      _appBackgrounded = true;
+    } else if (state == AppLifecycleState.resumed) {
+      _appBackgrounded = false;
+      if (_timer != null && _timer!.isActive) {
+        _syncWithHivemind();
+      }
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     vpnConnection.removeListener(_onVpnConnectionChanged);
     _timer?.cancel();
     super.dispose();

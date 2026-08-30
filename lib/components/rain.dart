@@ -36,6 +36,7 @@ class _RainEffectState extends State<RainEffect>
   late final Ticker _ticker;
   final _drops = <_Drop>[];
   final _random = Random();
+  final _repaint = ValueNotifier<int>(0);
   Duration _last = Duration.zero;
 
   // Lifecycle
@@ -44,15 +45,31 @@ class _RainEffectState extends State<RainEffect>
   void initState() {
     super.initState();
     for (int i = 0; i < widget.dropCount; i++) {
-      _drops.add(_Drop.spawn(_random, widget.minLength, widget.maxLength));
+      _drops.add(
+          _Drop.spawn(_random, widget.minLength, widget.maxLength, widget.color));
     }
-    _ticker = createTicker(_onTick)..start();
+    _ticker = createTicker(_onTick);
+    rainEnabled.addListener(_onEnabledChanged);
+    if (rainEnabled.value) _ticker.start();
   }
 
   @override
   void dispose() {
+    rainEnabled.removeListener(_onEnabledChanged);
     _ticker.dispose();
+    _repaint.dispose();
     super.dispose();
+  }
+
+  void _onEnabledChanged() {
+    if (rainEnabled.value) {
+      // Ticker elapsed restarts at zero; a stale _last makes the first dt negative.
+      _last = Duration.zero;
+      _ticker.start();
+    } else {
+      _ticker.stop();
+    }
+    if (mounted) setState(() {});
   }
 
   // Tick
@@ -61,30 +78,30 @@ class _RainEffectState extends State<RainEffect>
     double dt = 0.016; // ~60 fps fallback on first tick
     if (_last != Duration.zero) {
       dt = (now - _last).inMicroseconds / 1000000.0;
-      dt = dt.clamp(0.0, 0.1); 
+      dt = dt.clamp(0.0, 0.1);
     }
     _last = now;
 
     for (final d in _drops) {
       d.y += d.speed * dt;
       if (d.y > 1.08) {
-        d.spawn(_random, widget.minLength, widget.maxLength);
-        d.y = -0.06 - _random.nextDouble() * 0.08; 
+        d.spawn(_random, widget.minLength, widget.maxLength, widget.color);
+        d.y = -0.06 - _random.nextDouble() * 0.08;
       }
     }
-    setState(() {}); 
+    _repaint.value++;
   }
 
   // Build
 
   @override
   Widget build(BuildContext context) {
-    if (!rainEnabled) return const SizedBox.shrink();
+    if (!rainEnabled.value) return const SizedBox.shrink();
     return CustomPaint(
       painter: _RainPainter(
         drops: _drops,
-        color: widget.color,
         windDrift: widget.windDrift,
+        repaint: _repaint,
       ),
       size: Size.infinite,
     );
@@ -96,37 +113,37 @@ class _RainEffectState extends State<RainEffect>
 // ═══════════════════════════════════════════════════════════════════════════
 
 class _Drop {
-  double x; 
-  double y; 
-  double speed; 
-  double length; 
-  double opacity; 
+  double x;
+  double y;
+  double speed;
+  double length;
+  Color color;
 
   _Drop({
     required this.x,
     required this.y,
     required this.speed,
     required this.length,
-    required this.opacity,
+    required this.color,
   });
 
   /// Create a drop at a random position anywhere on screen.
-  factory _Drop.spawn(Random r, double minLen, double maxLen) {
+  factory _Drop.spawn(Random r, double minLen, double maxLen, Color base) {
     return _Drop(
       x: r.nextDouble(),
       y: r.nextDouble(),
       speed: 0.30 + r.nextDouble() * 0.55,
       length: minLen + r.nextDouble() * (maxLen - minLen),
-      opacity: 0.05 + r.nextDouble() * 0.12,
+      color: base.withAlpha(((0.05 + r.nextDouble() * 0.12) * 255).round()),
     );
   }
 
   /// Re-randomise all properties (call when recycling a drop to the top).
-  void spawn(Random r, double minLen, double maxLen) {
+  void spawn(Random r, double minLen, double maxLen, Color base) {
     x = r.nextDouble();
     speed = 0.30 + r.nextDouble() * 0.55;
     length = minLen + r.nextDouble() * (maxLen - minLen);
-    opacity = 0.05 + r.nextDouble() * 0.12;
+    color = base.withAlpha(((0.05 + r.nextDouble() * 0.12) * 255).round());
   }
 }
 
@@ -136,14 +153,13 @@ class _Drop {
 
 class _RainPainter extends CustomPainter {
   final List<_Drop> drops;
-  final Color color;
   final double windDrift;
 
   _RainPainter({
     required this.drops,
-    required this.color,
     required this.windDrift,
-  });
+    required Listenable repaint,
+  }) : super(repaint: repaint);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -157,11 +173,11 @@ class _RainPainter extends CustomPainter {
       final ex = sx - windDrift; // slight leftward slant
       final ey = sy + d.length;
 
-      paint.color = color.withAlpha((d.opacity * 255).round());
+      paint.color = d.color;
       canvas.drawLine(Offset(sx, sy), Offset(ex, ey), paint);
     }
   }
 
   @override
-  bool shouldRepaint(_RainPainter old) => true; // always animating
+  bool shouldRepaint(_RainPainter old) => false; // repaint listenable drives frames
 }

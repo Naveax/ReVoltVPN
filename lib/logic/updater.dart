@@ -61,8 +61,24 @@ class GitHubUpdater {
     }
   }
 
+  static bool _isTrustedReleaseUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null || uri.scheme != 'https' || uri.host != 'github.com') {
+      return false;
+    }
+    // Host alone is not enough: anyone can host a release on github.com.
+    return uri.path
+        .startsWith('/${AppConfig.githubOwner}/${AppConfig.githubRepo}/');
+  }
+
   static Future<bool> open() async {
-    final url = _cachedDownloadUrl ?? AppConfig.githubReleasesUrl;
+    final cached = _cachedDownloadUrl;
+    final url = (cached != null && _isTrustedReleaseUrl(cached))
+        ? cached
+        : AppConfig.githubReleasesUrl;
+    if (cached != null && url != cached) {
+      debugPrint('[Updater] Rejected untrusted release URL: $cached');
+    }
     try {
       return await launchUrl(Uri.parse(url),
           mode: LaunchMode.externalApplication);
@@ -115,32 +131,35 @@ class Updater {
     return '$prefix$v${isLocal ? ' (installed)' : ''}';
   }
 
-  static Future<void> check(BuildContext context) async {
+  static Future<void> check({
+    required NavigatorState navigator,
+    required ScaffoldMessengerState messenger,
+  }) async {
     final info = await PackageInfo.fromPlatform();
     final localVersion = info.version;
     if (localVersion.isEmpty) {
-      _showSnackBar(context, 'Could not determine app version',
+      _showSnackBar(messenger, 'Could not determine app version',
           isError: true);
       return;
     }
 
     final latestVersion = await GitHubUpdater.fetchLatestVersion();
     if (latestVersion == null) {
-      _showSnackBar(context, 'Could not reach GitHub', isError: true);
+      _showSnackBar(messenger, 'Could not reach GitHub', isError: true);
       return;
     }
 
     if (_compareVersions(localVersion, latestVersion) >= 0) {
-      _showSnackBar(context, 'Up to date');
+      _showSnackBar(messenger, 'Up to date');
       return;
     }
 
     final source = await installSource;
     final storeName = source == InstallSource.playStore ? 'Play Store' : 'GitHub';
-    if (!context.mounted) return;
+    if (!navigator.mounted) return;
 
     showDialog(
-      context: context,
+      context: navigator.context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.bgCard,
         title: const Text('Update available',
@@ -171,9 +190,10 @@ class Updater {
     );
   }
 
-  static void _showSnackBar(BuildContext context, String message,
+  static void _showSnackBar(ScaffoldMessengerState messenger, String message,
       {bool isError = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(
+    if (!messenger.mounted) return;
+    messenger.showSnackBar(
       SnackBar(
         content: Row(
           children: [

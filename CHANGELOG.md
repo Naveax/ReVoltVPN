@@ -5,6 +5,77 @@ Versions follow [semver](https://semver.org/): MAJOR.MINOR.PATCH
 
 ---
 
+## [3.3.0] — Unreleased
+
+### Added
+- Session countdown in the VPN notification, updated each second while connected.
+
+### Fixed
+- **Session-expiry desync** — the app could show "Online" with no internet after
+  the server ended the session. The countdown no longer freezes when a poll fails.
+- **Notification Disconnect button** disappeared a second after connecting.
+  Re-posting the foreground notification replaces it wholesale, so the action,
+  colour and tap-intent flutter_vless sets are now rebuilt rather than dropped.
+- **Speed readout** divided the byte delta by the nominal poll interval instead of
+  the real time between polls — wrong by up to 6x around every background switch.
+- **Settings toggles** now apply at launch. Rain, lightning and haptics were only
+  read from disk when Settings mounted, so an effect turned off came back — ticker
+  and all — on every relaunch, and haptic feedback did nothing until Settings had
+  been opened at least once.
+- **Haptic feedback** now fires `mediumImpact()` instead of `lightImpact()` (which
+  is imperceptible on many Android devices), wrapped best-effort so a platform
+  vibration failure cannot fail a connect/disconnect, with a preview tap when the
+  toggle is switched on.
+- First-launch disclosure dialog said data was linked to "your account". It is
+  linked to a randomly generated device ID, and the policy is in the sidebar, not
+  on a website.
+- Sidebar "Settings" and "Check for updates" used the drawer's context after
+  `Navigator.pop()` — a defunct context. They now capture the root navigator (and
+  messenger) before closing the drawer. *(Fix ported from Naveax's review.)*
+
+### Performance
+- Rain overlay ticks only while enabled, repaints through a scoped `Listenable`
+  instead of rebuilding every frame, and precomputes drop colours.
+- Lightning no longer fires strikes while disabled.
+- Connect button pulse pauses when backgrounded; brand image hoisted out of the
+  per-frame rebuild.
+- Server poll drops to 30 s while backgrounded (5 s foreground), with an immediate
+  re-sync on resume. The 1 s countdown keeps running.
+- Health probe runs only while disconnected, and pauses in the background.
+- Speed and support widgets rebuild on value change instead of every second.
+- Notification channel is created once per process, not once per second.
+
+### Changed
+- VLESS engine initializes under the splash screen; the intro waits on
+  `VpnConnection.ready` (8 s cap) before showing the main screen.
+- AdMob SDK init moved off the blocking pre-`runApp()` path so startup cannot hang
+  on an unreachable Google endpoint.
+- `app_config.example.dart` drops the dead bootstrap fields and documents
+  `hivemindApiPublic` in their place.
+- `.gitignore` reorganized around type and directory rules; the enumerated
+  filename list is gone (redundant with the type rules) and `.claude/` is now
+  ignored.
+
+### Security
+- Update checker pins the release URL to this repo's path on `github.com`, not just
+  the host. Anything else falls back to the releases page.
+- Notification timer updates are gated on a live tunnel, so a late tick cannot leave
+  an ongoing notification with no foreground service behind it.
+- Dropped `READ_EXTERNAL_STORAGE`, which `flutter_vless` pulls in but the app never uses
+  (least privilege).
+- Pinned the Gradle 8.14 distribution SHA-256; `validateDistributionUrl` enabled
+  (supply-chain integrity).
+
+### Build & tooling (ported from Naveax)
+- Removed the deprecated `android.enableR8` flag.
+- Added `analysis_options.yaml` (flutter_lints, `local_packages/**` excluded, `avoid_print`).
+- Added `.gitattributes` to pin LF line endings repo-wide.
+- Credit: reviewed and ported from **Naveax**.
+
+### Docs
+- Privacy policy: disclosed that the server sees the connecting IP, corrected the
+  "stored in memory" claim, and documented consent being changeable from the sidebar.
+
 ## [3.2.2] — 2026-08-08
 
 ### Fixed
