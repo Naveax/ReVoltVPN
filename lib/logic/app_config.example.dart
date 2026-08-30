@@ -29,8 +29,8 @@ abstract final class AppConfig {
   // ── Updates ────────────────────────────────────────────────────────────
   /// Used by the updater.
   static const String applicationId = 'com.paladinvpn.app';   // ◄── REPLACE
-  static const String githubOwner   = 'YOUR_USERNAME';        // ◄── REPLACE
-  static const String githubRepo    = 'revoltvpn';            // ◄── REPLACE
+  static const String githubOwner   = 'YOUR_GITHUB_USERNAME'; // ◄── REPLACE (current: 'esefxdz')
+  static const String githubRepo    = 'YOUR_REPO_NAME';       // ◄── REPLACE (current: 'ReVoltVPN')
 
   /// Fallback URL if the GitHub API call fails.
   static const String githubReleasesUrl = 'https://github.com/$githubOwner/$githubRepo/releases/latest';
