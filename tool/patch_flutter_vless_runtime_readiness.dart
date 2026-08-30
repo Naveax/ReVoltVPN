@@ -212,9 +212,8 @@ void main() {
                     val localSocket = LocalSocket()
                     localSocket.connect(LocalSocketAddress(sockFile, LocalSocketAddress.Namespace.FILESYSTEM))
                     val out = localSocket.outputStream
-                    // This magic call attaches the FD to the socket message
                     localSocket.setFileDescriptorsForSend(arrayOf(fd))
-                    out.write(32) // Send a dummy byte to trigger the transfer
+                    out.write(32)
                     localSocket.setFileDescriptorsForSend(null)
                     localSocket.shutdownOutput()
                     localSocket.close()
@@ -316,7 +315,8 @@ void main() {
         activity = null
     }
 ''',
-    'onDetachedFromActivityForConfigChanges() {\n        unregisterReceiver()',
+    '''unregisterReceiver()
+        activity = null''',
   );
 
   stdout.writeln('[runtime readiness patch] fail-closed VPN readiness hardening ready');
