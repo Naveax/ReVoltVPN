@@ -24,6 +24,7 @@ import java.io.InputStream
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URL
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 object XrayCoreManager {
@@ -131,8 +132,8 @@ object XrayCoreManager {
                 )
         )
 
-        // ReVolt owns its local control inbounds. Remove legacy loopback SOCKS/HTTP/API
-        // entries so a stale imported config cannot silently re-open a no-auth proxy.
+        // ReVolt owns its local control inbounds. Strip imported loopback proxy/API
+        // listeners so a stale config cannot reopen a fixed no-auth surface.
         val original = configJson.optJSONArray("inbounds") ?: JSONArray()
         val inbounds = JSONArray()
         val usedPorts = mutableSetOf<Int>()
@@ -164,21 +165,21 @@ object XrayCoreManager {
         } else {
             socksSettings.put("auth", "noauth")
         }
-        val socksInbound = JSONObject()
-            .put("tag", uniqueInboundTag(inbounds, "socks"))
-            .put("port", config.LOCAL_SOCKS5_PORT)
-            .put("listen", "127.0.0.1")
-            .put("protocol", "socks")
-            .put("settings", socksSettings)
-            .put(
-                "sniffing",
-                JSONObject().put("enabled", true).put("destOverride", JSONArray().put("http").put("tls"))
-            )
-        inbounds.put(socksInbound)
+        inbounds.put(
+            JSONObject()
+                .put("tag", uniqueInboundTag(inbounds, "socks"))
+                .put("port", config.LOCAL_SOCKS5_PORT)
+                .put("listen", "127.0.0.1")
+                .put("protocol", "socks")
+                .put("settings", socksSettings)
+                .put(
+                    "sniffing",
+                    JSONObject().put("enabled", true).put("destOverride", JSONArray().put("http").put("tls"))
+                )
+        )
         usedPorts.add(config.LOCAL_SOCKS5_PORT)
 
-        // HTTP inbound is intentionally not created. The app does not use it and it
-        // only added a second unauthenticated loopback attack surface.
+        // HTTP inbound is intentionally absent. ReVolt does not use it.
         config.LOCAL_HTTP_PORT = 0
 
         config.LOCAL_API_PORT = nextFreePort(config.LOCAL_API_PORT, usedPorts)
@@ -249,12 +250,12 @@ object XrayCoreManager {
                 return false
             }
 
+            // Monitor this exact process instance. Never re-read a global process
+            // handle from an older generation after a fast reconnect.
             Thread {
                 try {
                     process.inputStream.bufferedReader().use { reader ->
-                        reader.forEachLine { line ->
-                            if (BuildConfig.DEBUG) Log.d(TAG, "xray: $line")
-                        }
+                        reader.forEachLine { /* production output deliberately discarded */ }
                     }
                     val exitCode = process.waitFor()
                     var unexpected = false
@@ -296,15 +297,35 @@ object XrayCoreManager {
         return true
     }
 
+    fun markProxyOnlyConnected(context: XrayVPNService, config: XrayConfig, generation: Long): Boolean {
+        synchronized(processLock) {
+            if (activeGeneration != generation || xrayProcess?.isAlive != true) return false
+        }
+        if (!AppConfigs.SOCKS_READY) return false
+        AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_CONNECTED
+        AppConfigs.LAST_ERROR = ""
+        lastProxyUplink = 0L
+        lastProxyDownlink = 0L
+        startTimer(context)
+        showNotification(context, config)
+        sendStateBroadcast(context)
+        return true
+    }
+
     fun stopCore(context: XrayVPNService, broadcast: Boolean = true) {
         val process = synchronized(processLock) {
             val current = xrayProcess
             xrayProcess = null
+            activeGeneration = 0L
             current
         }
         try {
             process?.destroy()
-            if (process != null && !process.waitFor(600, TimeUnit.MILLISECONDS)) process.destroyForcibly()
+            if (process != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                !process.waitFor(600, TimeUnit.MILLISECONDS)
+            ) {
+                process.destroyForcibly()
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to stop Xray cleanly", e)
         }
@@ -354,7 +375,7 @@ object XrayCoreManager {
             .putExtra("SOCKS_USER", config?.LOCAL_SOCKS5_USER.orEmpty())
             .putExtra("SOCKS_PASS", config?.LOCAL_SOCKS5_PASS.orEmpty())
             .putExtra("LAST_ERROR", AppConfigs.LAST_ERROR)
-        context.sendBroadcast(intent)
+        context.sendBroadcast(intent, AppConfigs.INTERNAL_STATUS_PERMISSION)
     }
 
     fun getV2rayTraffic(context: Context): LongArray {
@@ -367,7 +388,10 @@ object XrayCoreManager {
                 xrayPath, "api", "statsquery", "--server=127.0.0.1:$port", "--pattern", ""
             ).start()
             val output = process.inputStream.bufferedReader().readText()
-            process.waitFor(2, TimeUnit.SECONDS)
+            if (!process.waitFor(2, TimeUnit.SECONDS)) {
+                process.destroy()
+                return longArrayOf(0, 0, 0, 0)
+            }
             if (output.isEmpty()) return longArrayOf(0, 0, 0, 0)
             val stats = JSONObject(output).optJSONArray("stat") ?: return longArrayOf(0, 0, 0, 0)
             var up = 0L
@@ -474,10 +498,14 @@ object XrayCoreManager {
         return try {
             val socksPort = ServerSocket(0).use { it.localPort }
             val apiPort = ServerSocket(0).use { it.localPort }
+            val delayUser = "rv_delay"
+            val delayPass = UUID.randomUUID().toString()
             val config = XrayConfig(
                 V2RAY_FULL_JSON_CONFIG = configJson,
                 LOCAL_SOCKS5_PORT = socksPort,
-                LOCAL_API_PORT = apiPort
+                LOCAL_API_PORT = apiPort,
+                LOCAL_SOCKS5_USER = delayUser,
+                LOCAL_SOCKS5_PASS = delayPass
             )
             tempFile = File(context.filesDir, "temp_delay_config_${System.nanoTime()}.json")
             tempFile.writeText(buildRuntimeConfigJson(config, context.filesDir).toString())
@@ -490,11 +518,11 @@ object XrayCoreManager {
             process = pb.start()
             Thread.sleep(500)
             if (!process.isAlive) return -1L
-            measureSocksDelay(config.LOCAL_SOCKS5_PORT, "", "", url)
+            measureSocksDelay(config.LOCAL_SOCKS5_PORT, delayUser, delayPass, url)
         } catch (_: Exception) {
             -1L
         } finally {
-            try { process?.destroyForcibly() } catch (_: Exception) {}
+            try { process?.destroy() } catch (_: Exception) {}
             try { tempFile?.delete() } catch (_: Exception) {}
         }
     }
