@@ -64,7 +64,7 @@ class _ResilienceModeTileState extends State<ResilienceModeTile> {
           ),
           subtitle: Text(
             extreme
-                ? 'Extreme: keeps the exact server transport unchanged and only retries the same runtime after a real Xray disconnect. Recovery is bounded.$active'
+                ? 'Extreme: keeps the exact server transport unchanged and makes up to two controlled recovery attempts after each real Xray disconnect.$active'
                 : 'Standard: keeps the exact server transport unchanged and does not force health-check reconnects.$active',
             style: const TextStyle(color: AppColors.textDim, fontSize: 12),
           ),
