@@ -153,7 +153,9 @@ jobs:
           assert 'Connection diagnostics' not in settings_ui
           assert "label: const Text('Server Local')" not in mode_ui
           assert 'manual proxy' in mode_ui
-          assert 'not applied in SOCKS5 mode' in routing_ui
+          assert 'if (_proxyMode || _assMode || next == null || next == _mode) return;' in routing_ui
+          assert 'final showPicker = !_proxyMode' in routing_ui
+          assert "'Not applied'" in routing_ui
 
           # Deliberately untouched legacy/dev AdMob + nonce behavior.
           assert 'static const bool adsEnabled = false;' in ad
