@@ -92,13 +92,11 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
   String get _subtitle {
     switch (_mode) {
       case ConnectionMode.auto:
-        return 'Auto: All/Exclude uses the stable TUN path. Selected only uses compatibility App Specific routing.';
+        return 'Auto: All/Exclude uses the stable TUN path. Selected only uses compatibility per-app routing.';
       case ConnectionMode.tun:
         return 'TUN: Android VPN routing. Selected only keeps Android network helpers available for app compatibility.';
       case ConnectionMode.proxy:
         return 'SOCKS5: transparent gateway. Normal apps are routed automatically while $localSocksAddress stays available.';
-      case ConnectionMode.ass:
-        return 'ASS: selected apps are automatically routed through Local SOCKS5; Android network helpers stay available.';
     }
   }
 
@@ -133,10 +131,6 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
                 DropdownMenuItem(
                   value: ConnectionMode.proxy,
                   child: Text('SOCKS5'),
-                ),
-                DropdownMenuItem(
-                  value: ConnectionMode.ass,
-                  child: Text('App Specific (ASS)'),
                 ),
               ],
             ),
