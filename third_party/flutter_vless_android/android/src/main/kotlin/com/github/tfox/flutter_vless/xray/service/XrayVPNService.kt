@@ -68,11 +68,15 @@ class XrayVPNService : VpnService() {
             }
 
             AppConfigs.V2RAY_SERVICE_COMMANDS.RESTART_SERVICE -> {
-                val config = currentConfig
+                // After the Flutter process is recreated, this service instance
+                // may be new while the daemon process still owns the last private
+                // config snapshot. Never expose the snapshot outside this process.
+                val config = currentConfig ?: AppConfigs.V2RAY_CONFIG
                 if (config == null) {
-                    terminateService("No active runtime to restart")
+                    terminateService("No active runtime snapshot to restart")
                     return START_NOT_STICKY
                 }
+                currentConfig = config
                 Thread { startRuntime(config, currentProxyOnly) }.start()
             }
 
@@ -127,8 +131,8 @@ class XrayVPNService : VpnService() {
             } catch (e: Exception) {
                 Log.e(TAG, "Runtime start failed", e)
                 AppConfigs.LAST_ERROR = e.message ?: "Runtime start failed"
-                // A failed start may never leave an apparently live foreground VPN.
-                terminateServiceLocked(AppConfigs.LAST_ERROR)
+                // Initial setup failure is not a recoverable snapshot.
+                terminateServiceLocked(AppConfigs.LAST_ERROR, preserveConfig = false)
             }
         }
     }
@@ -175,7 +179,6 @@ class XrayVPNService : VpnService() {
             try {
                 builder.addDisallowedApplication(pkg)
             } catch (e: Exception) {
-                // A stale uninstalled app is not a reason to disable VPN safety.
                 Log.w(TAG, "Could not bypass package $pkg", e)
             }
         }
@@ -237,18 +240,24 @@ class XrayVPNService : VpnService() {
         Thread {
             try {
                 process.inputStream.bufferedReader().use { reader ->
-                    reader.forEachLine { /* release runtime output intentionally discarded */ }
+                    reader.forEachLine { /* release output deliberately discarded */ }
                 }
                 val code = process.waitFor()
                 if (generation == currentGeneration && runtimeExpected && !stopping) {
                     Log.e(TAG, "tun2socks exited unexpectedly with code $code")
-                    terminateService("tun2socks exited unexpectedly")
+                    terminateService(
+                        "tun2socks exited unexpectedly",
+                        preserveConfig = true,
+                    )
                 }
             } catch (_: InterruptedException) {
             } catch (e: Exception) {
                 if (generation == currentGeneration && runtimeExpected && !stopping) {
                     Log.e(TAG, "tun2socks monitor failed", e)
-                    terminateService("tun2socks monitor failed")
+                    terminateService(
+                        "tun2socks monitor failed",
+                        preserveConfig = true,
+                    )
                 }
             }
         }.start()
@@ -271,8 +280,6 @@ class XrayVPNService : VpnService() {
                 socket.setFileDescriptorsForSend(null)
                 socket.shutdownOutput()
                 socket.close()
-                // The write proves the FD was accepted by the Unix socket. Also
-                // require the consumer process to remain alive after the handoff.
                 Thread.sleep(250)
                 return generation == currentGeneration && !stopping && tun2socksProcess?.isAlive == true
             } catch (_: Exception) {
@@ -299,7 +306,10 @@ class XrayVPNService : VpnService() {
 
     fun handleXrayCoreExit(generation: Long) {
         if (generation != currentGeneration || stopping) return
-        terminateService("Xray core exited unexpectedly")
+        terminateService(
+            "Xray core exited unexpectedly",
+            preserveConfig = true,
+        )
     }
 
     private fun shutdownRuntimeInternal(broadcast: Boolean, keepConfig: Boolean) {
@@ -326,26 +336,33 @@ class XrayVPNService : VpnService() {
         if (broadcast) XrayCoreManager.sendStateBroadcast(this)
     }
 
-    private fun terminateService(reason: String) {
+    private fun terminateService(
+        reason: String,
+        preserveConfig: Boolean = false,
+    ) {
         synchronized(runtimeLock) {
-            terminateServiceLocked(reason)
+            terminateServiceLocked(reason, preserveConfig)
         }
     }
 
-    private fun terminateServiceLocked(reason: String) {
+    private fun terminateServiceLocked(
+        reason: String,
+        preserveConfig: Boolean,
+    ) {
         if (stopping) return
         stopping = true
         AppConfigs.LAST_ERROR = if (reason == "Stop requested") "" else reason
         currentGeneration++
-        shutdownRuntimeInternal(broadcast = true, keepConfig = false)
+        shutdownRuntimeInternal(
+            broadcast = true,
+            keepConfig = preserveConfig,
+        )
         try { stopForeground(true) } catch (_: Exception) {}
         stopSelf()
-        // Deliberately remain stopping=true. A fresh START creates/restarts the
-        // service lifecycle; onDestroy must not start a second cleanup race.
     }
 
     override fun onRevoke() {
-        terminateService("VPN permission revoked")
+        terminateService("VPN permission revoked", preserveConfig = false)
         super.onRevoke()
     }
 
