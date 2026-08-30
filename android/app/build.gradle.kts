@@ -27,6 +27,7 @@ val dartExecutable = File(
 val flutterVlessPatchScript = File(projectRootDir, "tool/patch_flutter_vless_allowed_apps.dart")
 val flutterVlessReadinessPatchScript = File(projectRootDir, "tool/patch_flutter_vless_runtime_readiness.dart")
 val flutterVlessSurfacePatchScript = File(projectRootDir, "tool/patch_flutter_vless_surface_hardening.dart")
+val flutterVlessStopAckPatchScript = File(projectRootDir, "tool/patch_flutter_vless_stop_ack.dart")
 
 val patchFlutterVlessAllowedApps = tasks.register<Exec>("patchFlutterVlessAllowedApps") {
     group = "build setup"
@@ -53,7 +54,7 @@ val patchFlutterVlessRuntimeReadiness = tasks.register<Exec>("patchFlutterVlessR
 
 val patchFlutterVlessSurfaceHardening = tasks.register<Exec>("patchFlutterVlessSurfaceHardening") {
     group = "build setup"
-    description = "Remove unused local HTTP proxy and gate startup restoration on proven tunnel readiness"
+    description = "Remove unused HTTP proxy, authenticate local SOCKS, and gate startup restoration"
     workingDir(projectRootDir)
     dependsOn(patchFlutterVlessRuntimeReadiness)
     doFirst {
@@ -62,17 +63,28 @@ val patchFlutterVlessSurfaceHardening = tasks.register<Exec>("patchFlutterVlessS
     commandLine(dartExecutable.absolutePath, "run", flutterVlessSurfacePatchScript.absolutePath)
 }
 
+val patchFlutterVlessStopAck = tasks.register<Exec>("patchFlutterVlessStopAck") {
+    group = "build setup"
+    description = "Wait for native DISCONNECTED acknowledgment before considering VPN teardown complete"
+    workingDir(projectRootDir)
+    dependsOn(patchFlutterVlessSurfaceHardening)
+    doFirst {
+        if (!flutterVlessStopAckPatchScript.isFile) throw GradleException("stop acknowledgment patch missing: ${flutterVlessStopAckPatchScript.absolutePath}")
+    }
+    commandLine(dartExecutable.absolutePath, "run", flutterVlessStopAckPatchScript.absolutePath)
+}
+
 // App compilation and the transitive Android plugin compilation must both wait
 // for deterministic native hardening. Plain `flutter build apk` must behave like CI.
 tasks.configureEach {
-    if (name == "preBuild") dependsOn(patchFlutterVlessSurfaceHardening)
+    if (name == "preBuild") dependsOn(patchFlutterVlessStopAck)
 }
 
 gradle.projectsEvaluated {
     rootProject.findProject(":flutter_vless_android")
         ?.tasks
         ?.matching { it.name == "preBuild" }
-        ?.configureEach { dependsOn(patchFlutterVlessSurfaceHardening) }
+        ?.configureEach { dependsOn(patchFlutterVlessStopAck) }
 }
 
 android {
