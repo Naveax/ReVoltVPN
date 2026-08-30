@@ -1,6 +1,6 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
-enum ConnectionMode { tun, proxy, ass }
+enum ConnectionMode { auto, tun, proxy, ass }
 enum AppRoutingMode { all, exclude, selected }
 enum ResilienceMode { standard, extreme }
 
@@ -13,7 +13,7 @@ abstract final class ConnectionSettings {
   static const String _legacyBlockedAppsKey = 'blocked_apps';
   static const String _resilienceModeKey = 'resilience_mode';
 
-  static ConnectionMode _mode = ConnectionMode.tun;
+  static ConnectionMode _mode = ConnectionMode.auto;
   static AppRoutingMode _routingMode = AppRoutingMode.all;
   static ResilienceMode _resilienceMode = ResilienceMode.standard;
   static List<String> _appPackages = const <String>[];
@@ -30,12 +30,14 @@ abstract final class ConnectionSettings {
     final prefs = await SharedPreferences.getInstance();
 
     final storedMode = prefs.getString(_modeKey);
-    if (storedMode == ConnectionMode.proxy.name) {
+    if (storedMode == ConnectionMode.tun.name) {
+      _mode = ConnectionMode.tun;
+    } else if (storedMode == ConnectionMode.proxy.name) {
       _mode = ConnectionMode.proxy;
     } else if (storedMode == ConnectionMode.ass.name) {
       _mode = ConnectionMode.ass;
     } else {
-      _mode = ConnectionMode.tun;
+      _mode = ConnectionMode.auto;
     }
 
     final legacyBlocked =
