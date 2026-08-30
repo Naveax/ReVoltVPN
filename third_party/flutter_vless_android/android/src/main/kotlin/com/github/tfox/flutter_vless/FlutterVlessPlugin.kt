@@ -9,8 +9,10 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.ResultReceiver
 import androidx.core.app.ActivityCompat
 import com.github.tfox.flutter_vless.xray.core.XrayCoreManager
 import com.github.tfox.flutter_vless.xray.dto.XrayConfig
@@ -28,6 +30,7 @@ import java.io.File
 import java.io.InputStreamReader
 import java.util.ArrayList
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
     PluginRegistry.ActivityResultListener, MethodChannel.MethodCallHandler {
@@ -58,6 +61,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
     companion object {
         private const val REQUEST_CODE_VPN_PERMISSION = 24
         private const val REQUEST_CODE_POST_NOTIFICATIONS = 1
+        private const val STATE_QUERY_TIMEOUT_MS = 1200L
     }
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -94,7 +98,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
                 else context.startService(intent)
                 result.success(true)
             }
-            "getTunnelState" -> result.success(tunnelStateMap())
+            "getTunnelState" -> queryTunnelState(result)
             "setAllowedApps" -> {
                 val packages = call.argument<List<String>>("packages") ?: emptyList()
                 pendingAllowedApps = ArrayList(packages.filter { it.isNotBlank() }.distinct())
@@ -240,6 +244,53 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
         "generation" to lastGeneration,
         "error" to lastError
     )
+
+    private fun applyTunnelState(bundle: Bundle) {
+        lastState = bundle.getString("state", "DISCONNECTED")
+        lastTunEstablished = bundle.getBoolean("tunEstablished", false)
+        lastFdDelivered = bundle.getBoolean("fdDelivered", false)
+        lastSocksReady = bundle.getBoolean("socksReady", false)
+        lastSocksPort = bundle.getInt("socksPort", 0)
+        lastSocksUser = bundle.getString("socksUser").orEmpty()
+        lastSocksPass = bundle.getString("socksPass").orEmpty()
+        lastGeneration = bundle.getLong("generation", 0L)
+        lastError = bundle.getString("error").orEmpty()
+        if (lastState == "DISCONNECTED") {
+            lastSocksPort = 0
+            lastSocksUser = ""
+            lastSocksPass = ""
+        }
+    }
+
+    private fun queryTunnelState(result: MethodChannel.Result) {
+        val completed = AtomicBoolean(false)
+        val receiver = object : ResultReceiver(mainHandler) {
+            override fun onReceiveResult(resultCode: Int, resultData: Bundle?) {
+                if (!completed.compareAndSet(false, true)) return
+                if (resultData != null) applyTunnelState(resultData)
+                result.success(tunnelStateMap())
+            }
+        }
+
+        val intent = Intent(context, XrayVPNService::class.java)
+            .putExtra("COMMAND", AppConfigs.V2RAY_SERVICE_COMMANDS.QUERY_STATE)
+            .putExtra("STATE_RECEIVER", receiver)
+
+        try {
+            context.startService(intent)
+        } catch (_: Exception) {
+            if (completed.compareAndSet(false, true)) {
+                result.success(tunnelStateMap())
+            }
+            return
+        }
+
+        mainHandler.postDelayed({
+            if (completed.compareAndSet(false, true)) {
+                result.success(tunnelStateMap())
+            }
+        }, STATE_QUERY_TIMEOUT_MS)
+    }
 
     private fun registerReceiver() {
         if (receiverRegistered) return
