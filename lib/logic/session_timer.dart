@@ -113,17 +113,34 @@ class SessionTimer extends ChangeNotifier {
       return;
     }
 
-    if (!_isDisconnecting &&
-        (vpnConnection.status == VpnStatus.disconnected ||
-            vpnConnection.status == VpnStatus.error)) {
-      unawaited(
-        _doDisconnect(
-          vpnConnection.status == VpnStatus.error
-              ? 'VPN entered error state'
-              : 'VPN tunnel dropped',
-        ),
-      );
+    final hadActiveSession = isRunning || _hasSyncedOnce;
+    if (!hadActiveSession || _isDisconnecting) return;
+
+    if (vpnConnection.status == VpnStatus.error) {
+      // VpnConnection already cleans up failed runtimes. Do not call
+      // disconnect() again here or the useful error state/message gets erased.
+      _stopForVpnFailure('VPN entered error state');
+      return;
     }
+
+    if (vpnConnection.status == VpnStatus.disconnected) {
+      unawaited(_doDisconnect('VPN tunnel dropped'));
+    }
+  }
+
+  void _stopForVpnFailure(String reason) {
+    if (_isDisconnecting) return;
+    _isDisconnecting = true;
+    debugPrint('[Timer] Stopping after VPN failure: $reason');
+
+    _timer?.cancel();
+    _timer = null;
+    _currentSpeedKBps = 0.0;
+    _remainingSeconds = 0;
+    _hasSyncedOnce = false;
+    _consecutiveFailures = 0;
+    _offlineSeconds = 0;
+    notifyListeners();
   }
 
   Future<void> start() async {
@@ -218,6 +235,7 @@ class SessionTimer extends ChangeNotifier {
       final base = Uri.parse('${AppConfig.hivemindApiPublic}/session/status');
       final url = base.replace(queryParameters: {'device_id': deviceId});
       final response = await HivemindService.directGet(url);
+      if (_isDisconnecting) return;
 
       if (response.statusCode == 200) {
         final decoded = jsonDecode(response.body);
@@ -262,8 +280,10 @@ class SessionTimer extends ChangeNotifier {
         _markSyncFailure();
       }
     } catch (e) {
-      debugPrint('Hivemind sync error: $e');
-      _markSyncFailure();
+      if (!_isDisconnecting) {
+        debugPrint('Hivemind sync error: $e');
+        _markSyncFailure();
+      }
     } finally {
       _syncInProgress = false;
     }
