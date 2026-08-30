@@ -51,9 +51,8 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
   }
 
   Future<void> _changeMode(AppRoutingMode? next) async {
-    // Local SOCKS5 is deliberately proxy-only. Keep the saved routing policy
-    // untouched for TUN/ASS/Auto instead of exposing a control that does
-    // nothing in the current mode.
+    // SOCKS5 is deliberately an unrestricted transparent all-app mode.
+    // Keep the saved policy for TUN/ASS/Auto without applying a limiter here.
     if (_proxyMode || _assMode || next == null || next == _mode) return;
     if (_vpnBusy()) {
       _showDisconnectFirst();
@@ -87,12 +86,12 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
   String get _subtitle {
     if (_assMode) {
       return _selectedCount == 0
-          ? 'Choose at least one app. ASS uses Android native selected-app routing.'
-          : 'Only $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} enter the VPN.';
+          ? 'Choose at least one app. ASS keeps Android helper services available for compatibility.'
+          : '$_selectedCount selected app${_selectedCount == 1 ? '' : 's'} use ReVolt; unrelated user apps bypass it.';
     }
 
     if (_proxyMode) {
-      return 'Local SOCKS5 is a manual proxy. Saved app routing is not applied in this mode.';
+      return 'SOCKS5 is transparent all-app mode. No app limiter is applied; saved choices remain available for other modes.';
     }
 
     if (_autoMode) {
@@ -105,8 +104,8 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
               : 'Auto uses TUN and $_selectedCount app${_selectedCount == 1 ? '' : 's'} bypass it.';
         case AppRoutingMode.selected:
           return _selectedCount == 0
-              ? 'Choose apps. Auto will use strict selected-app routing.'
-              : 'Auto routes only $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} through ReVolt.';
+              ? 'Choose apps. Auto will use compatibility selected-app routing.'
+              : 'Auto routes $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} through ReVolt while keeping required system helpers available.';
       }
     }
 
@@ -119,8 +118,8 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
             : '$_selectedCount app${_selectedCount == 1 ? '' : 's'} bypass the VPN.';
       case AppRoutingMode.selected:
         return _selectedCount == 0
-            ? 'Choose at least one app for native Selected only routing.'
-            : 'Only $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} use the VPN.';
+            ? 'Choose at least one routed app.'
+            : '$_selectedCount selected app${_selectedCount == 1 ? '' : 's'} use the VPN; Android helper services remain compatible.';
     }
   }
 
@@ -142,12 +141,12 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
           ),
           trailing: _proxyMode
               ? const Text(
-                  'Not applied',
-                  style: TextStyle(color: AppColors.textMuted, fontSize: 12),
+                  'All apps',
+                  style: TextStyle(color: AppColors.textWhite, fontSize: 12),
                 )
               : _assMode
                   ? const Text(
-                      'Selected only',
+                      'Selected apps',
                       style: TextStyle(color: AppColors.textWhite, fontSize: 12),
                     )
                   : DropdownButtonHideUnderline(
@@ -166,7 +165,7 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
                           ),
                           DropdownMenuItem(
                             value: AppRoutingMode.selected,
-                            child: Text('Selected only'),
+                            child: Text('Selected apps'),
                           ),
                         ],
                       ),
@@ -181,8 +180,10 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
                   ? 'Choose routed apps'
                   : 'Choose excluded apps',
             ),
-            subtitle: const Text(
-              'Routing is applied to the selected Android package IDs.',
+            subtitle: Text(
+              _assMode || _mode == AppRoutingMode.selected
+                  ? 'Selected user apps use ReVolt; required Android helper traffic is kept compatible.'
+                  : 'Selected Android package IDs bypass ReVolt.',
             ),
             trailing: const Icon(Icons.chevron_right),
           ),
