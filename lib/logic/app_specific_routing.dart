@@ -1,7 +1,22 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 enum NativeRoutingPolicy { all, exclude, selected }
+
+class NativeRoutingStatus {
+  final String state;
+  final String? error;
+
+  const NativeRoutingStatus({
+    required this.state,
+    required this.error,
+  });
+
+  bool get running => state == 'running';
+  bool get failed => state == 'error';
+}
 
 abstract final class AppSpecificRouting {
   AppSpecificRouting._();
@@ -32,6 +47,32 @@ abstract final class AppSpecificRouting {
         'policy': policy.name,
         'packages': values,
       },
+    );
+
+    for (var attempt = 0; attempt < 24; attempt++) {
+      await Future.delayed(const Duration(milliseconds: 200));
+      final snapshot = await status();
+      if (snapshot.running) return;
+      if (snapshot.failed) {
+        throw StateError(snapshot.error ?? 'Native app routing failed.');
+      }
+    }
+
+    throw TimeoutException(
+      'Native app routing did not become ready.',
+      const Duration(milliseconds: 4800),
+    );
+  }
+
+  static Future<NativeRoutingStatus> status() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      return const NativeRoutingStatus(state: 'idle', error: null);
+    }
+
+    final raw = await _channel.invokeMapMethod<String, dynamic>('status');
+    return NativeRoutingStatus(
+      state: raw?['state']?.toString() ?? 'idle',
+      error: raw?['error']?.toString(),
     );
   }
 
