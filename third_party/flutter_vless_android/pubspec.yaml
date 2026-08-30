@@ -1,0 +1,25 @@
+name: flutter_vless_android
+description: ReVolt-vendored Android implementation of flutter_vless 1.1.5.
+version: 1.1.5+revolt.1
+publish_to: "none"
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+  flutter: '>=3.3.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_vless_platform_interface: ^1.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  plugin:
+    implements: flutter_vless_platform_interface
+    platforms:
+      android:
+        package: com.github.tfox.flutter_vless
+        pluginClass: FlutterVlessPlugin
