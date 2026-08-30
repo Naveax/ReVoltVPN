@@ -128,23 +128,18 @@ object XrayCoreManager {
         normalizeVlessOutbounds(configJson)
         sanitizeLogPaths(configJson, filesDir)
 
-        // ReVolt does not expose Xray's management API. Session/account usage is
-        // obtained from the backend, so a localhost StatsService listener is an
-        // unnecessary cross-app attack surface.
         configJson.remove("api")
         configJson.remove("stats")
         configJson.remove("policy")
 
-        // No inbound supplied by a remote/server config is trusted. The app owns
-        // the complete client-side listener surface and creates exactly one
-        // authenticated loopback SOCKS5 ingress for tun2socks and local tests.
         config.LOCAL_HTTP_PORT = 0
         config.LOCAL_API_PORT = 0
         val socksSettings = JSONObject()
             .put("auth", "password")
             .put("udp", true)
+            .put("ip", "127.0.0.1")
             .put(
-                "accounts",
+                "users",
                 JSONArray().put(
                     JSONObject()
                         .put("user", config.LOCAL_SOCKS5_USER)
