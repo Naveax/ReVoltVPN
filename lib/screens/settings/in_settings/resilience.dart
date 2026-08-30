@@ -12,7 +12,7 @@ class ResilienceModeTile extends StatefulWidget {
 }
 
 class _ResilienceModeTileState extends State<ResilienceModeTile> {
-  ResilienceMode _mode = ConnectionSettings.resilienceMode;
+  ResilienceMode _mode = ConnectionSettings.configuredResilienceMode;
 
   @override
   void initState() {
@@ -22,7 +22,9 @@ class _ResilienceModeTileState extends State<ResilienceModeTile> {
 
   Future<void> _load() async {
     await ConnectionSettings.initialize();
-    if (mounted) setState(() => _mode = ConnectionSettings.resilienceMode);
+    if (mounted) {
+      setState(() => _mode = ConnectionSettings.configuredResilienceMode);
+    }
   }
 
   bool _vpnBusy() {
@@ -62,8 +64,8 @@ class _ResilienceModeTileState extends State<ResilienceModeTile> {
           ),
           subtitle: Text(
             extreme
-                ? 'Extreme: keeps the server transport unchanged, validates it before connect and recovers after the first failed health check.$active'
-                : 'Standard: keeps the server transport unchanged and retries after repeated health failures.$active',
+                ? 'Extreme (compatibility-safe): currently uses the same proven server transport and runtime path as Standard.$active'
+                : 'Standard: uses the server-provided VLESS/Reality/XHTTP path.$active',
             style: const TextStyle(color: AppColors.textDim, fontSize: 12),
           ),
           trailing: DropdownButtonHideUnderline(
