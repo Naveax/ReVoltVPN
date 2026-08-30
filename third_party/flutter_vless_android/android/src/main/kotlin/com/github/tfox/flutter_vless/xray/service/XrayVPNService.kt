@@ -56,10 +56,22 @@ class XrayVPNService : VpnService() {
             }
             receiver?.send(0, buildStateBundle())
 
-            val active = runtimeExpected ||
+            // START_SERVICE stores the runtime snapshot before the startup worker
+            // flips V2RAY_STATE to CONNECTING. A state query can arrive in that
+            // tiny window. Never treat such a snapshot as an idle service, or the
+            // observer itself can stop an otherwise healthy VPN startup.
+            val hasRuntimeSnapshot = currentConfig != null || AppConfigs.V2RAY_CONFIG != null
+            val activeOrStarting = hasRuntimeSnapshot ||
+                runtimeExpected ||
                 AppConfigs.V2RAY_STATE != AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
-            if (!active) stopSelfResult(startId)
-            return if (active) START_STICKY else START_NOT_STICKY
+            if (!activeOrStarting) {
+                // This is only a query-created empty service instance. Mark it as
+                // intentionally stopping so onDestroy does not publish a fake
+                // "VPN service destroyed" error/generation change.
+                stopping = true
+                stopSelfResult(startId)
+            }
+            return if (activeOrStarting) START_STICKY else START_NOT_STICKY
         }
 
         if (command == AppConfigs.V2RAY_SERVICE_COMMANDS.STOP_SERVICE) {
