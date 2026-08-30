@@ -84,8 +84,12 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
   String get _subtitle {
     if (_assMode) {
       return _selectedCount == 0
-          ? 'Choose at least one app. ASS routes only the selected apps through Local SOCKS5.'
-          : 'Only $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} use ASS routing.';
+          ? 'Choose at least one app. ASS uses Android native selected-app routing.'
+          : 'Only $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} enter the VPN.';
+    }
+
+    if (_proxyMode) {
+      return 'Local SOCKS5 is a manual proxy. These app choices stay saved for TUN, ASS and Auto but are not applied in SOCKS5 mode.';
     }
 
     if (_autoMode) {
@@ -98,23 +102,8 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
               : 'Auto uses TUN and $_selectedCount app${_selectedCount == 1 ? '' : 's'} bypass it.';
         case AppRoutingMode.selected:
           return _selectedCount == 0
-              ? 'Choose apps. Auto will use app-specific SOCKS routing for Selected only.'
-              : 'Auto routes only $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} through Local SOCKS5.';
-      }
-    }
-
-    if (_proxyMode) {
-      switch (_mode) {
-        case AppRoutingMode.all:
-          return 'All apps are automatically routed through Local SOCKS5.';
-        case AppRoutingMode.exclude:
-          return _selectedCount == 0
-              ? 'All apps use Local SOCKS5.'
-              : '$_selectedCount app${_selectedCount == 1 ? '' : 's'} bypass Local SOCKS5.';
-        case AppRoutingMode.selected:
-          return _selectedCount == 0
-              ? 'Choose apps to route through Local SOCKS5.'
-              : 'Only $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} use Local SOCKS5.';
+              ? 'Choose apps. Auto will use strict selected-app routing.'
+              : 'Auto routes only $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} through ReVolt.';
       }
     }
 
@@ -127,7 +116,7 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
             : '$_selectedCount app${_selectedCount == 1 ? '' : 's'} bypass the VPN.';
       case AppRoutingMode.selected:
         return _selectedCount == 0
-            ? 'Choose at least one app for Selected only routing.'
+            ? 'Choose at least one app for native Selected only routing.'
             : 'Only $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} use the VPN.';
     }
   }
@@ -184,9 +173,11 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
                   ? 'Choose routed apps'
                   : 'Choose excluded apps',
             ),
-            subtitle: _proxyMode || _assMode || _autoMode
-                ? const Text('Routing is applied automatically when you connect.')
-                : null,
+            subtitle: Text(
+              _proxyMode
+                  ? 'Saved only. Local SOCKS5 does not force apps into the proxy.'
+                  : 'Select the exact app that creates the traffic, e.g. Chrome rather than the Google app.',
+            ),
             trailing: const Icon(Icons.chevron_right),
           ),
       ],
