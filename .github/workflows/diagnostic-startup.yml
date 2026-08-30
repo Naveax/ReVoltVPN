@@ -1,4 +1,4 @@
-name: VPN startup diagnostic APK
+name: VPN FD handoff compatibility APK
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: vpn-startup-diagnostic-${{ github.ref }}
+  group: vpn-fd-handoff-compat-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -100,14 +100,18 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      - name: Verify diagnostic instrumentation
+      - name: Apply 1.1.5-compatible FD handoff timing
+        run: python3 tool/patch_fd_handoff_compat.py
+
+      - name: Verify FD compatibility patch and diagnostics
         shell: bash
         run: |
+          SERVICE=third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt
+          grep -q 'Thread.sleep(500L)' "$SERVICE"
+          grep -q 'worker.join(6000L)' "$SERVICE"
+          ! grep -q 'Thread.sleep(if (attempt == 1) 120L else 250L)' "$SERVICE"
           test -f third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/utils/DiagnosticStatusReceiver.kt
-          grep -q 'APP_STOP_DURING_STARTUP' third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/utils/DiagnosticStatusReceiver.kt
           grep -q 'FD_HANDOFF_FAIL' third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/utils/DiagnosticStatusReceiver.kt
-          grep -q 'SOCKS_READINESS_FAIL' third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/utils/DiagnosticStatusReceiver.kt
-          grep -q 'DiagnosticStatusReceiver' third_party/flutter_vless_android/android/src/main/AndroidManifest.xml
 
       - name: Flutter analyze
         run: flutter analyze --no-fatal-warnings
@@ -121,8 +125,8 @@ jobs:
           cd android
           ./gradlew :app:compileReleaseKotlin --stacktrace
 
-      - name: Build diagnostic release APK
-        run: flutter build apk --release --build-name 3.3.9 --build-number 35
+      - name: Build FD compatibility release APK
+        run: flutter build apk --release --build-name 3.3.10 --build-number 36
 
       - name: Verify packaged VPN runtime
         shell: bash
@@ -134,15 +138,15 @@ jobs:
       - name: Package APK
         shell: bash
         run: |
-          cp build/app/outputs/flutter-apk/app-release.apk ReVoltVPN-3.3.9-startup-diagnostic.apk
-          sha256sum ReVoltVPN-3.3.9-startup-diagnostic.apk > ReVoltVPN-3.3.9-startup-diagnostic.apk.sha256
+          cp build/app/outputs/flutter-apk/app-release.apk ReVoltVPN-3.3.10-fd-compat.apk
+          sha256sum ReVoltVPN-3.3.10-fd-compat.apk > ReVoltVPN-3.3.10-fd-compat.apk.sha256
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ReVoltVPN-3.3.9-startup-diagnostic
+          name: ReVoltVPN-3.3.10-fd-compat
           path: |
-            ReVoltVPN-3.3.9-startup-diagnostic.apk
-            ReVoltVPN-3.3.9-startup-diagnostic.apk.sha256
+            ReVoltVPN-3.3.10-fd-compat.apk
+            ReVoltVPN-3.3.10-fd-compat.apk.sha256
           retention-days: 3
           if-no-files-found: error
