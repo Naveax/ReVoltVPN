@@ -46,6 +46,25 @@ void main() {
   final kotlin = Directory('${root.path}/android/src/main/kotlin/com/github/tfox/flutter_vless');
   final core = File('${kotlin.path}/xray/core/XrayCoreManager.kt');
   final plugin = File('${kotlin.path}/FlutterVlessPlugin.kt');
+  final config = File('${kotlin.path}/xray/dto/XrayConfig.kt');
+  final service = File('${kotlin.path}/xray/service/XrayVPNService.kt');
+
+  replaceOnce(
+    config,
+    '''    /** Local port for SOCKS5 proxy (default: 10807). used by tun2socks. */
+    var LOCAL_SOCKS5_PORT: Int = 10807,
+    
+    /** Local port for HTTP proxy (default: 10808). */
+''',
+    '''    /** Session-local port for SOCKS5 proxy used by tun2socks. */
+    var LOCAL_SOCKS5_PORT: Int = 10807,
+    var LOCAL_SOCKS_USERNAME: String = "",
+    var LOCAL_SOCKS_PASSWORD: String = "",
+    
+    /** Local port for HTTP proxy (unused by ReVolt). */
+''',
+    'var LOCAL_SOCKS_USERNAME:',
+  );
 
   replaceOnce(
     core,
@@ -60,11 +79,53 @@ void main() {
     'Local SOCKS5 port collision on',
   );
 
+  replaceOnce(
+    core,
+    '''            socksInbound.put("settings", JSONObject().put("auth", "noauth").put("udp", true))
+''',
+    '''            if (config.LOCAL_SOCKS_USERNAME.isEmpty() || config.LOCAL_SOCKS_PASSWORD.isEmpty()) {
+                throw IllegalStateException("Missing session SOCKS credentials")
+            }
+            val socksAccount = JSONObject()
+                .put("user", config.LOCAL_SOCKS_USERNAME)
+                .put("pass", config.LOCAL_SOCKS_PASSWORD)
+            socksInbound.put(
+                "settings",
+                JSONObject()
+                    .put("auth", "password")
+                    .put("accounts", JSONArray().put(socksAccount))
+                    .put("udp", true)
+            )
+''',
+    'Missing session SOCKS credentials',
+  );
+
   removeBetween(
     core,
     '        if (!hasHttpOnLocalPort) {\n',
     '        if (usedPorts.contains(config.LOCAL_API_PORT)) {\n',
     'ReVolt does not expose an HTTP proxy inbound.',
+  );
+
+  replaceOnce(
+    service,
+    r'''            "-proxy", "socks5://127.0.0.1:${config.LOCAL_SOCKS5_PORT}",
+''',
+    r'''            "-proxy", "socks5://${config.LOCAL_SOCKS_USERNAME}:${config.LOCAL_SOCKS_PASSWORD}@127.0.0.1:${config.LOCAL_SOCKS5_PORT}",
+''',
+    'LOCAL_SOCKS_USERNAME}:${config.LOCAL_SOCKS_PASSWORD}@127.0.0.1',
+  );
+
+  replaceOnce(
+    plugin,
+    '''import java.util.ArrayList
+import java.util.concurrent.Executors
+''',
+    '''import java.util.ArrayList
+import java.util.concurrent.Executors
+import java.security.SecureRandom
+''',
+    'import java.security.SecureRandom',
   );
 
   replaceOnce(
@@ -75,8 +136,56 @@ void main() {
     '''    private lateinit var context: Context
     private var allowedApps: ArrayList<String> = ArrayList()
     private var tunnelReadySeen = false
+    private val secureRandom = SecureRandom()
+    private var localSocksPort = 10807
+    private var localSocksUser = ""
+    private var localSocksPassword = ""
+
+    private fun randomToken(size: Int = 24): String {
+        val data = ByteArray(size)
+        secureRandom.nextBytes(data)
+        return data.joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
+
+    private fun randomSocksPort(): Int = 20000 + secureRandom.nextInt(20000)
 ''',
-    'private var tunnelReadySeen = false',
+    'private fun randomSocksPort(): Int',
+  );
+
+  replaceOnce(
+    plugin,
+    '''        when (call.method) {
+            "setAllowedApps" -> {
+''',
+    '''        when (call.method) {
+            "getLocalProxyInfo" -> {
+                result.success(mapOf(
+                    "host" to "127.0.0.1",
+                    "port" to localSocksPort,
+                    "username" to localSocksUser,
+                    "password" to localSocksPassword
+                ))
+            }
+            "setAllowedApps" -> {
+''',
+    '"getLocalProxyInfo" -> {',
+  );
+
+  replaceOnce(
+    plugin,
+    '''                config.V2RAY_FULL_JSON_CONFIG = call.argument("config") ?: ""
+                config.BLOCKED_APPS = call.argument<ArrayList<String>>("blocked_apps") ?: ArrayList()
+''',
+    '''                config.V2RAY_FULL_JSON_CONFIG = call.argument("config") ?: ""
+                localSocksPort = randomSocksPort()
+                localSocksUser = randomToken()
+                localSocksPassword = randomToken()
+                config.LOCAL_SOCKS5_PORT = localSocksPort
+                config.LOCAL_SOCKS_USERNAME = localSocksUser
+                config.LOCAL_SOCKS_PASSWORD = localSocksPassword
+                config.BLOCKED_APPS = call.argument<ArrayList<String>>("blocked_apps") ?: ArrayList()
+''',
+    'config.LOCAL_SOCKS_USERNAME = localSocksUser',
   );
 
   replaceOnce(
@@ -88,7 +197,8 @@ void main() {
                 tunnelReadySeen = false
                 val intent = Intent(context, XrayVPNService::class.java)
 ''',
-    '"stopVless" -> {\n                tunnelReadySeen = false',
+    '''"stopVless" -> {
+                tunnelReadySeen = false''',
   );
 
   replaceOnce(
@@ -120,5 +230,5 @@ void main() {
     'tunnelReadySeen = state == AppConfigs.V2RAY_STATES.V2RAY_CONNECTED',
   );
 
-  stdout.writeln('[surface hardening patch] local surface/startup hardening ready');
+  stdout.writeln('[surface hardening patch] authenticated local SOCKS/startup hardening ready');
 }
