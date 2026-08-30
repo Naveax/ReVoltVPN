@@ -1,6 +1,6 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
-enum ConnectionMode { auto, tun, proxy, ass }
+enum ConnectionMode { auto, tun, proxy }
 enum AppRoutingMode { all, exclude, selected }
 enum ResilienceMode { standard, extreme }
 
@@ -28,14 +28,13 @@ abstract final class ConnectionSettings {
     if (_initialized) return;
 
     final prefs = await SharedPreferences.getInstance();
-
     final storedMode = prefs.getString(_modeKey);
+    final migrateLegacyAss = storedMode == 'ass';
+
     if (storedMode == ConnectionMode.tun.name) {
       _mode = ConnectionMode.tun;
-    } else if (storedMode == ConnectionMode.proxy.name) {
+    } else if (storedMode == ConnectionMode.proxy.name || migrateLegacyAss) {
       _mode = ConnectionMode.proxy;
-    } else if (storedMode == ConnectionMode.ass.name) {
-      _mode = ConnectionMode.ass;
     } else {
       _mode = ConnectionMode.auto;
     }
@@ -46,7 +45,14 @@ abstract final class ConnectionSettings {
     _appPackages = _cleanPackages(storedPackages ?? legacyBlocked);
 
     final storedRoutingMode = prefs.getString(_routingModeKey);
-    if (storedRoutingMode == AppRoutingMode.exclude.name) {
+    if (migrateLegacyAss) {
+      // ASS used to mean selected apps through the local SOCKS path. SOCKS5
+      // now supports Selected only directly, so preserve that behavior when
+      // upgrading instead of leaving an obsolete connection mode behind.
+      _routingMode = _appPackages.isEmpty
+          ? AppRoutingMode.all
+          : AppRoutingMode.selected;
+    } else if (storedRoutingMode == AppRoutingMode.exclude.name) {
       _routingMode = AppRoutingMode.exclude;
     } else if (storedRoutingMode == AppRoutingMode.selected.name) {
       _routingMode = AppRoutingMode.selected;
@@ -60,6 +66,11 @@ abstract final class ConnectionSettings {
         prefs.getString(_resilienceModeKey) == ResilienceMode.extreme.name
             ? ResilienceMode.extreme
             : ResilienceMode.standard;
+
+    if (migrateLegacyAss) {
+      await prefs.setString(_modeKey, ConnectionMode.proxy.name);
+      await prefs.setString(_routingModeKey, _routingMode.name);
+    }
 
     _initialized = true;
   }
