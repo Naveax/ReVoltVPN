@@ -36,7 +36,9 @@ class _ResilienceModeTileState extends State<ResilienceModeTile> {
     if (next == null || next == _mode) return;
     if (_vpnBusy()) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Disconnect before changing resilience mode.')),
+        const SnackBar(
+          content: Text('Disconnect before changing resilience mode.'),
+        ),
       );
       return;
     }
@@ -62,8 +64,8 @@ class _ResilienceModeTileState extends State<ResilienceModeTile> {
           ),
           subtitle: Text(
             extreme
-                ? 'Extreme: keeps the server transport unchanged, validates it before connect and recovers after the first failed health check.$active'
-                : 'Standard: keeps the server transport unchanged and retries after repeated health failures.$active',
+                ? 'Extreme: keeps the exact server transport unchanged and only retries the same runtime after a real Xray disconnect. Recovery is bounded.$active'
+                : 'Standard: keeps the exact server transport unchanged and does not force health-check reconnects.$active',
             style: const TextStyle(color: AppColors.textDim, fontSize: 12),
           ),
           trailing: DropdownButtonHideUnderline(
