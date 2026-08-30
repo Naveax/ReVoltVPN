@@ -99,6 +99,8 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
 
+                    "status" -> result.success(AppRoutingVpnService.statusSnapshot())
+
                     "stop" -> {
                         stopService(Intent(this, AppRoutingVpnService::class.java))
                         result.success(null)
