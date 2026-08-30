@@ -125,11 +125,12 @@ jobs:
           assert 'packageName != _selfPackage && !installedSelected.contains(packageName)' in vpn
           assert 'Discord is a' in vpn
 
-          proxy_block = vpn.split('case ConnectionMode.proxy:', 1)[1].split('case ConnectionMode.ass:', 1)[0]
+          marker = '// SOCKS5 is exposed as a transparent all-device mode.'
+          assert marker in vpn
+          proxy_block = vpn.split(marker, 1)[1].split('case ConnectionMode.ass:', 1)[0]
           assert 'proxyOnly: false' in proxy_block
           assert 'blockedApps: null' in proxy_block
           assert 'verifyLocalSocks: true' in proxy_block
-          assert 'transparent all-device mode' in proxy_block
           assert 'Transparent all-app mode' in mode_ui
           assert 'No app limiter is applied' in routing_ui
 
