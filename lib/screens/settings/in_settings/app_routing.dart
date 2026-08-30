@@ -19,7 +19,8 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
   int _selectedCount = ConnectionSettings.appPackages.length;
 
   bool get _assMode => widget.connectionMode == ConnectionMode.ass;
-  bool get _tunMode => widget.connectionMode == ConnectionMode.tun;
+  bool get _proxyMode => widget.connectionMode == ConnectionMode.proxy;
+  bool get _autoMode => widget.connectionMode == ConnectionMode.auto;
 
   @override
   void initState() {
@@ -83,18 +84,37 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
   String get _subtitle {
     if (_assMode) {
       return _selectedCount == 0
-          ? 'Choose at least one app. ASS uses a strict native allowlist and routes only those apps through Local SOCKS5.'
-          : '$_selectedCount app${_selectedCount == 1 ? '' : 's'} use strict ASS routing through Local SOCKS5.';
+          ? 'Choose at least one app. ASS routes only the selected apps through Local SOCKS5.'
+          : 'Only $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} use ASS routing.';
     }
 
-    if (!_tunMode) {
+    if (_autoMode) {
       switch (_mode) {
         case AppRoutingMode.all:
-          return 'Local SOCKS5 stays proxy-only. App routing choices remain available for TUN or ASS.';
+          return 'Auto uses normal TUN routing for all apps.';
         case AppRoutingMode.exclude:
-          return '$_selectedCount excluded app${_selectedCount == 1 ? '' : 's'} saved for TUN mode.';
+          return _selectedCount == 0
+              ? 'Auto uses TUN. No apps are excluded.'
+              : 'Auto uses TUN and $_selectedCount app${_selectedCount == 1 ? '' : 's'} bypass it.';
         case AppRoutingMode.selected:
-          return '$_selectedCount selected app${_selectedCount == 1 ? '' : 's'} saved for TUN/ASS use.';
+          return _selectedCount == 0
+              ? 'Choose apps. Auto will use app-specific SOCKS routing for Selected only.'
+              : 'Auto routes only $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} through Local SOCKS5.';
+      }
+    }
+
+    if (_proxyMode) {
+      switch (_mode) {
+        case AppRoutingMode.all:
+          return 'All apps are automatically routed through Local SOCKS5.';
+        case AppRoutingMode.exclude:
+          return _selectedCount == 0
+              ? 'All apps use Local SOCKS5.'
+              : '$_selectedCount app${_selectedCount == 1 ? '' : 's'} bypass Local SOCKS5.';
+        case AppRoutingMode.selected:
+          return _selectedCount == 0
+              ? 'Choose apps to route through Local SOCKS5.'
+              : 'Only $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} use Local SOCKS5.';
       }
     }
 
@@ -107,8 +127,8 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
             : '$_selectedCount app${_selectedCount == 1 ? '' : 's'} bypass the VPN.';
       case AppRoutingMode.selected:
         return _selectedCount == 0
-            ? 'Choose at least one app for strict native Selected only routing.'
-            : 'Only $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} use the VPN via a strict native allowlist.';
+            ? 'Choose at least one app for Selected only routing.'
+            : 'Only $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} use the VPN.';
     }
   }
 
@@ -164,13 +184,9 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
                   ? 'Choose routed apps'
                   : 'Choose excluded apps',
             ),
-            subtitle: _assMode
-                ? const Text(
-                    'These apps are automatically wrapped into 127.0.0.1:10807.',
-                  )
-                : _tunMode
-                    ? null
-                    : const Text('Saved while Local SOCKS5 is active.'),
+            subtitle: _proxyMode || _assMode || _autoMode
+                ? const Text('Routing is applied automatically when you connect.')
+                : null,
             trailing: const Icon(Icons.chevron_right),
           ),
       ],
