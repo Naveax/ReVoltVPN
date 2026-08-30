@@ -28,6 +28,10 @@ val flutterVlessPatchScript = File(
     projectRootDir,
     "tool/patch_flutter_vless_allowed_apps.dart",
 )
+val flutterVlessReadinessPatchScript = File(
+    projectRootDir,
+    "tool/patch_flutter_vless_runtime_readiness.dart",
+)
 
 val patchFlutterVlessAllowedApps = tasks.register<Exec>("patchFlutterVlessAllowedApps") {
     group = "build setup"
@@ -53,24 +57,42 @@ val patchFlutterVlessAllowedApps = tasks.register<Exec>("patchFlutterVlessAllowe
     )
 }
 
+val patchFlutterVlessRuntimeReadiness = tasks.register<Exec>("patchFlutterVlessRuntimeReadiness") {
+    group = "build setup"
+    description = "Fail closed unless Android TUN and tun2socks FD handoff are ready"
+    workingDir(projectRootDir)
+    dependsOn(patchFlutterVlessAllowedApps)
+
+    doFirst {
+        if (!dartExecutable.isFile) {
+            throw GradleException("Flutter Dart executable not found: ${dartExecutable.absolutePath}")
+        }
+        if (!flutterVlessReadinessPatchScript.isFile) {
+            throw GradleException("runtime readiness patch missing: ${flutterVlessReadinessPatchScript.absolutePath}")
+        }
+    }
+
+    commandLine(
+        dartExecutable.absolutePath,
+        "run",
+        flutterVlessReadinessPatchScript.absolutePath,
+    )
+}
+
 // App compilation and the transitive Android plugin compilation must both wait
-// for the pinned runtime hardening. Plain `flutter build apk` must behave like
-// CI instead of relying on a hidden manual pre-build step.
+// for deterministic native hardening. Plain `flutter build apk` must behave like CI.
 tasks.configureEach {
     if (name == "preBuild") {
-        dependsOn(patchFlutterVlessAllowedApps)
+        dependsOn(patchFlutterVlessRuntimeReadiness)
     }
 }
 
 gradle.projectsEvaluated {
-    // `gradle wrapper` may run before Flutter has generated plugin metadata.
-    // Once pub get has loaded the plugin project, wire its Android preBuild to
-    // the same deterministic patch task.
     rootProject.findProject(":flutter_vless_android")
         ?.tasks
         ?.matching { it.name == "preBuild" }
         ?.configureEach {
-            dependsOn(patchFlutterVlessAllowedApps)
+            dependsOn(patchFlutterVlessRuntimeReadiness)
         }
 }
 
