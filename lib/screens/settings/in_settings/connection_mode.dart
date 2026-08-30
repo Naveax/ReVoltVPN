@@ -92,13 +92,13 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
   String get _subtitle {
     switch (_mode) {
       case ConnectionMode.auto:
-        return 'Auto: All/Exclude uses TUN. Selected only uses strict app-specific routing.';
+        return 'Auto: All/Exclude uses normal TUN. Selected apps uses compatibility app routing.';
       case ConnectionMode.tun:
-        return 'TUN: Android VPN routing. Selected only uses the native app allowlist.';
+        return 'TUN: Android VPN routing. Selected apps keeps required system helpers available.';
       case ConnectionMode.proxy:
-        return 'Local SOCKS5: manual proxy at $localSocksAddress. App routing choices stay saved but are not applied.';
+        return 'SOCKS5: transparent all-app routing through local $localSocksAddress, then Xray/VLESS.';
       case ConnectionMode.ass:
-        return 'ASS: only selected apps enter the VPN using Android native per-app routing.';
+        return 'ASS: selected apps use ReVolt while unrelated user apps bypass it.';
     }
   }
 
@@ -132,7 +132,7 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
                 ),
                 DropdownMenuItem(
                   value: ConnectionMode.proxy,
-                  child: Text('Local SOCKS5'),
+                  child: Text('SOCKS5'),
                 ),
                 DropdownMenuItem(
                   value: ConnectionMode.ass,
@@ -146,7 +146,7 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
           const Padding(
             padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
             child: Text(
-              'SOCKS5: 127.0.0.1:10807 · HTTP: 127.0.0.1:10808',
+              'Transparent all-app mode · SOCKS5: 127.0.0.1:10807 · HTTP: 127.0.0.1:10808',
               style: TextStyle(color: AppColors.textMuted, fontSize: 12),
             ),
           ),
