@@ -250,7 +250,7 @@ void main() {
         return false
     }
 ''',
-    r'TUN FD handoff attempt ${attempt + 1}/10 failed',
+    'private fun sendFd(): Boolean',
   );
 
   replaceOnce(
