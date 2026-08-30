@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/services.dart';
 
 class LocalSocksTestResult {
   final bool ok;
@@ -14,43 +15,82 @@ class LocalSocksTestResult {
   });
 }
 
+final class _ProxyInfo {
+  final String host;
+  final int port;
+  final String username;
+  final String password;
+
+  const _ProxyInfo(this.host, this.port, this.username, this.password);
+}
+
 abstract final class LocalSocksTester {
   LocalSocksTester._();
 
+  static const MethodChannel _channel = MethodChannel('flutter_vless');
+
+  static Future<_ProxyInfo> _proxyInfo() async {
+    final raw = await _channel.invokeMapMethod<String, dynamic>(
+      'getLocalProxyInfo',
+    );
+    final host = raw?['host'];
+    final port = raw?['port'];
+    final username = raw?['username'];
+    final password = raw?['password'];
+    if (host is! String ||
+        port is! int ||
+        username is! String ||
+        password is! String ||
+        username.isEmpty ||
+        password.isEmpty ||
+        port <= 0 ||
+        port > 65535) {
+      throw const StateError('Local SOCKS session information is unavailable.');
+    }
+    return _ProxyInfo(host, port, username, password);
+  }
+
+  static Future<void> _authenticate(
+    Socket socket,
+    _SocketReader reader,
+    _ProxyInfo info,
+  ) async {
+    socket.add(const <int>[0x05, 0x01, 0x02]);
+    await socket.flush();
+    final greeting = await reader.readExactly(2);
+    if (greeting[0] != 0x05 || greeting[1] != 0x02) {
+      throw const FormatException('SOCKS5 password authentication was rejected.');
+    }
+
+    final user = info.username.codeUnits;
+    final pass = info.password.codeUnits;
+    if (user.isEmpty || user.length > 255 || pass.isEmpty || pass.length > 255) {
+      throw const FormatException('Invalid SOCKS5 session credentials.');
+    }
+    socket.add(<int>[0x01, user.length, ...user, pass.length, ...pass]);
+    await socket.flush();
+    final auth = await reader.readExactly(2);
+    if (auth[0] != 0x01 || auth[1] != 0x00) {
+      throw const FormatException('SOCKS5 authentication failed.');
+    }
+  }
+
   /// Fast local readiness probe used while starting the VPN.
-  ///
-  /// This deliberately stops after the SOCKS5 greeting. Startup must not fail
-  /// just because an unrelated external test host is temporarily unreachable.
-  static Future<LocalSocksTestResult> testListener({
-    String host = '127.0.0.1',
-    int port = 10807,
-  }) async {
+  static Future<LocalSocksTestResult> testListener() async {
     final stopwatch = Stopwatch()..start();
     Socket? socket;
     _SocketReader? reader;
 
     try {
+      final info = await _proxyInfo();
       socket = await Socket.connect(
-        host,
-        port,
+        info.host,
+        info.port,
         timeout: const Duration(seconds: 1),
       );
       socket.setOption(SocketOption.tcpNoDelay, true);
       reader = _SocketReader(socket);
-
-      socket.add(const <int>[0x05, 0x01, 0x00]);
-      await socket.flush();
-      final greeting = await reader.readExactly(
-        2,
-        timeout: const Duration(seconds: 1),
-      );
-      if (greeting[0] != 0x05 || greeting[1] != 0x00) {
-        return const LocalSocksTestResult(
-          ok: false,
-          latencyMs: null,
-          message: 'Local SOCKS5 listener rejected the handshake.',
-        );
-      }
+      await _authenticate(socket, reader, info);
 
       stopwatch.stop();
       return LocalSocksTestResult(
@@ -64,11 +104,17 @@ abstract final class LocalSocksTester {
         latencyMs: null,
         message: 'Local SOCKS5 listener timed out.',
       );
+    } on PlatformException {
+      return const LocalSocksTestResult(
+        ok: false,
+        latencyMs: null,
+        message: 'Local SOCKS5 session information is unavailable.',
+      );
     } on SocketException {
       return const LocalSocksTestResult(
         ok: false,
         latencyMs: null,
-        message: 'Local SOCKS5 is not listening on 127.0.0.1:10807.',
+        message: 'Local SOCKS5 session listener is not reachable.',
       );
     } catch (_) {
       return const LocalSocksTestResult(
@@ -82,10 +128,8 @@ abstract final class LocalSocksTester {
     }
   }
 
-  /// Full user-facing test: local SOCKS handshake plus outbound CONNECT.
+  /// Full user-facing test: authenticated local SOCKS plus outbound CONNECT.
   static Future<LocalSocksTestResult> test({
-    String host = '127.0.0.1',
-    int port = 10807,
     String targetHost = 'paladinvpn.duckdns.org',
     int targetPort = 443,
   }) async {
@@ -94,24 +138,15 @@ abstract final class LocalSocksTester {
     _SocketReader? reader;
 
     try {
+      final info = await _proxyInfo();
       socket = await Socket.connect(
-        host,
-        port,
+        info.host,
+        info.port,
         timeout: const Duration(seconds: 3),
       );
       socket.setOption(SocketOption.tcpNoDelay, true);
       reader = _SocketReader(socket);
-
-      socket.add(const <int>[0x05, 0x01, 0x00]);
-      await socket.flush();
-      final greeting = await reader.readExactly(2);
-      if (greeting[0] != 0x05 || greeting[1] != 0x00) {
-        return const LocalSocksTestResult(
-          ok: false,
-          latencyMs: null,
-          message: 'Local SOCKS5 listener rejected the handshake.',
-        );
-      }
+      await _authenticate(socket, reader, info);
 
       final hostBytes = targetHost.codeUnits;
       if (hostBytes.length > 255) {
@@ -156,11 +191,17 @@ abstract final class LocalSocksTester {
         latencyMs: null,
         message: 'Local SOCKS5 test timed out.',
       );
+    } on PlatformException {
+      return const LocalSocksTestResult(
+        ok: false,
+        latencyMs: null,
+        message: 'Local SOCKS5 session information is unavailable.',
+      );
     } on SocketException {
       return const LocalSocksTestResult(
         ok: false,
         latencyMs: null,
-        message: 'Local SOCKS5 is not listening on 127.0.0.1:10807.',
+        message: 'Local SOCKS5 session listener is not reachable.',
       );
     } catch (_) {
       return const LocalSocksTestResult(
