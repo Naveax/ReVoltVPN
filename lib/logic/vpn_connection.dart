@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_vless/flutter_vless.dart';
@@ -8,6 +7,7 @@ import 'package:revoltvpn/logic/app_specific_routing.dart';
 import 'package:revoltvpn/logic/connection_settings.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/installed_apps_service.dart';
+import 'package:revoltvpn/logic/local_socks_tester.dart';
 import 'package:revoltvpn/logic/network_monitor.dart';
 
 enum VpnStatus {
@@ -21,15 +21,17 @@ enum VpnStatus {
 class _RoutingPlan {
   final bool runtimeProxyOnly;
   final List<String>? blockedApps;
-  final List<String> appSpecificPackages;
+  final NativeRoutingPolicy? nativePolicy;
+  final List<String> nativePackages;
 
   const _RoutingPlan({
     required this.runtimeProxyOnly,
     required this.blockedApps,
-    required this.appSpecificPackages,
+    required this.nativePolicy,
+    required this.nativePackages,
   });
 
-  bool get usesAppSpecificRouting => appSpecificPackages.isNotEmpty;
+  bool get usesNativeRouting => nativePolicy != null;
 }
 
 class VpnConnection extends ChangeNotifier {
@@ -49,7 +51,7 @@ class VpnConnection extends ChangeNotifier {
   bool _serverReachable = false;
   bool get serverReachable => _serverReachable;
 
-  ConnectionMode _activeMode = ConnectionMode.tun;
+  ConnectionMode _activeMode = ConnectionMode.auto;
   ConnectionMode get activeMode => _activeMode;
 
   ResilienceMode _activeResilienceMode = ResilienceMode.standard;
@@ -77,31 +79,29 @@ class VpnConnection extends ChangeNotifier {
   String? get lastRecoveryReason => _lastRecoveryReason;
 
   String get activeRoutingDescription {
-    if (_appSpecificRoutingActive) {
-      return _activeMode == ConnectionMode.ass
-          ? 'ASS strict selected-app routing'
-          : 'TUN strict selected-only routing';
+    if (!_appSpecificRoutingActive) {
+      if (_activeMode == ConnectionMode.proxy) return 'Local SOCKS5';
+      return ConnectionSettings.routingMode.name;
     }
-    if (_activeMode == ConnectionMode.proxy) return 'Local SOCKS5';
-    return ConnectionSettings.routingMode.name;
+
+    switch (_lastNativePolicy) {
+      case NativeRoutingPolicy.all:
+        return 'SOCKS5 · all apps';
+      case NativeRoutingPolicy.exclude:
+        return 'SOCKS5 · excluded apps bypass';
+      case NativeRoutingPolicy.selected:
+        return _activeMode == ConnectionMode.ass
+            ? 'ASS · selected apps'
+            : 'Selected apps only';
+      case null:
+        return ConnectionSettings.routingMode.name;
+    }
   }
 
-  String get activeTransportProfile {
-    if (_status != VpnStatus.connected && _status != VpnStatus.connecting) {
-      return 'inactive';
-    }
-    if (_activeResilienceMode == ResilienceMode.standard) {
-      return 'server';
-    }
-    switch (_activeTransportIndex) {
-      case 1:
-        return 'stream-up';
-      case 2:
-        return 'packet-up';
-      default:
-        return 'server';
-    }
-  }
+  String get activeTransportProfile =>
+      _status == VpnStatus.connected || _status == VpnStatus.connecting
+          ? 'server'
+          : 'inactive';
 
   Timer? _healthTimer;
   Timer? _restartTimer;
@@ -111,7 +111,8 @@ class VpnConnection extends ChangeNotifier {
   String? _lastBaseConfig;
   String _lastRemark = 'Revolt VPN';
   List<String>? _lastBlockedApps;
-  List<String> _lastAppSpecificPackages = const <String>[];
+  NativeRoutingPolicy? _lastNativePolicy;
+  List<String> _lastNativePackages = const <String>[];
   bool _lastProxyOnly = false;
   int _activeTransportIndex = 0;
   int _runtimeFailures = 0;
@@ -193,6 +194,8 @@ class VpnConnection extends ChangeNotifier {
   }
 
   void _handleNetworkSnapshot(NetworkSnapshot snapshot) {
+    if (snapshot.transport == 'vpn') return;
+
     final previousTransport = _networkTransport;
     _networkTransport = snapshot.transport;
     _networkValidated = snapshot.validated;
@@ -206,30 +209,47 @@ class VpnConnection extends ChangeNotifier {
     if (_status != VpnStatus.connected ||
         _userDisconnecting ||
         _restartInProgress ||
-        _lastBaseConfig == null ||
-        !snapshot.connected ||
-        !snapshot.validated) {
+        _lastBaseConfig == null) {
       return;
     }
 
-    final changedTransport = previousTransport != 'unknown' &&
-        previousTransport != snapshot.transport;
-    if (!changedTransport && snapshot.reason != 'available') return;
+    final changedPhysicalNetwork =
+        _isPhysicalTransport(previousTransport) &&
+            _isPhysicalTransport(snapshot.transport) &&
+            previousTransport != snapshot.transport &&
+            snapshot.connected &&
+            snapshot.validated;
+
+    final restoredPhysicalNetwork = previousTransport == 'none' &&
+        _isPhysicalTransport(snapshot.transport) &&
+        snapshot.connected &&
+        snapshot.validated;
+
+    if (!changedPhysicalNetwork && !restoredPhysicalNetwork) return;
 
     _networkDebounce?.cancel();
-    _networkDebounce = Timer(const Duration(milliseconds: 900), () {
+    _networkDebounce = Timer(const Duration(milliseconds: 1200), () {
       if (_status != VpnStatus.connected || _userDisconnecting) return;
-      final reason = changedTransport
+      final reason = changedPhysicalNetwork
           ? 'Network $previousTransport → ${snapshot.transport}'
-          : 'Network available: ${snapshot.transport}';
+          : 'Network restored: ${snapshot.transport}';
       _scheduleRuntimeRestart(reason);
     });
   }
 
+  bool _isPhysicalTransport(String value) {
+    return value == 'wifi' ||
+        value == 'cellular' ||
+        value == 'ethernet' ||
+        value == 'other';
+  }
+
   String get _connectedLabel {
     switch (_activeMode) {
+      case ConnectionMode.auto:
+        return _appSpecificRoutingActive ? 'Auto · apps secured' : 'Auto · secured';
       case ConnectionMode.proxy:
-        return 'Proxy ready';
+        return 'SOCKS5 routing active';
       case ConnectionMode.ass:
         return 'App Specific routing active';
       case ConnectionMode.tun:
@@ -315,7 +335,7 @@ class VpnConnection extends ChangeNotifier {
     }
 
     final needsVpnPermission =
-        !routingPlan.runtimeProxyOnly || routingPlan.usesAppSpecificRouting;
+        !routingPlan.runtimeProxyOnly || routingPlan.usesNativeRouting;
     if (!kIsWeb && needsVpnPermission) {
       final ok = await _vless.requestPermission();
       if (!ok) {
@@ -326,10 +346,11 @@ class VpnConnection extends ChangeNotifier {
     }
 
     final startingMessage = switch (_activeMode) {
-      ConnectionMode.tun => routingPlan.usesAppSpecificRouting
+      ConnectionMode.auto => 'Choosing the best route…',
+      ConnectionMode.tun => routingPlan.usesNativeRouting
           ? 'Starting selected-app tunnel…'
           : 'Establishing secure channel…',
-      ConnectionMode.proxy => 'Starting local proxy…',
+      ConnectionMode.proxy => 'Starting SOCKS5 routing…',
       ConnectionMode.ass => 'Starting App Specific routing…',
     };
     _setStatus(VpnStatus.connecting, startingMessage);
@@ -380,7 +401,7 @@ class VpnConnection extends ChangeNotifier {
       final parsed = FlutterVless.parse(realUrl);
       final baseConfig = parsed.getFullConfiguration();
       final remark = parsed.remark.isNotEmpty ? parsed.remark : 'Revolt VPN';
-      final configs = _transportConfigs(baseConfig, _activeResilienceMode);
+      final configs = _transportConfigs(baseConfig);
 
       final transportIndex = await _startRuntime(
         configs: configs,
@@ -394,8 +415,19 @@ class VpnConnection extends ChangeNotifier {
         throw StateError('No working runtime profile');
       }
 
-      if (routingPlan.usesAppSpecificRouting) {
-        await AppSpecificRouting.start(routingPlan.appSpecificPackages);
+      if (routingPlan.runtimeProxyOnly) {
+        _setStatus(VpnStatus.connecting, 'Checking Local SOCKS5…');
+        if (!await _waitForLocalSocks()) {
+          throw StateError('Local SOCKS5 did not become ready');
+        }
+      }
+
+      if (routingPlan.usesNativeRouting) {
+        await AppSpecificRouting.start(
+          policy: routingPlan.nativePolicy!,
+          packages: routingPlan.nativePackages,
+        );
+        await Future.delayed(const Duration(milliseconds: 500));
         _appSpecificRoutingActive = true;
       }
 
@@ -404,7 +436,8 @@ class VpnConnection extends ChangeNotifier {
       _lastBlockedApps = routingPlan.blockedApps == null
           ? null
           : List.of(routingPlan.blockedApps!);
-      _lastAppSpecificPackages = List.of(routingPlan.appSpecificPackages);
+      _lastNativePolicy = routingPlan.nativePolicy;
+      _lastNativePackages = List.of(routingPlan.nativePackages);
       _lastProxyOnly = routingPlan.runtimeProxyOnly;
       _activeTransportIndex = transportIndex;
       _runtimeFailures = 0;
@@ -425,43 +458,75 @@ class VpnConnection extends ChangeNotifier {
   }
 
   Future<_RoutingPlan> _resolveRoutingPlan() async {
-    if (_activeMode == ConnectionMode.proxy) {
-      return const _RoutingPlan(
-        runtimeProxyOnly: true,
-        blockedApps: null,
-        appSpecificPackages: <String>[],
-      );
-    }
-
-    if (_activeMode == ConnectionMode.ass) {
-      return _RoutingPlan(
-        runtimeProxyOnly: true,
-        blockedApps: null,
-        appSpecificPackages: await _selectedInstalledPackages(),
-      );
-    }
-
+    final routingMode = ConnectionSettings.routingMode;
     final selected = ConnectionSettings.appPackages;
-    switch (ConnectionSettings.routingMode) {
-      case AppRoutingMode.all:
-        return const _RoutingPlan(
-          runtimeProxyOnly: false,
-          blockedApps: null,
-          appSpecificPackages: <String>[],
-        );
-      case AppRoutingMode.exclude:
-        return _RoutingPlan(
-          runtimeProxyOnly: false,
-          blockedApps: selected.isEmpty ? null : selected,
-          appSpecificPackages: const <String>[],
-        );
-      case AppRoutingMode.selected:
-        return _RoutingPlan(
-          runtimeProxyOnly: true,
-          blockedApps: null,
-          appSpecificPackages: await _selectedInstalledPackages(),
-        );
+
+    if (_activeMode == ConnectionMode.auto) {
+      if (routingMode == AppRoutingMode.selected) {
+        return _selectedProxyPlan();
+      }
+      return _tunPlan(routingMode, selected);
     }
+
+    if (_activeMode == ConnectionMode.tun) {
+      if (routingMode == AppRoutingMode.selected) {
+        return _selectedProxyPlan();
+      }
+      return _tunPlan(routingMode, selected);
+    }
+
+    if (_activeMode == ConnectionMode.proxy) {
+      switch (routingMode) {
+        case AppRoutingMode.all:
+          return const _RoutingPlan(
+            runtimeProxyOnly: true,
+            blockedApps: null,
+            nativePolicy: NativeRoutingPolicy.all,
+            nativePackages: <String>[],
+          );
+        case AppRoutingMode.exclude:
+          return _RoutingPlan(
+            runtimeProxyOnly: true,
+            blockedApps: null,
+            nativePolicy: NativeRoutingPolicy.exclude,
+            nativePackages: selected,
+          );
+        case AppRoutingMode.selected:
+          return _selectedProxyPlan();
+      }
+    }
+
+    return _selectedProxyPlan();
+  }
+
+  _RoutingPlan _tunPlan(
+    AppRoutingMode routingMode,
+    List<String> selected,
+  ) {
+    if (routingMode == AppRoutingMode.exclude) {
+      return _RoutingPlan(
+        runtimeProxyOnly: false,
+        blockedApps: selected.isEmpty ? null : selected,
+        nativePolicy: null,
+        nativePackages: const <String>[],
+      );
+    }
+
+    return const _RoutingPlan(
+      runtimeProxyOnly: false,
+      blockedApps: null,
+      nativePolicy: null,
+      nativePackages: <String>[],
+    );
+  }
+
+  Future<_RoutingPlan> _selectedProxyPlan() async {
+    return _RoutingPlan(
+      runtimeProxyOnly: true,
+      blockedApps: null,
+      nativePolicy: NativeRoutingPolicy.selected,
+      nativePackages: await _selectedInstalledPackages(),
+    );
   }
 
   Future<List<String>> _selectedInstalledPackages() async {
@@ -482,53 +547,10 @@ class VpnConnection extends ChangeNotifier {
     return available;
   }
 
-  List<String> _transportConfigs(
-    String baseConfig,
-    ResilienceMode resilienceMode,
-  ) {
-    if (resilienceMode == ResilienceMode.standard) {
-      return <String>[baseConfig];
-    }
-
-    final configs = <String>[baseConfig];
-    for (final mode in const <String>['stream-up', 'packet-up']) {
-      final variant = _withXhttpMode(baseConfig, mode);
-      if (variant != null && !configs.contains(variant)) {
-        configs.add(variant);
-      }
-    }
-    return configs;
-  }
-
-  String? _withXhttpMode(String config, String mode) {
-    try {
-      final decoded = jsonDecode(config);
-      if (decoded is! Map<String, dynamic>) return null;
-
-      final outbounds = decoded['outbounds'];
-      if (outbounds is! List) return null;
-
-      var changed = false;
-      for (final item in outbounds) {
-        if (item is! Map<String, dynamic>) continue;
-        final streamSettings = item['streamSettings'];
-        if (streamSettings is! Map<String, dynamic>) continue;
-        if (streamSettings['network'] != 'xhttp') continue;
-
-        final current = streamSettings['xhttpSettings'];
-        final xhttpSettings = current is Map<String, dynamic>
-            ? Map<String, dynamic>.from(current)
-            : <String, dynamic>{};
-        xhttpSettings['mode'] = mode;
-        streamSettings['xhttpSettings'] = xhttpSettings;
-        changed = true;
-      }
-
-      return changed ? jsonEncode(decoded) : null;
-    } catch (e) {
-      debugPrint('[VPN] Could not build XHTTP fallback: $e');
-      return null;
-    }
+  List<String> _transportConfigs(String baseConfig) {
+    // Keep the server-provided VLESS/Reality/XHTTP transport unchanged.
+    // Extreme mode changes validation/recovery behavior, not the transport JSON.
+    return <String>[baseConfig];
   }
 
   Future<int?> _startRuntime({
@@ -562,6 +584,19 @@ class VpnConnection extends ChangeNotifier {
     }
 
     return null;
+  }
+
+  Future<bool> _waitForLocalSocks() async {
+    for (var attempt = 0; attempt < 4; attempt++) {
+      final result = await LocalSocksTester.test();
+      if (result.ok) {
+        _lastHealthLatencyMs = result.latencyMs;
+        notifyListeners();
+        return true;
+      }
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
+    return false;
   }
 
   Future<bool> _runtimeHealthy() async {
@@ -611,7 +646,9 @@ class VpnConnection extends ChangeNotifier {
     }
 
     _runtimeFailures++;
-    if (_runtimeFailures >= 2) {
+    final failureLimit =
+        _activeResilienceMode == ResilienceMode.extreme ? 1 : 2;
+    if (_runtimeFailures >= failureLimit) {
       _scheduleRuntimeRestart('Runtime health check failed');
     }
   }
@@ -623,7 +660,7 @@ class VpnConnection extends ChangeNotifier {
     if (_restartTimer?.isActive ?? false) return;
 
     _lastRecoveryReason = reason;
-    _setStatus(VpnStatus.connecting, 'Network changed — reconnecting…');
+    _setStatus(VpnStatus.connecting, 'Reconnecting…');
     _restartTimer = Timer(const Duration(milliseconds: 900), () {
       unawaited(_restartActiveRuntime(reason));
     });
@@ -640,22 +677,13 @@ class VpnConnection extends ChangeNotifier {
     try {
       await _stopForRetry();
 
-      final configs = _transportConfigs(
-        _lastBaseConfig!,
-        _activeResilienceMode,
-      );
-      final startIndex = _activeResilienceMode == ResilienceMode.extreme &&
-              configs.length > 1
-          ? (_activeTransportIndex + 1) % configs.length
-          : 0;
-
+      final configs = _transportConfigs(_lastBaseConfig!);
       final transportIndex = await _startRuntime(
         configs: configs,
         remark: _lastRemark,
         blockedApps: _lastBlockedApps,
         proxyOnly: _lastProxyOnly,
         validate: _activeResilienceMode == ResilienceMode.extreme,
-        startIndex: startIndex,
       );
 
       if (transportIndex == null) {
@@ -664,8 +692,16 @@ class VpnConnection extends ChangeNotifier {
         return;
       }
 
-      if (_lastAppSpecificPackages.isNotEmpty) {
-        await AppSpecificRouting.start(_lastAppSpecificPackages);
+      if (_lastProxyOnly && !await _waitForLocalSocks()) {
+        throw StateError('Local SOCKS5 did not recover');
+      }
+
+      if (_lastNativePolicy != null) {
+        await AppSpecificRouting.start(
+          policy: _lastNativePolicy!,
+          packages: _lastNativePackages,
+        );
+        await Future.delayed(const Duration(milliseconds: 500));
         _appSpecificRoutingActive = true;
       }
 
@@ -746,7 +782,8 @@ class VpnConnection extends ChangeNotifier {
   void _clearRuntimeSnapshot() {
     _lastBaseConfig = null;
     _lastBlockedApps = null;
-    _lastAppSpecificPackages = const <String>[];
+    _lastNativePolicy = null;
+    _lastNativePackages = const <String>[];
     _lastProxyOnly = false;
     _activeTransportIndex = 0;
     _runtimeFailures = 0;
