@@ -11,7 +11,7 @@ Never fail(String message) {
 
 Directory packageRoot() {
   final configFile = File('.dart_tool/package_config.json');
-  if (!configFile.isFile) {
+  if (!configFile.existsSync()) {
     fail('.dart_tool/package_config.json is missing; run flutter pub get first');
   }
 
@@ -200,51 +200,51 @@ $currentAllowedHandler            "startVless" -> {
     'Could not delete stale tun2socks socket',
   );
 
-  const upstreamPolicy = r'''          try {
+  final upstreamPolicy = r'''          try {
     builder.addDisallowedApplication(packageName)
 } catch (e: Exception) {
-    Log.e(TAG, "Failed to exclude app from VPN", e)
+    Log.e(TAG, \"Failed to exclude app from VPN\", e)
 }
 
 for (pkg in config.BLOCKED_APPS) {
     try {
         builder.addDisallowedApplication(pkg)
-        Log.d(TAG, "Excluded from VPN: $pkg")
+        Log.d(TAG, \"Excluded from VPN: $pkg\")
     } catch (e: Exception) {
-        Log.e(TAG, "Failed to exclude $pkg from VPN", e)
+        Log.e(TAG, \"Failed to exclude $pkg from VPN\", e)
     }
 }
-''';
+'''.replaceAll(r'\"', '"');
 
-  const legacyPatchedPolicy = r'''            if (config.ALLOWED_APPS.isNotEmpty()) {
+  final legacyPatchedPolicy = r'''            if (config.ALLOWED_APPS.isNotEmpty()) {
                 for (pkg in config.ALLOWED_APPS) {
                     try {
                         builder.addAllowedApplication(pkg)
-                        Log.d(TAG, "Allowed into VPN: $pkg")
+                        Log.d(TAG, \"Allowed into VPN: $pkg\")
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to allow $pkg into VPN", e)
+                        Log.e(TAG, \"Failed to allow $pkg into VPN\", e)
                     }
                 }
             } else {
                 try {
                     builder.addDisallowedApplication(packageName)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to exclude app from VPN", e)
+                    Log.e(TAG, \"Failed to exclude app from VPN\", e)
                 }
 
                 for (pkg in config.BLOCKED_APPS) {
                     try {
                         builder.addDisallowedApplication(pkg)
-                        Log.d(TAG, "Excluded from VPN: $pkg")
+                        Log.d(TAG, \"Excluded from VPN: $pkg\")
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to exclude $pkg from VPN", e)
+                        Log.e(TAG, \"Failed to exclude $pkg from VPN\", e)
                     }
                 }
             }
-''';
+'''.replaceAll(r'\"', '"');
 
-  const hardenedPolicy = r'''            if (config.ALLOWED_APPS.isNotEmpty() && config.BLOCKED_APPS.isNotEmpty()) {
-                throw IllegalStateException("Allowed and blocked app policies cannot be mixed")
+  final hardenedPolicy = r'''            if (config.ALLOWED_APPS.isNotEmpty() && config.BLOCKED_APPS.isNotEmpty()) {
+                throw IllegalStateException(\"Allowed and blocked app policies cannot be mixed\")
             }
 
             if (config.ALLOWED_APPS.isNotEmpty()) {
@@ -253,37 +253,36 @@ for (pkg in config.BLOCKED_APPS) {
                     try {
                         builder.addAllowedApplication(pkg)
                         allowedCount++
-                        Log.d(TAG, "Allowed into VPN: $pkg")
+                        Log.d(TAG, \"Allowed into VPN: $pkg\")
                     } catch (e: Exception) {
-                        throw IllegalStateException("Failed to allow selected app $pkg", e)
+                        throw IllegalStateException(\"Failed to allow selected app $pkg\", e)
                     }
                 }
                 if (allowedCount == 0) {
-                    throw IllegalStateException("Selected-only routing has no valid applications")
+                    throw IllegalStateException(\"Selected-only routing has no valid applications\")
                 }
             } else {
                 try {
                     builder.addDisallowedApplication(packageName)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to exclude app from VPN", e)
+                    Log.e(TAG, \"Failed to exclude app from VPN\", e)
                 }
 
                 for (pkg in config.BLOCKED_APPS) {
                     try {
                         builder.addDisallowedApplication(pkg)
-                        Log.d(TAG, "Excluded from VPN: $pkg")
+                        Log.d(TAG, \"Excluded from VPN: $pkg\")
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to exclude $pkg from VPN", e)
+                        Log.e(TAG, \"Failed to exclude $pkg from VPN\", e)
                     }
                 }
             }
-''';
+'''.replaceAll(r'\"', '"');
 
-  // Raw Dart strings keep Kotlin's $pkg interpolation intact and require no
-  // quote-unescaping. Support both pristine 1.1.5 and the earlier local patch.
+  // Support both pristine 1.1.5 and the earlier local allowlist patch.
   replaceOneOf(
     serviceFile,
-    const <String, String>{
+    <String, String>{
       legacyPatchedPolicy: hardenedPolicy,
       upstreamPolicy: hardenedPolicy,
     },
