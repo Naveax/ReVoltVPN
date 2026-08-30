@@ -53,6 +53,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
     @Volatile private var lastSocksPass = ""
     @Volatile private var lastGeneration = 0L
     @Volatile private var lastError = ""
+    @Volatile private var pendingAllowedApps = ArrayList<String>()
 
     companion object {
         private const val REQUEST_CODE_VPN_PERMISSION = 24
@@ -94,6 +95,11 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
                 result.success(true)
             }
             "getTunnelState" -> result.success(tunnelStateMap())
+            "setAllowedApps" -> {
+                val packages = call.argument<List<String>>("packages") ?: emptyList()
+                pendingAllowedApps = ArrayList(packages.filter { it.isNotBlank() }.distinct())
+                result.success(true)
+            }
             "initializeVless" -> {
                 AppConfigs.NOTIFICATION_ICON_RESOURCE_NAME = call.argument<String>("notificationIconResourceName") ?: ""
                 AppConfigs.NOTIFICATION_ICON_RESOURCE_TYPE = call.argument<String>("notificationIconResourceType") ?: ""
@@ -148,8 +154,14 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
         config.REMARK = call.argument("remark") ?: ""
         config.V2RAY_FULL_JSON_CONFIG = call.argument("config") ?: ""
         config.BLOCKED_APPS = call.argument<ArrayList<String>>("blocked_apps") ?: ArrayList()
+        config.ALLOWED_APPS = ArrayList(pendingAllowedApps)
         config.BYPASS_SUBNETS = call.argument<ArrayList<String>>("bypass_subnets") ?: ArrayList()
         config.NOTIFICATION_DISCONNECT_BUTTON_NAME = call.argument("notificationDisconnectButtonName") ?: "Disconnect"
+
+        if (config.ALLOWED_APPS.isNotEmpty() && config.BLOCKED_APPS.isNotEmpty()) {
+            result.error("INVALID_ROUTING", "Allowed and blocked app routing cannot be combined", null)
+            return
+        }
 
         if (AppConfigs.NOTIFICATION_ICON_RESOURCE_NAME.isNotEmpty() && AppConfigs.NOTIFICATION_ICON_RESOURCE_TYPE.isNotEmpty()) {
             config.NOTIFICATION_ICON_RESOURCE_NAME = AppConfigs.NOTIFICATION_ICON_RESOURCE_NAME
