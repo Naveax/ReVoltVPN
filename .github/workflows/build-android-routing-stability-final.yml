@@ -1,0 +1,272 @@
+name: Build Android routing stability final
+
+on:
+  push:
+    branches:
+      - build/android-routing-stability-final
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-routing-stability-final-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate local build config
+        shell: bash
+        run: |
+          cat > lib/logic/app_config.dart <<'DART'
+          abstract final class AppConfig {
+            AppConfig._();
+            static const String serverIp = '204.168.246.88';
+            static const String hivemindApiPublic = 'https://paladinvpn.duckdns.org/api';
+            static const String realityFp = 'chrome';
+            static const String vlessSecurity = 'reality';
+            static const String vlessType = 'xhttp';
+            static const String vlessPath = '/revolt';
+            static const String applicationId = 'com.paladinvpn.app';
+            static const String githubOwner = 'esefxdz';
+            static const String githubRepo = 'ReVoltVPN';
+            static const String githubReleasesUrl =
+                'https://github.com/$githubOwner/$githubRepo/releases/latest';
+            static const String adUnitId =
+                'ca-app-pub-5671224884648691/9198987725';
+          }
+          DART
+
+          # Intentionally only satisfies Android manifest substitution.
+          # Existing adsEnabled=false and fake/nonce flow stay untouched.
+          cat > android/admob.properties <<'PROPS'
+          ADMOB_APP_ID=ca-app-pub-3940256099942544~3347511713
+          PROPS
+
+          {
+            printf 'flutter.sdk=%s\n' "$FLUTTER_ROOT"
+            printf 'sdk.dir=%s\n' "$ANDROID_HOME"
+          } > android/local.properties
+
+      - name: Generate temporary release signing key
+        shell: bash
+        run: |
+          keytool -genkeypair \
+            -keystore android/revolt-routing-final.jks \
+            -storepass revoltroutingfinal \
+            -keypass revoltroutingfinal \
+            -alias revolt-routing-final \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650 \
+            -dname "CN=ReVoltVPN Routing Final,O=ReVoltVPN,C=US"
+
+          cat > android/key.properties <<'PROPS'
+          storePassword=revoltroutingfinal
+          keyPassword=revoltroutingfinal
+          keyAlias=revolt-routing-final
+          storeFile=revolt-routing-final.jks
+          PROPS
+
+      - name: Prepare Gradle wrapper
+        shell: bash
+        run: |
+          chmod +x android/gradlew
+          cd android
+          ./gradlew --version
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Analyze native patcher
+        run: dart analyze tool/patch_flutter_vless_allowed_apps.dart
+
+      - name: Apply automatic flutter_vless patch
+        shell: bash
+        run: |
+          cd android
+          ./gradlew :app:patchFlutterVlessAllowedApps
+
+      - name: Prove patch idempotence
+        shell: bash
+        run: |
+          cd android
+          ./gradlew :app:patchFlutterVlessAllowedApps --rerun-tasks
+
+      - name: Verify routing and untouched legacy invariants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from urllib.parse import unquote, urlparse
+
+          vpn = Path('lib/logic/vpn_connection.dart').read_text()
+          timer = Path('lib/logic/session_timer.dart').read_text()
+          gradle = Path('android/app/build.gradle.kts').read_text()
+          manifest = Path('android/app/src/main/AndroidManifest.xml').read_text()
+          activity = Path('android/app/src/main/kotlin/com/paladinvpn/app/MainActivity.kt').read_text()
+          ad = Path('lib/logic/ad_manager.dart').read_text()
+          hivemind = Path('lib/logic/hivemind_service.dart').read_text()
+          settings_ui = Path('lib/screens/settings/settings_screen.dart').read_text()
+          mode_ui = Path('lib/screens/settings/in_settings/connection_mode.dart').read_text()
+          routing_ui = Path('lib/screens/settings/in_settings/app_routing.dart').read_text()
+
+          assert 'AppRoutingVpnService' not in manifest
+          assert 'AppSpecificRouting' not in vpn
+          assert 'app_specific_routing.dart' not in vpn
+          assert 'FlutterVlessAndroidRouting.setAllowedApps(allowedApps)' in vpn
+          assert 'allowedApps: await _selectedInstalledPackages()' in vpn
+          assert 'proxyOnly: true' in vpn
+          assert 'Local SOCKS is intentionally a pure proxy-only mode' in vpn
+          assert '_waitForNativeConnected()' in vpn
+          assert '_maxExtremeReconnectAttempts = 2' in vpn
+          assert '_restartTimer?.isActive' in vpn
+          assert 'NetworkMonitor.changes.listen' in vpn
+          assert '_scheduleRuntimeRestart' in vpn
+          assert 'if (_isDisconnecting) return;' in timer
+          assert 'if (_isDisconnecting) return;' in timer
+          assert 'patchFlutterVlessAllowedApps' in gradle
+          assert 'NET_CAPABILITY_NOT_VPN' in activity
+          assert 'Connection diagnostics' not in settings_ui
+          assert "label: const Text('Server Local')" not in mode_ui
+          assert 'manual proxy' in mode_ui
+          assert 'not applied in SOCKS5 mode' in routing_ui
+
+          # Deliberately untouched legacy/dev AdMob + nonce behavior.
+          assert 'static const bool adsEnabled = false;' in ad
+          assert '?signature=test&key_id=test' in ad
+          assert 'HivemindService.setExpectedNonce(nonce)' in ad
+          assert '/admob/callback?signature=test&key_id=test' in hivemind
+
+          data = json.loads(Path('.dart_tool/package_config.json').read_text())
+          package = next(p for p in data['packages'] if p['name'] == 'flutter_vless_android')
+          parsed = urlparse(package['rootUri'])
+          root = Path(unquote(parsed.path)) if parsed.scheme == 'file' else \
+              (Path('.dart_tool') / unquote(package['rootUri'])).resolve()
+          assert 'flutter_vless_android-1.1.5' in str(root), root
+
+          kotlin = root / 'android/src/main/kotlin/com/github/tfox/flutter_vless'
+          plugin = (kotlin / 'FlutterVlessPlugin.kt').read_text()
+          config = (kotlin / 'xray/dto/XrayConfig.kt').read_text()
+          service = (kotlin / 'xray/service/XrayVPNService.kt').read_text()
+          assert '"setAllowedApps" ->' in plugin
+          assert 'it.isNotEmpty() && it != context.packageName' in plugin
+          assert 'config.ALLOWED_APPS = ArrayList(allowedApps)' in plugin
+          assert 'var ALLOWED_APPS:' in config
+          assert 'builder.addAllowedApplication(pkg)' in service
+          assert 'builder.addDisallowedApplication(pkg)' in service
+          assert 'Allowed and blocked app policies cannot be mixed' in service
+          assert 'Stopping stale Xray core before restart' in service
+          assert 'Could not delete stale tun2socks socket' in service
+          print('Final single-VpnService routing invariants verified')
+          PY
+
+      - name: Generate unit tests
+        shell: bash
+        run: |
+          mkdir -p test
+          cat > test/routing_stability_final_ci_test.dart <<'DART'
+          import 'package:flutter_test/flutter_test.dart';
+          import 'package:shared_preferences/shared_preferences.dart';
+          import 'package:revoltvpn/logic/connection_settings.dart';
+
+          void main() {
+            TestWidgetsFlutterBinding.ensureInitialized();
+
+            test('routing settings normalize and persist selected apps', () async {
+              SharedPreferences.setMockInitialValues(<String, Object>{});
+              await ConnectionSettings.initialize();
+              expect(ConnectionSettings.mode, ConnectionMode.auto);
+
+              await ConnectionSettings.setMode(ConnectionMode.auto);
+              await ConnectionSettings.setRoutingMode(AppRoutingMode.selected);
+              await ConnectionSettings.setAppPackages(<String>[
+                'com.android.chrome',
+                ' com.discord ',
+                'com.android.chrome',
+              ]);
+
+              expect(ConnectionSettings.routingMode, AppRoutingMode.selected);
+              expect(
+                ConnectionSettings.appPackages,
+                <String>['com.android.chrome', 'com.discord'],
+              );
+            });
+
+            test('exclude mode keeps the same app list without duplicates', () async {
+              SharedPreferences.setMockInitialValues(<String, Object>{});
+              await ConnectionSettings.initialize();
+              await ConnectionSettings.setRoutingMode(AppRoutingMode.exclude);
+              await ConnectionSettings.setAppPackages(<String>[
+                'com.android.chrome',
+                'com.android.chrome',
+                'com.discord',
+              ]);
+              expect(ConnectionSettings.routingMode, AppRoutingMode.exclude);
+              expect(ConnectionSettings.appPackages.length, 2);
+            });
+          }
+          DART
+
+      - name: Flutter analyze
+        run: flutter analyze
+
+      - name: Unit tests
+        run: flutter test test/routing_stability_final_ci_test.dart
+
+      - name: Public API health
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --max-time 10 \
+            https://paladinvpn.duckdns.org/api/health
+          echo
+
+      - name: Build release APK
+        run: flutter build apk --release --build-name 3.3.3 --build-number 30
+
+      - name: Build release AAB
+        run: flutter build appbundle --release --build-name 3.3.3 --build-number 30
+
+      - name: Verify packaged VPN runtime
+        shell: bash
+        run: |
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libtun2socks.so'
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libxray.so'
+
+      - name: Package release artifacts
+        shell: bash
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk ReVoltVPN-3.3.3-routing-stability-final.apk
+          cp build/app/outputs/bundle/release/app-release.aab ReVoltVPN-3.3.3-routing-stability-final.aab
+          sha256sum ReVoltVPN-3.3.3-routing-stability-final.apk > ReVoltVPN-3.3.3-routing-stability-final.apk.sha256
+          sha256sum ReVoltVPN-3.3.3-routing-stability-final.aab > ReVoltVPN-3.3.3-routing-stability-final.aab.sha256
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReVoltVPN-3.3.3-routing-stability-final
+          path: |
+            ReVoltVPN-3.3.3-routing-stability-final.apk
+            ReVoltVPN-3.3.3-routing-stability-final.aab
+            ReVoltVPN-3.3.3-routing-stability-final.apk.sha256
+            ReVoltVPN-3.3.3-routing-stability-final.aab.sha256
+          retention-days: 3
+          if-no-files-found: error
