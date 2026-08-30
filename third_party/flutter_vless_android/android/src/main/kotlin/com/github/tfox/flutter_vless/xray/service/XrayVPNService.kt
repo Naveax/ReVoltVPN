@@ -8,7 +8,9 @@ import android.net.LocalSocket
 import android.net.LocalSocketAddress
 import android.net.VpnService
 import android.os.Build
+import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import android.os.ResultReceiver
 import android.util.Base64
 import android.util.Log
 import com.github.tfox.flutter_vless.xray.core.XrayCoreManager
@@ -40,6 +42,24 @@ class XrayVPNService : VpnService() {
         } else {
             @Suppress("DEPRECATION")
             intent.getSerializableExtra("COMMAND") as? AppConfigs.V2RAY_SERVICE_COMMANDS
+        }
+
+        // Tunnel readiness lives in this remote VpnService process. Answer state
+        // queries here instead of asking the Flutter process to trust a cached
+        // broadcast that may have been missed during startup/process recreation.
+        if (command == AppConfigs.V2RAY_SERVICE_COMMANDS.QUERY_STATE) {
+            val receiver = if (Build.VERSION.SDK_INT >= 33) {
+                intent.getParcelableExtra("STATE_RECEIVER", ResultReceiver::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra("STATE_RECEIVER") as? ResultReceiver
+            }
+            receiver?.send(0, buildStateBundle())
+
+            val active = runtimeExpected ||
+                AppConfigs.V2RAY_STATE != AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
+            if (!active) stopSelfResult(startId)
+            return if (active) START_STICKY else START_NOT_STICKY
         }
 
         if (command == AppConfigs.V2RAY_SERVICE_COMMANDS.STOP_SERVICE) {
@@ -87,6 +107,26 @@ class XrayVPNService : VpnService() {
             }
         }
         return START_STICKY
+    }
+
+    private fun buildStateBundle(): Bundle {
+        val config = currentConfig ?: AppConfigs.V2RAY_CONFIG
+        val state = when (AppConfigs.V2RAY_STATE) {
+            AppConfigs.V2RAY_STATES.V2RAY_CONNECTED -> "CONNECTED"
+            AppConfigs.V2RAY_STATES.V2RAY_CONNECTING -> "CONNECTING"
+            AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED -> "DISCONNECTED"
+        }
+        return Bundle().apply {
+            putString("state", state)
+            putBoolean("tunEstablished", AppConfigs.TUN_ESTABLISHED)
+            putBoolean("fdDelivered", AppConfigs.FD_DELIVERED)
+            putBoolean("socksReady", AppConfigs.SOCKS_READY)
+            putInt("socksPort", config?.LOCAL_SOCKS5_PORT ?: 0)
+            putString("socksUser", config?.LOCAL_SOCKS5_USER.orEmpty())
+            putString("socksPass", config?.LOCAL_SOCKS5_PASS.orEmpty())
+            putLong("generation", AppConfigs.RUNTIME_GENERATION)
+            putString("error", AppConfigs.LAST_ERROR)
+        }
     }
 
     private fun failBeforeRuntime(reason: String) {
@@ -207,9 +247,6 @@ class XrayVPNService : VpnService() {
             }
         }
 
-        // The VPN app itself is never routed into this TUN, so Xray's own
-        // server socket cannot loop back. Capture the complete IPv4/IPv6 space
-        // instead of punching a destination-IP hole in the user data path.
         builder.addRoute("0.0.0.0", 0)
         builder.addRoute("::", 0)
         builder.addDnsServer("1.1.1.1")
