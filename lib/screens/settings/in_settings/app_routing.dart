@@ -51,7 +51,10 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
   }
 
   Future<void> _changeMode(AppRoutingMode? next) async {
-    if (_assMode || next == null || next == _mode) return;
+    // Local SOCKS5 is deliberately proxy-only. Keep the saved routing policy
+    // untouched for TUN/ASS/Auto instead of exposing a control that does
+    // nothing in the current mode.
+    if (_proxyMode || _assMode || next == null || next == _mode) return;
     if (_vpnBusy()) {
       _showDisconnectFirst();
       return;
@@ -62,7 +65,7 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
   }
 
   Future<void> _openPicker() async {
-    if (!_assMode && _mode == AppRoutingMode.all) return;
+    if (_proxyMode || (!_assMode && _mode == AppRoutingMode.all)) return;
     if (_vpnBusy()) {
       _showDisconnectFirst();
       return;
@@ -89,7 +92,7 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
     }
 
     if (_proxyMode) {
-      return 'Local SOCKS5 is a manual proxy. These app choices stay saved for TUN, ASS and Auto but are not applied in SOCKS5 mode.';
+      return 'Local SOCKS5 is a manual proxy. Saved app routing is not applied in this mode.';
     }
 
     if (_autoMode) {
@@ -123,7 +126,7 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
 
   @override
   Widget build(BuildContext context) {
-    final showPicker = _assMode || _mode != AppRoutingMode.all;
+    final showPicker = !_proxyMode && (_assMode || _mode != AppRoutingMode.all);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -137,32 +140,37 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
             _subtitle,
             style: const TextStyle(color: AppColors.textDim, fontSize: 12),
           ),
-          trailing: _assMode
+          trailing: _proxyMode
               ? const Text(
-                  'Selected only',
-                  style: TextStyle(color: AppColors.textWhite, fontSize: 12),
+                  'Not applied',
+                  style: TextStyle(color: AppColors.textMuted, fontSize: 12),
                 )
-              : DropdownButtonHideUnderline(
-                  child: DropdownButton<AppRoutingMode>(
-                    value: _mode,
-                    dropdownColor: AppColors.bgCard,
-                    onChanged: _changeMode,
-                    items: const [
-                      DropdownMenuItem(
-                        value: AppRoutingMode.all,
-                        child: Text('All apps'),
+              : _assMode
+                  ? const Text(
+                      'Selected only',
+                      style: TextStyle(color: AppColors.textWhite, fontSize: 12),
+                    )
+                  : DropdownButtonHideUnderline(
+                      child: DropdownButton<AppRoutingMode>(
+                        value: _mode,
+                        dropdownColor: AppColors.bgCard,
+                        onChanged: _changeMode,
+                        items: const [
+                          DropdownMenuItem(
+                            value: AppRoutingMode.all,
+                            child: Text('All apps'),
+                          ),
+                          DropdownMenuItem(
+                            value: AppRoutingMode.exclude,
+                            child: Text('Exclude apps'),
+                          ),
+                          DropdownMenuItem(
+                            value: AppRoutingMode.selected,
+                            child: Text('Selected only'),
+                          ),
+                        ],
                       ),
-                      DropdownMenuItem(
-                        value: AppRoutingMode.exclude,
-                        child: Text('Exclude apps'),
-                      ),
-                      DropdownMenuItem(
-                        value: AppRoutingMode.selected,
-                        child: Text('Selected only'),
-                      ),
-                    ],
-                  ),
-                ),
+                    ),
         ),
         if (showPicker)
           ListTile(
@@ -173,10 +181,8 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
                   ? 'Choose routed apps'
                   : 'Choose excluded apps',
             ),
-            subtitle: Text(
-              _proxyMode
-                  ? 'Saved only. Local SOCKS5 does not force apps into the proxy.'
-                  : 'Select the exact app that creates the traffic, e.g. Chrome rather than the Google app.',
+            subtitle: const Text(
+              'Routing is applied to the selected Android package IDs.',
             ),
             trailing: const Icon(Icons.chevron_right),
           ),
