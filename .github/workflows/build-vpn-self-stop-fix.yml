@@ -1,0 +1,187 @@
+name: Build VPN self-stop fix
+
+on:
+  push:
+    branches:
+      - fix/vpn-self-stop-3.3.11
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vpn-self-stop-fix-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Set up Gradle 8.14
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+          cache-read-only: true
+
+      - name: Generate local build configuration
+        shell: bash
+        run: |
+          cat > lib/logic/app_config.dart <<'DART'
+          abstract final class AppConfig {
+            AppConfig._();
+            static const String serverIp = '204.168.246.88';
+            static const String hivemindApiPublic = 'https://paladinvpn.duckdns.org/api';
+            static const String realityFp = 'chrome';
+            static const String vlessSecurity = 'reality';
+            static const String vlessType = 'xhttp';
+            static const String vlessPath = '/revolt';
+            static const String applicationId = 'com.paladinvpn.app';
+            static const String githubOwner = 'esefxdz';
+            static const String githubRepo = 'ReVoltVPN';
+            static const String githubReleasesUrl =
+                'https://github.com/$githubOwner/$githubRepo/releases/latest';
+            static const String adUnitId =
+                'ca-app-pub-5671224884648691/9198987725';
+          }
+          DART
+
+          cat > android/admob.properties <<'PROPS'
+          ADMOB_APP_ID=ca-app-pub-3940256099942544~3347511713
+          PROPS
+
+          {
+            printf 'flutter.sdk=%s\n' "$FLUTTER_ROOT"
+            printf 'sdk.dir=%s\n' "$ANDROID_HOME"
+          } > android/local.properties
+
+      - name: Generate temporary validation release key
+        shell: bash
+        run: |
+          keytool -genkeypair \
+            -keystore android/revolt-self-stop-fix.jks \
+            -storepass revoltselfstop \
+            -keypass revoltselfstop \
+            -alias revolt-self-stop \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650 \
+            -dname "CN=ReVoltVPN Self Stop Fix,O=ReVoltVPN,C=US"
+
+          cat > android/key.properties <<'PROPS'
+          storePassword=revoltselfstop
+          keyPassword=revoltselfstop
+          keyAlias=revolt-self-stop
+          storeFile=revolt-self-stop-fix.jks
+          PROPS
+
+      - name: Generate Gradle wrapper
+        shell: bash
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.14 --distribution-type all
+          chmod +x gradlew
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Apply 3.3.10 FD handoff baseline
+        run: python3 tool/patch_fd_handoff_compat.py
+
+      - name: Apply VPN self-stop fix
+        run: |
+          python3 tool/apply_vpn_self_stop_fix.py
+          python3 tool/finalize_vpn_self_stop_fix.py
+
+      - name: Verify lifecycle invariants
+        shell: bash
+        run: |
+          SERVICE='third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt'
+          grep -q 'START_REDELIVER_INTENT' "$SERVICE"
+          grep -q 'requestRuntimeRecovery' "$SERVICE"
+          grep -q 'MAX_RUNTIME_RECOVERY_ATTEMPTS = 3' "$SERVICE"
+          grep -q 'Keeping VPN service alive for bounded runtime recovery' "$SERVICE"
+          grep -q 'stopping = false' "$SERVICE"
+          ! grep -q 'terminateService("tun2socks exited unexpectedly"' "$SERVICE"
+          ! grep -q 'terminateService("Xray core exited unexpectedly"' "$SERVICE"
+          ! grep -q 'return START_STICKY' "$SERVICE"
+          python3 - <<'PY'
+          from pathlib import Path
+          dart = Path('lib/logic/vpn_connection.dart').read_text()
+          dispose = dart.split('  @override\n  void dispose() {', 1)[1].split('\n  }', 1)[0]
+          assert 'stopVless' not in dispose, dispose
+          assert 'disconnect()' in dart
+          service = Path('third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt').read_text()
+          assert 'STOP_SERVICE' in service
+          assert 'onRevoke()' in service
+          assert 'terminateService("VPN permission revoked"' in service
+          PY
+          git diff --check
+
+      - name: Flutter analyze
+        run: flutter analyze --no-fatal-warnings
+
+      - name: Unit tests
+        run: flutter test
+
+      - name: Kotlin release compile
+        shell: bash
+        run: |
+          cd android
+          ./gradlew :app:compileReleaseKotlin --stacktrace
+
+      - name: Build 3.3.11 validation APK
+        run: flutter build apk --release --build-name 3.3.11 --build-number 39
+
+      - name: Verify packaged VPN runtime
+        shell: bash
+        run: |
+          test -s build/app/outputs/flutter-apk/app-release.apk
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libtun2socks.so'
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libxray.so'
+
+      - name: Materialize validated source fix on branch
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            lib/logic/vpn_connection.dart \
+            third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt
+          if git diff --cached --quiet; then
+            echo 'Validated source fix is already materialized.'
+          else
+            git commit -m 'fix: prevent VPN self-stop after connect [skip ci]'
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
+      - name: Package APK
+        shell: bash
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk ReVoltVPN-3.3.11-vpn-self-stop-fix.apk
+          sha256sum ReVoltVPN-3.3.11-vpn-self-stop-fix.apk > ReVoltVPN-3.3.11-vpn-self-stop-fix.apk.sha256
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReVoltVPN-3.3.11-vpn-self-stop-fix
+          path: |
+            ReVoltVPN-3.3.11-vpn-self-stop-fix.apk
+            ReVoltVPN-3.3.11-vpn-self-stop-fix.apk.sha256
+          retention-days: 7
+          if-no-files-found: error
