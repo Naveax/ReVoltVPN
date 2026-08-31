@@ -1,0 +1,181 @@
+name: Validate 3.3.1 staging
+
+on:
+  push:
+    branches:
+      - stage/pr2-dead-code-cleanup
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-331-cleanup-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Set up Gradle 8.14
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+
+      - name: Generate local config
+        shell: bash
+        run: |
+          cat > lib/logic/app_config.dart <<'DART'
+          abstract final class AppConfig {
+            AppConfig._();
+            static const String serverIp = '204.168.246.88';
+            static const String hivemindApiPublic = 'https://paladinvpn.duckdns.org/api';
+            static const String realityFp = 'chrome';
+            static const String vlessSecurity = 'reality';
+            static const String vlessType = 'xhttp';
+            static const String vlessPath = '/revolt';
+            static const String applicationId = 'com.paladinvpn.app';
+            static const String githubOwner = 'esefxdz';
+            static const String githubRepo = 'ReVoltVPN';
+            static const String githubReleasesUrl =
+                'https://github.com/$githubOwner/$githubRepo/releases/latest';
+            static const String adUnitId = 'ca-app-pub-5671224884648691/9198987725';
+          }
+          DART
+
+          cat > android/admob.properties <<'PROPS'
+          ADMOB_APP_ID=ca-app-pub-3940256099942544~3347511713
+          PROPS
+
+          printf 'flutter.sdk=%s\nsdk.dir=%s\n' "$FLUTTER_ROOT" "$ANDROID_HOME" > android/local.properties
+
+      - name: Generate temporary release signing key
+        shell: bash
+        run: |
+          keytool -genkeypair \
+            -keystore android/revolt-331.jks \
+            -storepass revolt331 \
+            -keypass revolt331 \
+            -alias revolt-331 \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650 \
+            -dname "CN=ReVoltVPN 3.3.1,O=ReVoltVPN,C=US"
+          cat > android/key.properties <<'PROPS'
+          storePassword=revolt331
+          keyPassword=revolt331
+          keyAlias=revolt-331
+          storeFile=revolt-331.jks
+          PROPS
+
+      - name: Generate Gradle wrapper
+        shell: bash
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.14 --distribution-type all
+          chmod +x gradlew
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Verify release invariants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from urllib.parse import unquote, urlparse
+
+          pubspec = Path('pubspec.yaml').read_text()
+          assert 'version: 3.3.1+27' in pubspec
+          assert 'dependency_overrides:' not in pubspec
+          assert not Path('third_party/flutter_vless_android').exists()
+
+          data = json.loads(Path('.dart_tool/package_config.json').read_text())
+          package = next(p for p in data['packages'] if p['name'] == 'flutter_vless_android')
+          parsed = urlparse(package['rootUri'])
+          root = Path(unquote(parsed.path)) if parsed.scheme == 'file' else (Path('.dart_tool') / unquote(package['rootUri'])).resolve()
+          assert 'flutter_vless_android-1.1.5' in str(root), root
+
+          settings = Path('lib/logic/connection_settings.dart').read_text()
+          vpn = Path('lib/logic/vpn_connection.dart').read_text()
+          timer = Path('lib/logic/session_timer.dart').read_text()
+          main_activity = Path('android/app/src/main/kotlin/com/paladinvpn/app/MainActivity.kt').read_text()
+
+          assert 'enum ConnectionMode { tun, proxy }' in settings
+          assert "storedMode == 'auto'" in settings
+          assert 'ConnectionMode.auto' not in vpn
+          assert 'testActiveLocalSocks' in vpn
+          assert 'WidgetsBindingObserver' in vpn
+          assert '_checkHealthIfIdle' in vpn
+          assert 'networkTransport' not in vpn
+          assert 'networkValidated' not in vpn
+          assert 'lastHealthLatencyMs' not in vpn
+          assert 'fallbackCount' not in vpn
+          assert 'activeTransportProfile' not in vpn
+          assert not Path('lib/logic/network_monitor.dart').exists()
+          assert '_remainingAtLastSync' in timer
+          assert '_backgroundPollIntervalSeconds = 30' in timer
+          assert 'NotificationService.updateTimer(formatted)' in timer
+          assert 'notification.flags = notification.flags or' in main_activity
+          assert 'Notification.FLAG_NO_CLEAR' in main_activity
+          assert 'com.revoltvpn.app/haptics' in main_activity
+          assert 'com.revoltvpn.app/apps' in main_activity
+          assert 'com.revoltvpn.app/network' not in main_activity
+          assert Path('test/ass_to_socks5_migration_test.dart').exists()
+          assert not Path('test/no_ass_migration_test.dart').exists()
+          print('3.3.1 cleanup invariants verified')
+          PY
+
+      - name: Analyze native patchers
+        run: dart analyze tool/patch_flutter_vless_allowed_apps.dart tool/patch_flutter_vless_secure_socks_v2.dart tool/patch_flutter_vless_secure_socks_scope_fix.dart
+
+      - name: Apply native patches
+        shell: bash
+        run: |
+          cd android
+          ./gradlew :app:patchFlutterVlessSecureSocksScopeFix
+
+      - name: Prove native patch idempotence
+        shell: bash
+        run: |
+          cd android
+          ./gradlew :app:patchFlutterVlessSecureSocksScopeFix --rerun-tasks
+
+      - name: Flutter analyze
+        run: flutter analyze --no-fatal-warnings --no-fatal-infos
+
+      - name: Flutter tests
+        run: flutter test
+
+      - name: Kotlin release compile
+        shell: bash
+        run: |
+          cd android
+          ./gradlew :app:compileReleaseKotlin --stacktrace
+
+      - name: Build 3.3.1 APK
+        run: flutter build apk --release --build-name 3.3.1 --build-number 27
+
+      - name: Verify packaged runtime
+        shell: bash
+        run: |
+          test -s build/app/outputs/flutter-apk/app-release.apk
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libtun2socks.so'
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libxray.so'
