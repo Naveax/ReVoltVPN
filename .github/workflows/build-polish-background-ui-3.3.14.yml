@@ -1,0 +1,257 @@
+name: Build 3.3.14 polish background UI
+
+on:
+  push:
+    branches:
+      - fix/polish-background-ui-3.3.14
+
+permissions:
+  contents: write
+
+concurrency:
+  group: polish-background-ui-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Set up Gradle 8.14
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+
+      - name: Generate local build config
+        shell: bash
+        run: |
+          cat > lib/logic/app_config.dart <<'DART'
+          abstract final class AppConfig {
+            AppConfig._();
+            static const String serverIp = '204.168.246.88';
+            static const String hivemindApiPublic = 'https://paladinvpn.duckdns.org/api';
+            static const String realityFp = 'chrome';
+            static const String vlessSecurity = 'reality';
+            static const String vlessType = 'xhttp';
+            static const String vlessPath = '/revolt';
+            static const String applicationId = 'com.paladinvpn.app';
+            static const String githubOwner = 'esefxdz';
+            static const String githubRepo = 'ReVoltVPN';
+            static const String githubReleasesUrl =
+                'https://github.com/$githubOwner/$githubRepo/releases/latest';
+            static const String adUnitId =
+                'ca-app-pub-5671224884648691/9198987725';
+          }
+          DART
+
+          cat > android/admob.properties <<'PROPS'
+          ADMOB_APP_ID=ca-app-pub-3940256099942544~3347511713
+          PROPS
+
+          {
+            printf 'flutter.sdk=%s\n' "$FLUTTER_ROOT"
+            printf 'sdk.dir=%s\n' "$ANDROID_HOME"
+          } > android/local.properties
+
+      - name: Generate temporary release signing key
+        shell: bash
+        run: |
+          keytool -genkeypair \
+            -keystore android/revolt-3-3-14.jks \
+            -storepass revolt3314 \
+            -keypass revolt3314 \
+            -alias revolt-3-3-14 \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650 \
+            -dname "CN=ReVoltVPN 3.3.14,O=ReVoltVPN,C=US"
+
+          cat > android/key.properties <<'PROPS'
+          storePassword=revolt3314
+          keyPassword=revolt3314
+          keyAlias=revolt-3-3-14
+          storeFile=revolt-3-3-14.jks
+          PROPS
+
+      - name: Generate Gradle wrapper
+        shell: bash
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.14 --distribution-type all
+          chmod +x gradlew
+          ./gradlew --version
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Verify stock VPN runtime
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from urllib.parse import unquote, urlparse
+          pubspec = Path('pubspec.yaml').read_text()
+          assert 'dependency_overrides:' not in pubspec
+          data = json.loads(Path('.dart_tool/package_config.json').read_text())
+          package = next(p for p in data['packages'] if p['name'] == 'flutter_vless_android')
+          parsed = urlparse(package['rootUri'])
+          root = Path(unquote(parsed.path)) if parsed.scheme == 'file' else (Path('.dart_tool') / unquote(package['rootUri'])).resolve()
+          assert 'flutter_vless_android-1.1.5' in str(root), root
+          print('Stock flutter_vless_android 1.1.5 selected')
+          PY
+
+      - name: Apply 3.3.14 runtime polish
+        shell: bash
+        run: |
+          python3 tool/apply_3_3_14_runtime_polish.py
+          dart format \
+            lib/logic/vpn_connection.dart \
+            lib/logic/session_timer.dart \
+            lib/logic/connection_settings.dart \
+            lib/logic/hivemind_service.dart \
+            lib/screens/settings/in_settings/connection_mode.dart \
+            lib/screens/settings/in_settings/haptic.dart \
+            lib/components/status_bar.dart
+
+      - name: Analyze native patchers
+        run: dart analyze tool/patch_flutter_vless_allowed_apps.dart tool/patch_flutter_vless_secure_socks_v2.dart tool/patch_flutter_vless_secure_socks_scope_fix.dart
+
+      - name: Apply routing and secure native patches
+        shell: bash
+        run: |
+          cd android
+          ./gradlew :app:patchFlutterVlessSecureSocks
+
+      - name: Prove native patch idempotence
+        shell: bash
+        run: |
+          cd android
+          ./gradlew :app:patchFlutterVlessSecureSocks --rerun-tasks
+
+      - name: Verify 3.3.14 invariants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          settings = Path('lib/logic/connection_settings.dart').read_text()
+          mode_ui = Path('lib/screens/settings/in_settings/connection_mode.dart').read_text()
+          vpn = Path('lib/logic/vpn_connection.dart').read_text()
+          timer = Path('lib/logic/session_timer.dart').read_text()
+          haptic = Path('lib/screens/settings/in_settings/haptic.dart').read_text()
+          hive = Path('lib/logic/hivemind_service.dart').read_text()
+          icon = Path('android/app/src/main/res/drawable/notification_status_icon.xml').read_text()
+
+          assert 'enum ConnectionMode { tun, proxy }' in settings
+          assert "storedMode == 'auto'" in settings
+          assert 'ConnectionMode.auto' not in settings
+          assert 'ConnectionMode.auto' not in vpn
+          assert "ConnectionMode _activeMode = ConnectionMode.tun" in vpn
+
+          assert "Text('Auto')" not in mode_ui
+          assert '127.0.0.1:10807' not in mode_ui
+          assert '127.0.0.1:10808' not in mode_ui
+          assert 'vpn.testActiveLocalSocks()' in mode_ui
+          assert 'if (_mode == ConnectionMode.proxy)' in mode_ui
+          assert 'canTestActiveLocalSocks' in vpn
+          assert 'username: active.username' in vpn
+          assert 'password: active.password' in vpn
+
+          assert "notificationIconResourceName: 'notification_status_icon'" in vpn
+          assert 'android:width="24dp"' in icon
+          assert 'android:height="24dp"' in icon
+
+          assert 'with WidgetsBindingObserver' in timer
+          assert 'didChangeAppLifecycleState' in timer
+          assert 'AppLifecycleState.resumed' in timer
+          assert '_remainingAtLastSync' in timer
+          assert '_reconcileElapsedTime()' in timer
+          assert 'WidgetsBinding.instance.removeObserver(this)' in timer
+
+          assert 'HapticSettings.selection()' not in haptic
+          assert '_saving' in haptic
+
+          assert 'Random.secure()' in hive
+          assert '/admob/callback?signature=test&key_id=test&custom_data=' in hive
+          assert 'skipAdBypass' in hive
+          assert 'nonce: $nonce' not in hive
+          assert 'class _HivemindSessionConfig' in hive
+
+          names = subprocess.check_output([
+              'git', 'diff', '--name-only', '5f3fdadd7b1556f4fe5073ceaedfc420ddccf24c'
+          ], text=True).splitlines()
+          assert 'lib/logic/ad_manager.dart' not in names, names
+          assert 'lib/logic/consent_manager.dart' not in names, names
+          assert 'pubspec.yaml' not in names, names
+          print('3.3.14 UI/background/Hivemind invariants verified')
+          PY
+
+      - name: Flutter analyze
+        run: flutter analyze --no-fatal-warnings
+
+      - name: Flutter tests
+        run: flutter test
+
+      - name: Kotlin release compile
+        shell: bash
+        run: |
+          cd android
+          ./gradlew :app:compileReleaseKotlin --stacktrace
+
+      - name: Build 3.3.14 APK
+        run: flutter build apk --release --build-name 3.3.14 --build-number 43
+
+      - name: Verify packaged VPN runtime
+        shell: bash
+        run: |
+          test -s build/app/outputs/flutter-apk/app-release.apk
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libtun2socks.so'
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libxray.so'
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'resources.arsc'
+
+      - name: Package APK
+        shell: bash
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk ReVoltVPN-3.3.14-polish-background-secure-socks.apk
+          sha256sum ReVoltVPN-3.3.14-polish-background-secure-socks.apk > ReVoltVPN-3.3.14-polish-background-secure-socks.apk.sha256
+
+      - name: Materialize validated runtime changes
+        shell: bash
+        run: |
+          git config user.name "ReVoltVPN CI"
+          git config user.email "actions@users.noreply.github.com"
+          git add lib/logic/vpn_connection.dart lib/logic/session_timer.dart
+          if ! git diff --cached --quiet; then
+            git commit -m "feat: materialize 3.3.14 runtime polish [skip ci]"
+            git push origin HEAD:fix/polish-background-ui-3.3.14
+          fi
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReVoltVPN-3.3.14-polish-background-secure-socks
+          path: |
+            ReVoltVPN-3.3.14-polish-background-secure-socks.apk
+            ReVoltVPN-3.3.14-polish-background-secure-socks.apk.sha256
+          retention-days: 7
+          if-no-files-found: error
