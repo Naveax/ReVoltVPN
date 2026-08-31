@@ -1,0 +1,263 @@
+name: Build 3.3.13 secure SOCKS stable runtime
+
+on:
+  push:
+    branches:
+      - fix/secure-socks-runtime-3.3.13
+
+permissions:
+  contents: write
+
+concurrency:
+  group: secure-socks-stable-runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Set up Gradle 8.14
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+
+      - name: Generate local build config
+        shell: bash
+        run: |
+          cat > lib/logic/app_config.dart <<'DART'
+          abstract final class AppConfig {
+            AppConfig._();
+            static const String serverIp = '204.168.246.88';
+            static const String hivemindApiPublic = 'https://paladinvpn.duckdns.org/api';
+            static const String realityFp = 'chrome';
+            static const String vlessSecurity = 'reality';
+            static const String vlessType = 'xhttp';
+            static const String vlessPath = '/revolt';
+            static const String applicationId = 'com.paladinvpn.app';
+            static const String githubOwner = 'esefxdz';
+            static const String githubRepo = 'ReVoltVPN';
+            static const String githubReleasesUrl =
+                'https://github.com/$githubOwner/$githubRepo/releases/latest';
+            static const String adUnitId =
+                'ca-app-pub-5671224884648691/9198987725';
+          }
+          DART
+
+          # Preserve the existing validation-only AdMob setup. No ads/SSV/
+          # consent source behavior is changed by this VPN runtime branch.
+          cat > android/admob.properties <<'PROPS'
+          ADMOB_APP_ID=ca-app-pub-3940256099942544~3347511713
+          PROPS
+
+          {
+            printf 'flutter.sdk=%s\n' "$FLUTTER_ROOT"
+            printf 'sdk.dir=%s\n' "$ANDROID_HOME"
+          } > android/local.properties
+
+      - name: Generate temporary release signing key
+        shell: bash
+        run: |
+          keytool -genkeypair \
+            -keystore android/revolt-secure-socks.jks \
+            -storepass revoltsecuresocks \
+            -keypass revoltsecuresocks \
+            -alias revolt-secure-socks \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650 \
+            -dname "CN=ReVoltVPN Secure SOCKS,O=ReVoltVPN,C=US"
+
+          cat > android/key.properties <<'PROPS'
+          storePassword=revoltsecuresocks
+          keyPassword=revoltsecuresocks
+          keyAlias=revolt-secure-socks
+          storeFile=revolt-secure-socks.jks
+          PROPS
+
+      - name: Generate Gradle wrapper
+        shell: bash
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.14 --distribution-type all
+          chmod +x gradlew
+          ./gradlew --version
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Verify stable stock runtime selection
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from urllib.parse import unquote, urlparse
+
+          pubspec = Path('pubspec.yaml').read_text()
+          assert 'dependency_overrides:' not in pubspec
+
+          data = json.loads(Path('.dart_tool/package_config.json').read_text())
+          package = next(p for p in data['packages'] if p['name'] == 'flutter_vless_android')
+          parsed = urlparse(package['rootUri'])
+          root = Path(unquote(parsed.path)) if parsed.scheme == 'file' else \
+              (Path('.dart_tool') / unquote(package['rootUri'])).resolve()
+          assert 'flutter_vless_android-1.1.5' in str(root), root
+          print('Pinned stock flutter_vless_android 1.1.5 selected')
+          PY
+
+      - name: Apply secure SOCKS app integration
+        shell: bash
+        run: |
+          python3 tool/apply_secure_socks_app_patch.py
+          dart format \
+            lib/logic/vpn_connection.dart \
+            lib/logic/local_socks_tester.dart \
+            lib/logic/secure_socks_session.dart
+
+      - name: Analyze native patchers
+        run: dart analyze tool/patch_flutter_vless_allowed_apps.dart tool/patch_flutter_vless_secure_socks_v2.dart
+
+      - name: Apply routing and secure native patches
+        shell: bash
+        run: |
+          cd android
+          ./gradlew :app:patchFlutterVlessSecureSocks
+
+      - name: Prove native patch idempotence
+        shell: bash
+        run: |
+          cd android
+          ./gradlew :app:patchFlutterVlessSecureSocks --rerun-tasks
+
+      - name: Verify secure runtime invariants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from urllib.parse import unquote, urlparse
+
+          data = json.loads(Path('.dart_tool/package_config.json').read_text())
+          package = next(p for p in data['packages'] if p['name'] == 'flutter_vless_android')
+          parsed = urlparse(package['rootUri'])
+          root = Path(unquote(parsed.path)) if parsed.scheme == 'file' else \
+              (Path('.dart_tool') / unquote(package['rootUri'])).resolve()
+          kotlin = root / 'android/src/main/kotlin/com/github/tfox/flutter_vless'
+          service = (kotlin / 'xray/service/XrayVPNService.kt').read_text()
+          core = (kotlin / 'xray/core/XrayCoreManager.kt').read_text()
+
+          assert 'flutter_vless_android-1.1.5' in str(root)
+          assert 'revolt-secure-socks' in core
+          assert 'settings.optString("auth") != "password"' in core
+          assert 'settings.optJSONArray("users")' in core
+          assert '!secureSocksEnabled && !hasHttpOnLocalPort' in core
+          assert 'Could not delete ephemeral Xray config' in core
+          assert 'context.handleXrayCoreExit(config)' in core
+
+          assert 'Authenticated ReVolt SOCKS5 inbound missing' in service
+          assert 'Starting tun2socks with authenticated loopback SOCKS5' in service
+          assert 'FD handoff failed; recycling tun2socks without dropping TUN' in service
+          assert 'tun2socks exited unexpectedly, recycling without dropping TUN' in service
+          assert 'fun handleXrayCoreExit(config: XrayConfig)' in service
+          assert 'tun2socks command:' not in service
+
+          session = Path('lib/logic/secure_socks_session.dart').read_text()
+          vpn = Path('lib/logic/vpn_connection.dart').read_text()
+          tester = Path('lib/logic/local_socks_tester.dart').read_text()
+          assert "InternetAddress.loopbackIPv4" in session
+          assert "'auth': 'password'" in session
+          assert "'users':" in session
+          assert "protocol == 'socks' || protocol == 'http'" in session
+          assert 'SecureSocksSession.create(baseConfig)' in vpn
+          assert 'username: active.username' in vpn
+          assert 'password: active.password' in vpn
+          dispose = vpn[vpn.index('  void dispose()'):]
+          assert '_vless.stopVless()' not in dispose
+          assert '0x05, 0x01, 0x02' in tester
+          assert '0x01,' in tester
+
+          forbidden = [
+              'lib/logic/ad_manager.dart',
+              'lib/logic/consent_manager.dart',
+              'lib/logic/hivemind_service.dart',
+              'android/admob.properties.example',
+          ]
+          # These files are intentionally outside the secure-runtime change set.
+          import subprocess
+          names = subprocess.check_output([
+              'git', 'diff', '--name-only', '6e130676ad58a4a9137f5b66f29206bc46014120'
+          ], text=True).splitlines()
+          assert not any(path in names for path in forbidden), names
+          print('Secure SOCKS stable-core invariants verified')
+          PY
+
+      - name: Flutter analyze
+        run: flutter analyze --no-fatal-warnings
+
+      - name: Secure SOCKS unit test
+        run: flutter test test/secure_socks_session_test.dart
+
+      - name: Migration unit test
+        run: flutter test test/no_ass_migration_test.dart
+
+      - name: Kotlin release compile
+        shell: bash
+        run: |
+          cd android
+          ./gradlew :app:compileReleaseKotlin --stacktrace
+
+      - name: Build 3.3.13 APK
+        run: flutter build apk --release --build-name 3.3.13 --build-number 42
+
+      - name: Verify packaged VPN runtime
+        shell: bash
+        run: |
+          test -s build/app/outputs/flutter-apk/app-release.apk
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libtun2socks.so'
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libxray.so'
+
+      - name: Package APK
+        shell: bash
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk ReVoltVPN-3.3.13-secure-socks-stable-core.apk
+          sha256sum ReVoltVPN-3.3.13-secure-socks-stable-core.apk > ReVoltVPN-3.3.13-secure-socks-stable-core.apk.sha256
+
+      - name: Materialize app integration after validation
+        shell: bash
+        run: |
+          git config user.name "ReVoltVPN CI"
+          git config user.email "actions@users.noreply.github.com"
+          git add \
+            lib/logic/vpn_connection.dart \
+            lib/logic/local_socks_tester.dart
+          if ! git diff --cached --quiet; then
+            git commit -m "feat: materialize secure SOCKS app integration [skip ci]"
+            git push origin HEAD:fix/secure-socks-runtime-3.3.13
+          fi
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReVoltVPN-3.3.13-secure-socks-stable-core
+          path: |
+            ReVoltVPN-3.3.13-secure-socks-stable-core.apk
+            ReVoltVPN-3.3.13-secure-socks-stable-core.apk.sha256
+          retention-days: 7
+          if-no-files-found: error
