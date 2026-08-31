@@ -8,61 +8,109 @@ Versions follow [semver](https://semver.org/): MAJOR.MINOR.PATCH
 ## [3.3.1] — 2026-08-31
 
 ### Added
-- **Explicit TUN and SOCKS5 connection modes.** The previous Auto mode is removed so
-  routing behavior is selected deliberately instead of inferred at runtime.
-- **Per-app routing** with All apps, Exclude apps and Selected only policies. Android
-  enumerates launcher applications without requesting `QUERY_ALL_PACKAGES`.
-- **Authenticated per-session Local SOCKS5.** Every connection creates a loopback-only
-  SOCKS ingress with a random high port plus fresh username/password credentials.
-  Credentials stay in memory and the diagnostic test uses the active session instead
-  of fixed `10807`/`10808` ports.
-- **Network resilience controls** with Standard and Extreme profiles plus Android
-  physical-network monitoring that ignores VPN-created network callback loops.
-- Native Android bridges for installed-app discovery, network state and haptic feedback.
-- Regression tests for legacy Auto/ASS migrations, secure SOCKS session generation and
-  the patched stock Xray SOCKS authentication schema.
-
-### Changed
-- Legacy `auto` preferences migrate to TUN. Legacy `ass` preferences migrate to SOCKS5
-  while preserving selected-app package lists.
-- Keep the hosted `flutter_vless_android` **1.1.5** runtime instead of restoring the
-  experimental vendored Android service. Required routing, recovery and authenticated
-  SOCKS behavior is applied by idempotent build-time patchers.
-- Session countdown reconciliation now uses elapsed wall-clock time, re-syncs immediately
-  on resume and preserves the existing 5 s foreground / 30 s background poll policy.
-- Haptic feedback is initialized at startup and routed through a native Android channel;
-  duplicate toggle feedback is removed and the setting remains persistent.
-- VPN notification uses a dedicated 24 dp status icon, remains ongoing/no-clear while the
-  foreground service is active and keeps session metadata out of public lock-screen previews.
-- Hivemind session parsing is split into typed validation steps and nonce generation uses
-  `Random.secure()` without logging nonce values.
-- Increase Gradle release-build heap to 4 GiB and cap workers at two so Flutter/Jetifier
-  transforms do not fail on the release classpath under constrained CI runners.
-- App version is now `3.3.1+27`.
+- **Explicit TUN and SOCKS5 connection modes.** The previous Auto mode is gone, so
+  routing is chosen deliberately instead of inferred at runtime. TUN is the default.
+  SOCKS5 runs a local authenticated proxy with no VPN interface, and therefore never
+  requests the Android VPN permission.
+- **Authenticated per-session Local SOCKS5.** Every connection binds an ephemeral
+  loopback port and mints fresh 16-byte username / 32-byte password credentials.
+  Android loopback is reachable by every app on the device, so this authentication is
+  load-bearing rather than decorative. Credentials stay in memory. Imported
+  `socks`/`http` inbounds are dropped so no unauthenticated listener can survive
+  alongside the session one.
+- **Network resilience profiles** — Standard and Extreme. Extreme restarts a failed
+  Xray/tun2socks runtime up to twice before giving up.
+- **Android physical-network monitoring**, filtered on `NET_CAPABILITY_NOT_VPN` so the
+  VPN's own network cannot feed back a reconnect loop. Informational only; the active
+  transport (Wi-Fi / cellular / ethernet) now appears in the status bar.
+- **Local SOCKS5 diagnostics.** "Test Local SOCKS" authenticates against the exact
+  active session over loopback — a readiness handshake plus a full CONNECT — instead
+  of checking whether a fixed port accepts connections.
+- Native Android bridges for network state, haptic feedback and install-source
+  detection.
 
 ### Fixed
-- Recoverable Xray/tun2socks startup and readiness failures no longer follow the unstable
-  vendored-runtime self-stop path used during development.
-- SOCKS5 readiness checks authenticate against the exact active session instead of merely
-  checking whether a fixed local port accepts connections.
-- Returning from Android background state reconciles the session timer and server status,
-  reducing stale countdowns and false `Syncing…` presentation after Dart throttling.
-- Sidebar update checks retain valid navigator/messenger handles after the drawer closes.
-- Settings startup uses the persistent haptic manager instead of the removed legacy loader.
+- **Extreme recovery now survives an app-process restart.** Android can kill the Dart
+  process while the VPN foreground service keeps running, leaving the app attached to
+  a live tunnel it holds no configuration for — so recovery had nothing to restart
+  from. In TUN mode the app rebuilds that snapshot from the still-active session,
+  without opening a new session, showing an ad, or interrupting traffic.
+- **The proxy settings tile no longer misreports state after a process restart.** Its
+  credentials genuinely cannot be recovered — they are random, generated on device and
+  never transmitted — so instead of telling an already-connected user to "Connect", it
+  now says the credentials were lost and offers a Reconnect action.
+- **The first tap on the connect button was ignored.** The debounce timestamp was
+  initialized to the current time instead of the epoch, so the first press was always
+  swallowed.
+- **The health probe polled `/health` every 30 s even while connected.** Restored to
+  idle-only — a live tunnel already proves reachability, and the extra direct requests
+  were unwanted.
+- **A user reconnect could race an in-flight Extreme recovery.** A connection
+  generation counter now aborts stale recovery attempts.
+- Recoverable Xray/tun2socks startup and readiness failures no longer follow the
+  unstable self-stop path used during development.
+- Returning from Android background state reconciles the session countdown against
+  elapsed wall-clock time and re-syncs immediately, reducing stale countdowns and false
+  `Syncing…` presentation after Dart throttling.
+- Sidebar update checks retain valid navigator/messenger handles after the drawer
+  closes.
+
+### Changed
+- **The pinned `flutter_vless_android` 1.1.5 runtime is patched at build time** instead
+  of vendored. Three idempotent patchers are chained into `preBuild`, so a plain
+  `flutter build apk` behaves like CI rather than depending on a manual step against
+  the pub cache. They are fail-closed: an upstream change breaks the build loudly
+  instead of silently producing an unpatched runtime.
+- Legacy `auto` preferences migrate to TUN; legacy `ass` preferences migrate to SOCKS5.
+- Haptic feedback is a single confirmation on connect/disconnect, routed through the
+  native Android vibration channel, and **defaults to off**.
+- The VPN notification uses a dedicated 24 dp status icon and stays ongoing/no-clear
+  while the foreground service is alive.
+- Hivemind session parsing is split into typed validation steps; a malformed port now
+  fails instead of silently falling back.
+- The update checker parses semver with prerelease ordering and validates release URLs
+  against an HTTPS host allowlist.
+- The support button shows a claimed/disabled state once the session bonus is used.
+- The status bar distinguishes `Ready` from `Syncing…` and folds in server
+  reachability.
+- Gradle release heap raised to 4 GiB with `MaxMetaspaceSize=1g` and `workers.max=2`,
+  so Flutter/Jetifier transforms do not fail on the release classpath under constrained
+  runners.
+- App version is now `3.3.1+27`.
+
+### Removed
+- **Per-app routing**, including the app picker, the installed-apps native bridge and
+  the blocked-apps mechanism. It only ever functioned in TUN — the underlying
+  `addDisallowedApplication` call lives inside the VPN-interface setup that SOCKS5 mode
+  skips entirely — and its allowlist half was never wired to any caller. Removed rather
+  than finished.
+- The legacy `auto` connection mode.
+- `flutter_local_notifications`, and the unused notification manager it backed.
+- A global touch listener that fired a haptic on every tap.
+- Unused runtime telemetry fields.
 
 ### Security & privacy
-- Local SOCKS5 listens only on `127.0.0.1`, requires per-session authentication and does not
-  persist or log generated credentials.
-- The app picker relies on launcher-app queries rather than broad package visibility.
-- Session time/speed notification metadata is marked private for lock-screen previews.
+- **Session metadata is hidden from public lock-screen previews.** The live foreground
+  notification is built with `VISIBILITY_PRIVATE` plus a generic public version, so the
+  countdown and speed are visible only after unlock. *(An earlier attempt at this
+  landed in an unreferenced class and never took effect.)*
+- Local SOCKS5 listens only on `127.0.0.1`, requires per-session authentication, and
+  its credentials are neither persisted nor logged.
+- The app requests no package visibility at all. `QUERY_ALL_PACKAGES` was never used,
+  and the launcher-enumeration query was removed along with the app picker.
+- Session nonces use `Random.secure()` and are never logged.
+- Device UUIDs are validated as v4 and regenerated if corrupt, so tampered identifiers
+  cannot reach the API.
+- `FOREGROUND_SERVICE_SPECIAL_USE` is declared for Android 14+; the merged service
+  declaration carries the `vpn` special-use subtype.
 - Existing AdMob bypass/callback behavior is intentionally unchanged by this release.
 - Server, nginx and Reality configuration are not modified by this client-side release.
 
 ### Validation
-- `flutter analyze` completed without fatal warnings or infos.
-- All four Flutter regression tests passed.
-- Android release Kotlin compilation passed.
-- The 3.3.1 release APK built successfully and the packaged VPN runtime verification passed.
+- `flutter analyze` — 0 errors, 0 warnings, 7 style infos (6 of them pre-existing).
+- All three build-time patchers verified against a clean pub cache, including that each
+  applies independently of the others.
+- **Not yet verified:** Android release Kotlin compilation and APK build.
 
 ## [3.3.0] — 2026-08-30
 
