@@ -11,6 +11,7 @@ class HapticFeedbackTile extends StatefulWidget {
 
 class _HapticFeedbackTileState extends State<HapticFeedbackTile> {
   bool _on = HapticSettings.enabled;
+  bool _saving = false;
 
   @override
   void initState() {
@@ -24,14 +25,18 @@ class _HapticFeedbackTileState extends State<HapticFeedbackTile> {
   }
 
   Future<void> _toggle(bool value) async {
-    if (!value) HapticSettings.selection();
-    if (mounted) setState(() => _on = value);
+    if (_saving) return;
+    setState(() {
+      _saving = true;
+      _on = value;
+    });
 
     try {
       await HapticSettings.setEnabled(value);
-      if (value) HapticSettings.selection();
     } catch (_) {
       if (mounted) setState(() => _on = HapticSettings.enabled);
+    } finally {
+      if (mounted) setState(() => _saving = false);
     }
   }
 
@@ -43,7 +48,7 @@ class _HapticFeedbackTileState extends State<HapticFeedbackTile> {
         style: TextStyle(color: AppColors.textWhite, fontSize: 15),
       ),
       value: _on,
-      onChanged: _toggle,
+      onChanged: _saving ? null : _toggle,
       activeTrackColor: AppColors.accent.withAlpha(80),
       activeThumbColor: AppColors.accent,
       contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
