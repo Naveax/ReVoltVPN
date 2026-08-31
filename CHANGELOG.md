@@ -5,6 +5,21 @@ Versions follow [semver](https://semver.org/): MAJOR.MINOR.PATCH
 
 ---
 
+## [3.3.3] — 2026-09-01
+
+### Fixed
+- **The session clock stayed at 00:00:00 on a live tunnel, and the notification
+  countdown froze with it.** `SessionTimer` is built lazily, so when the app reattaches
+  to a tunnel that outlived its UI process, `VpnConnection` had already reported
+  "connected" before the timer existed — and a change listener does not replay events
+  it was not present for. The timer now evaluates the current connection state once at
+  construction instead of waiting for a transition, and is created eagerly alongside
+  `VpnConnection`. Because the timer is what pushes text to the foreground
+  notification, a stopped clock also meant a frozen countdown; both come from this.
+- Resuming the clock no longer requires `adoptedRunningRuntime` or a previous
+  successful sync, both of which are false in a freshly started process. A connected
+  tunnel with a stopped clock is now always treated as something to resume.
+
 ## [3.3.2] — 2026-09-01
 
 Background reliability. 3.3.1 could show "connected" against a tunnel that was no

@@ -47,6 +47,11 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     vpnConnection.addListener(_onVpnConnectionChanged);
     unawaited(_loadSupportRewardState());
+    // This provider is built lazily, so the tunnel may already be up and
+    // VpnConnection may already have fired its change before we attached.
+    // A listener does not replay history -- evaluate the current state once.
+    // Deferred so we never notify during the build that created us.
+    unawaited(Future.microtask(_onVpnConnectionChanged));
   }
 
   int get remaining => _remainingSeconds;
@@ -102,18 +107,15 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _onVpnConnectionChanged() {
+    // A live tunnel with a stopped clock is always wrong, however we got here:
+    // adopting a tunnel that outlived the UI process, recovering from a blip, or
+    // attaching late to one that was already up. Previously this required either
+    // adoptedRunningRuntime or _hasSyncedOnce, both false on a fresh process, so
+    // the clock stayed at 00:00:00 and the notification countdown froze with it.
     if (vpnConnection.status == VpnStatus.connected &&
         !isRunning &&
-        vpnConnection.adoptedRunningRuntime) {
-      _resumeTicking();
-      return;
-    }
-
-    if (vpnConnection.status == VpnStatus.connected &&
-        !isRunning &&
-        !_isDisconnecting &&
-        _hasSyncedOnce) {
-      debugPrint('[Timer] VPN reconnected after blip - resuming.');
+        !_isDisconnecting) {
+      debugPrint('[Timer] Connected with a stopped clock - resuming.');
       _resumeTicking();
       return;
     }

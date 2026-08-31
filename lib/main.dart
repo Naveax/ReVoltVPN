@@ -47,6 +47,9 @@ class ReVoltApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => VpnConnection(), lazy: false),
         ChangeNotifierProxyProvider<VpnConnection, SessionTimer>(
+          // Eager, like VpnConnection: the timer has to be listening before the
+          // engine reports an already-running tunnel, not after the intro.
+          lazy: false,
           create: (ctx) =>
               SessionTimer(vpnConnection: ctx.read<VpnConnection>()),
           update: (_, vpn, prev) =>
