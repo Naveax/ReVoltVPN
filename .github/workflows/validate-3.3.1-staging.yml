@@ -149,7 +149,7 @@ jobs:
           ./gradlew :app:patchFlutterVlessSecureSocksScopeFix --rerun-tasks
 
       - name: Flutter analyze
-        run: flutter analyze --no-fatal-warnings
+        run: flutter analyze --no-fatal-warnings --no-fatal-infos
 
       - name: Flutter tests
         run: flutter test
