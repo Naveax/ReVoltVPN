@@ -186,7 +186,8 @@ resume_replacement = """  void _reconcileElapsedTime() {
     if (!_hasSyncedOnce || syncedAt == null) return;
 
     final elapsed = DateTime.now().difference(syncedAt).inSeconds;
-    _remainingSeconds = (_remainingAtLastSync - elapsed).clamp(0, 1 << 31);
+    _remainingSeconds =
+        (_remainingAtLastSync - elapsed).clamp(0, 1 << 31).toInt();
   }
 
   @override
