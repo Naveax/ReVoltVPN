@@ -1,0 +1,166 @@
+name: VPN shutdown A-B matrix APKs
+
+on:
+  push:
+    branches:
+      - diag/shutdown-ab-matrix
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vpn-shutdown-ab-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-variant:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - no-fd-gate
+          - legacy-socks
+          - no-socks-watchdog
+          - no-tun2socks-exit-kill
+          - no-dart-readiness-cleanup
+          - no-generation-lifecycle-guard
+
+    steps:
+      - name: Checkout exact common base
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Set up Gradle 8.14
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+          cache-read-only: true
+
+      - name: Generate local build configuration
+        shell: bash
+        run: |
+          cat > lib/logic/app_config.dart <<'DART'
+          abstract final class AppConfig {
+            AppConfig._();
+            static const String serverIp = '204.168.246.88';
+            static const String hivemindApiPublic = 'https://paladinvpn.duckdns.org/api';
+            static const String realityFp = 'chrome';
+            static const String vlessSecurity = 'reality';
+            static const String vlessType = 'xhttp';
+            static const String vlessPath = '/revolt';
+            static const String applicationId = 'com.paladinvpn.app';
+            static const String githubOwner = 'esefxdz';
+            static const String githubRepo = 'ReVoltVPN';
+            static const String githubReleasesUrl =
+                'https://github.com/$githubOwner/$githubRepo/releases/latest';
+            static const String adUnitId =
+                'ca-app-pub-5671224884648691/9198987725';
+          }
+          DART
+
+          cat > android/admob.properties <<'PROPS'
+          ADMOB_APP_ID=ca-app-pub-3940256099942544~3347511713
+          PROPS
+
+          {
+            printf 'flutter.sdk=%s\n' "$FLUTTER_ROOT"
+            printf 'sdk.dir=%s\n' "$ANDROID_HOME"
+          } > android/local.properties
+
+      - name: Generate temporary A-B release key
+        shell: bash
+        run: |
+          keytool -genkeypair \
+            -keystore android/revolt-ab.jks \
+            -storepass revoltabtest \
+            -keypass revoltabtest \
+            -alias revolt-ab \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650 \
+            -dname "CN=ReVoltVPN AB Test,O=ReVoltVPN,C=US"
+
+          cat > android/key.properties <<'PROPS'
+          storePassword=revoltabtest
+          keyPassword=revoltabtest
+          keyAlias=revolt-ab
+          storeFile=revolt-ab.jks
+          PROPS
+
+      - name: Generate Gradle wrapper
+        shell: bash
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.14 --distribution-type all
+          chmod +x gradlew
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Reproduce 3.3.10 FD timing baseline
+        run: python3 tool/patch_fd_handoff_compat.py
+
+      - name: Disable exactly one shutdown suspect
+        run: python3 tool/apply_shutdown_ab_variant.py '${{ matrix.variant }}'
+
+      - name: Record variant manifest
+        shell: bash
+        run: |
+          mkdir -p build-ab-meta
+          {
+            echo 'BASE=3.3.10-fd-compat'
+            echo 'BASE_SHA=70fb49223a52797ddc8ed7cea7a1eddf242937eb'
+            echo 'DISABLED=${{ matrix.variant }}'
+            echo 'ALL_OTHER_SUSPECTS=enabled'
+          } | tee build-ab-meta/variant.txt
+
+      - name: Flutter analyze
+        run: flutter analyze --no-fatal-warnings
+
+      - name: Kotlin release compile
+        shell: bash
+        run: |
+          cd android
+          ./gradlew :app:compileReleaseKotlin --stacktrace
+
+      - name: Build A-B release APK
+        run: flutter build apk --release --build-name 3.3.11 --build-number 37
+
+      - name: Verify packaged VPN runtime
+        shell: bash
+        run: |
+          test -s build/app/outputs/flutter-apk/app-release.apk
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libtun2socks.so'
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libxray.so'
+
+      - name: Package variant
+        shell: bash
+        run: |
+          NAME='ReVoltVPN-3.3.11-AB-${{ matrix.variant }}'
+          cp build/app/outputs/flutter-apk/app-release.apk "$NAME.apk"
+          sha256sum "$NAME.apk" > "$NAME.apk.sha256"
+          cp build-ab-meta/variant.txt "$NAME.txt"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReVoltVPN-3.3.11-AB-${{ matrix.variant }}
+          path: |
+            ReVoltVPN-3.3.11-AB-${{ matrix.variant }}.apk
+            ReVoltVPN-3.3.11-AB-${{ matrix.variant }}.apk.sha256
+            ReVoltVPN-3.3.11-AB-${{ matrix.variant }}.txt
+          retention-days: 3
+          if-no-files-found: error
