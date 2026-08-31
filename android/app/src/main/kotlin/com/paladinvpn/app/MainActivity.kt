@@ -10,10 +10,6 @@ import android.content.pm.PackageManager
 import android.content.pm.ResolveInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.net.ConnectivityManager
-import android.net.Network
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -24,7 +20,6 @@ import com.github.tfox.flutter_vless.xray.service.XrayVPNService
 import com.github.tfox.flutter_vless.xray.utils.AppConfigs
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
 import kotlin.math.roundToInt
@@ -34,11 +29,8 @@ class MainActivity : FlutterActivity() {
     private val notificationChannel = "com.revoltvpn.app/notification"
     private val hapticsChannel = "com.revoltvpn.app/haptics"
     private val appsChannel = "com.revoltvpn.app/apps"
-    private val networkChannel = "com.revoltvpn.app/network"
 
     private var notificationChannelReady = false
-    private var networkCallback: ConnectivityManager.NetworkCallback? = null
-    private var networkEvents: EventChannel.EventSink? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -83,24 +75,6 @@ class MainActivity : FlutterActivity() {
                     result.notImplemented()
                 }
             }
-
-        EventChannel(flutterEngine.dartExecutor.binaryMessenger, networkChannel)
-            .setStreamHandler(object : EventChannel.StreamHandler {
-                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-                    networkEvents = events
-                    startNetworkMonitor()
-                }
-
-                override fun onCancel(arguments: Any?) {
-                    networkEvents = null
-                    stopNetworkMonitor()
-                }
-            })
-    }
-
-    override fun onDestroy() {
-        stopNetworkMonitor()
-        super.onDestroy()
     }
 
     private fun updateVpnNotification(title: String, text: String, actionLabel: String) {
@@ -170,134 +144,6 @@ class MainActivity : FlutterActivity() {
             manager.createNotificationChannel(channel)
         }
         notificationChannelReady = true
-    }
-
-    private fun startNetworkMonitor() {
-        if (networkCallback != null) return
-
-        val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                emitBestPhysicalNetwork(manager, "available")
-            }
-
-            override fun onLost(network: Network) {
-                emitBestPhysicalNetwork(manager, "lost")
-            }
-
-            override fun onCapabilitiesChanged(
-                network: Network,
-                capabilities: NetworkCapabilities,
-            ) {
-                emitBestPhysicalNetwork(manager, "changed")
-            }
-        }
-
-        try {
-            val request = NetworkRequest.Builder()
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-                .build()
-            manager.registerNetworkCallback(request, callback)
-            networkCallback = callback
-            emitBestPhysicalNetwork(manager, "initial")
-        } catch (e: Exception) {
-            networkEvents?.error("NETWORK_MONITOR", e.message, null)
-        }
-    }
-
-    private fun stopNetworkMonitor() {
-        val callback = networkCallback ?: return
-        val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        try {
-            manager.unregisterNetworkCallback(callback)
-        } catch (_: Exception) {
-        }
-        networkCallback = null
-    }
-
-    private fun emitBestPhysicalNetwork(
-        manager: ConnectivityManager,
-        reason: String,
-    ) {
-        val best = manager.allNetworks
-            .mapNotNull { network ->
-                val capabilities = manager.getNetworkCapabilities(network)
-                    ?: return@mapNotNull null
-                if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
-                    return@mapNotNull null
-                }
-                if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) ||
-                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
-                ) {
-                    return@mapNotNull null
-                }
-                Triple(network, capabilities, physicalNetworkScore(capabilities))
-            }
-            .maxByOrNull { it.third }
-
-        if (best == null) {
-            emitNetworkPayload(
-                mapOf<String, Any>(
-                    "reason" to reason,
-                    "transport" to "none",
-                    "connected" to false,
-                    "validated" to false,
-                    "metered" to false,
-                    "timestamp" to System.currentTimeMillis(),
-                ),
-            )
-            return
-        }
-
-        emitNetworkState(best.first, best.second, reason)
-    }
-
-    private fun physicalNetworkScore(capabilities: NetworkCapabilities): Int {
-        var score = 0
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
-            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-        ) {
-            score += 100
-        }
-        score += when {
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> 40
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> 30
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> 20
-            else -> 10
-        }
-        return score
-    }
-
-    private fun emitNetworkState(
-        network: Network,
-        capabilities: NetworkCapabilities,
-        reason: String,
-    ) {
-        val transport = when {
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
-            else -> "other"
-        }
-        val validated = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
-            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-        val metered = !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
-
-        emitNetworkPayload(
-            mapOf<String, Any>(
-                "reason" to reason,
-                "transport" to transport,
-                "connected" to true,
-                "validated" to validated,
-                "metered" to metered,
-                "timestamp" to System.currentTimeMillis(),
-            ),
-        )
-    }
-
-    private fun emitNetworkPayload(payload: Map<String, Any>) {
-        runOnUiThread { networkEvents?.success(payload) }
     }
 
     private fun installerPackage(): String? = try {

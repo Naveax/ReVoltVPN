@@ -51,42 +51,34 @@ class _ResilienceModeTileState extends State<ResilienceModeTile> {
   Widget build(BuildContext context) {
     final extreme = _mode == ResilienceMode.extreme;
 
-    return Consumer<VpnConnection>(
-      builder: (context, vpn, _) {
-        final connected = vpn.status == VpnStatus.connected ||
-            vpn.status == VpnStatus.connecting;
-        final active = connected ? ' Active: ${vpn.activeTransportProfile}.' : '';
-
-        return ListTile(
-          title: const Text(
-            'Network resilience',
-            style: TextStyle(color: AppColors.textWhite, fontSize: 15),
-          ),
-          subtitle: Text(
-            extreme
-                ? 'Extreme: keeps the exact server transport unchanged and makes up to two controlled recovery attempts after each real Xray disconnect.$active'
-                : 'Standard: keeps the exact server transport unchanged and does not force health-check reconnects.$active',
-            style: const TextStyle(color: AppColors.textDim, fontSize: 12),
-          ),
-          trailing: DropdownButtonHideUnderline(
-            child: DropdownButton<ResilienceMode>(
-              value: _mode,
-              dropdownColor: AppColors.bgCard,
-              onChanged: _change,
-              items: const [
-                DropdownMenuItem(
-                  value: ResilienceMode.standard,
-                  child: Text('Standard'),
-                ),
-                DropdownMenuItem(
-                  value: ResilienceMode.extreme,
-                  child: Text('Extreme'),
-                ),
-              ],
+    return ListTile(
+      title: const Text(
+        'Network resilience',
+        style: TextStyle(color: AppColors.textWhite, fontSize: 15),
+      ),
+      subtitle: Text(
+        extreme
+            ? 'Extreme: keeps the exact server transport unchanged and makes up to two controlled recovery attempts after a real Xray disconnect.'
+            : 'Standard: keeps the exact server transport unchanged and does not force health-check reconnects.',
+        style: const TextStyle(color: AppColors.textDim, fontSize: 12),
+      ),
+      trailing: DropdownButtonHideUnderline(
+        child: DropdownButton<ResilienceMode>(
+          value: _mode,
+          dropdownColor: AppColors.bgCard,
+          onChanged: _change,
+          items: const [
+            DropdownMenuItem(
+              value: ResilienceMode.standard,
+              child: Text('Standard'),
             ),
-          ),
-        );
-      },
+            DropdownMenuItem(
+              value: ResilienceMode.extreme,
+              child: Text('Extreme'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
