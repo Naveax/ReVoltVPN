@@ -19,7 +19,6 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
   int _selectedCount = ConnectionSettings.appPackages.length;
 
   bool get _proxyMode => widget.connectionMode == ConnectionMode.proxy;
-  bool get _autoMode => widget.connectionMode == ConnectionMode.auto;
 
   @override
   void initState() {
@@ -94,28 +93,13 @@ class _AppRoutingTileState extends State<AppRoutingTile> {
       }
     }
 
-    if (_autoMode) {
-      switch (_mode) {
-        case AppRoutingMode.all:
-          return 'Auto uses normal TUN routing for all apps.';
-        case AppRoutingMode.exclude:
-          return _selectedCount == 0
-              ? 'Auto uses TUN. No apps are excluded.'
-              : 'Auto uses TUN and $_selectedCount app${_selectedCount == 1 ? '' : 's'} bypass it.';
-        case AppRoutingMode.selected:
-          return _selectedCount == 0
-              ? 'Choose apps. Auto will use compatibility per-app routing.'
-              : 'Auto routes $_selectedCount selected app${_selectedCount == 1 ? '' : 's'} while Android network helpers remain available.';
-      }
-    }
-
     switch (_mode) {
       case AppRoutingMode.all:
-        return 'All apps use the VPN.';
+        return 'All apps use the TUN VPN.';
       case AppRoutingMode.exclude:
         return _selectedCount == 0
-            ? 'No apps excluded.'
-            : '$_selectedCount app${_selectedCount == 1 ? '' : 's'} bypass the VPN.';
+            ? 'No apps excluded from TUN.'
+            : '$_selectedCount app${_selectedCount == 1 ? '' : 's'} bypass the TUN VPN.';
       case AppRoutingMode.selected:
         return _selectedCount == 0
             ? 'Choose at least one app for compatible Selected only routing.'
