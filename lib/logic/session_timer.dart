@@ -250,16 +250,31 @@ class SessionTimer extends ChangeNotifier {
         }
         final data = decoded;
 
-        final active = data['active'] == true;
-        if (!active) {
+        final activeValue = data['active'];
+        if (activeValue is! bool) {
+          // A malformed HTTP 200 payload is not an authoritative command to
+          // tear down a healthy VPN. Count it as a sync failure instead.
+          debugPrint('[Timer] Session payload missing boolean active state.');
+          _markSyncFailure();
+          return;
+        }
+        if (!activeValue) {
+          // Explicit server revocation remains authoritative.
           await _doDisconnect('Server ended session');
           return;
         }
 
-        _remainingSeconds = _readNonNegativeInt(
-          data['expires_in_seconds'],
-          _remainingSeconds,
-        );
+        final expiresValue = data['expires_in_seconds'];
+        if (expiresValue is! num ||
+            !expiresValue.isFinite ||
+            expiresValue < 0) {
+          // Do not turn a missing/malformed TTL into zero and disconnect one
+          // tick later. Only a real zero returned by the server means expiry.
+          debugPrint('[Timer] Session payload has invalid expiry.');
+          _markSyncFailure();
+          return;
+        }
+        _remainingSeconds = expiresValue.toInt();
         _usedBytes = _readNonNegativeInt(data['used_bytes'], _usedBytes);
 
         final now = DateTime.now();
@@ -268,8 +283,7 @@ class SessionTimer extends ChangeNotifier {
         if (_hasSyncedOnce && previousSyncAt != null) {
           final elapsedMs = now.difference(previousSyncAt).inMilliseconds;
           if (deltaBytes > 0 && elapsedMs > 0) {
-            _currentSpeedKBps =
-                (deltaBytes / (elapsedMs / 1000.0)) / 1000.0;
+            _currentSpeedKBps = (deltaBytes / (elapsedMs / 1000.0)) / 1000.0;
           } else {
             _currentSpeedKBps = 0.0;
           }
