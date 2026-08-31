@@ -7,6 +7,7 @@ import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/installed_apps_service.dart';
 import 'package:revoltvpn/logic/local_socks_tester.dart';
 import 'package:revoltvpn/logic/network_monitor.dart';
+import 'package:revoltvpn/logic/secure_socks_session.dart';
 
 enum VpnStatus {
   disconnected,
@@ -98,6 +99,7 @@ class VpnConnection extends ChangeNotifier {
   List<String>? _lastBlockedApps;
   bool _lastSelectedOnly = false;
   bool _lastVerifyLocalSocks = false;
+  SecureSocksSession? _lastSecureSocks;
   bool _restartInProgress = false;
   bool _userDisconnecting = false;
 
@@ -366,13 +368,14 @@ class VpnConnection extends ChangeNotifier {
       final parsed = FlutterVless.parse(realUrl);
       final baseConfig = parsed.getFullConfiguration();
       final remark = parsed.remark.isNotEmpty ? parsed.remark : 'Revolt VPN';
+      final secureSocks = await SecureSocksSession.create(baseConfig);
 
       // Set this before the native callback can report CONNECTED so the first
       // visible label already reflects Selected only accurately.
       _selectedRoutingActive = routingPlan.selectedOnly;
 
       await _startRuntime(
-        config: baseConfig,
+        config: secureSocks.configJson,
         remark: remark,
         blockedApps: routingPlan.blockedApps,
       );
@@ -384,12 +387,13 @@ class VpnConnection extends ChangeNotifier {
 
       if (routingPlan.verifyLocalSocks) {
         _setStatus(VpnStatus.connecting, 'Checking Local SOCKS5…');
-        if (!await _waitForLocalSocksListener()) {
+        if (!await _waitForLocalSocksListener(secureSocks)) {
           throw StateError('Local SOCKS5 listener did not become ready');
         }
       }
 
-      _lastBaseConfig = baseConfig;
+      _lastBaseConfig = secureSocks.configJson;
+      _lastSecureSocks = secureSocks;
       _lastRemark = remark;
       _lastBlockedApps = routingPlan.blockedApps == null
           ? null
@@ -510,9 +514,19 @@ class VpnConnection extends ChangeNotifier {
     );
   }
 
-  Future<bool> _waitForLocalSocksListener() async {
+  Future<bool> _waitForLocalSocksListener([
+    SecureSocksSession? session,
+  ]) async {
+    final active = session ?? _lastSecureSocks;
+    if (active == null) return false;
+
     for (var attempt = 0; attempt < 4; attempt++) {
-      final result = await LocalSocksTester.testListener();
+      final result = await LocalSocksTester.testListener(
+        host: '127.0.0.1',
+        port: active.port,
+        username: active.username,
+        password: active.password,
+      );
       if (result.ok) {
         _lastHealthLatencyMs = result.latencyMs;
         notifyListeners();
@@ -563,9 +577,7 @@ class VpnConnection extends ChangeNotifier {
     Object? lastError;
 
     try {
-      for (var attempt = 1;
-          attempt <= _maxExtremeRecoveryAttempts;
-          attempt++) {
+      for (var attempt = 1; attempt <= _maxExtremeRecoveryAttempts; attempt++) {
         if (_userDisconnecting || _lastBaseConfig == null) return;
 
         try {
@@ -591,8 +603,7 @@ class VpnConnection extends ChangeNotifier {
           if (!await _waitForNativeConnected()) {
             throw StateError('VPN runtime did not recover');
           }
-          if (_lastVerifyLocalSocks &&
-              !(await _waitForLocalSocksListener())) {
+          if (_lastVerifyLocalSocks && !(await _waitForLocalSocksListener())) {
             throw StateError('Local SOCKS5 listener did not recover');
           }
 
@@ -698,6 +709,7 @@ class VpnConnection extends ChangeNotifier {
     _lastBlockedApps = null;
     _lastSelectedOnly = false;
     _lastVerifyLocalSocks = false;
+    _lastSecureSocks = null;
     _selectedRoutingActive = false;
     _lastHealthLatencyMs = null;
     _isStartupRestoration = false;
@@ -719,11 +731,8 @@ class VpnConnection extends ChangeNotifier {
     _healthTimer?.cancel();
     _restartTimer?.cancel();
     _networkSubscription?.cancel();
-    if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
-      try {
-        _vless.stopVless();
-      } catch (_) {}
-    }
+    // Provider/UI disposal is not a user disconnect command. Keeping teardown
+    // in disconnect() prevents lifecycle churn from silently dropping the VPN.
     super.dispose();
   }
 }
