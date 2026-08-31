@@ -104,7 +104,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   void _onVpnConnectionChanged() {
     if (vpnConnection.status == VpnStatus.connected &&
         !isRunning &&
-        vpnConnection.isStartupRestoration) {
+        vpnConnection.adoptedRunningRuntime) {
       _resumeTicking();
       return;
     }

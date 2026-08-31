@@ -6,6 +6,7 @@ import 'package:revoltvpn/logic/connection_settings.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/local_socks_tester.dart';
 import 'package:revoltvpn/logic/network_monitor.dart';
+import 'package:revoltvpn/logic/power_settings.dart';
 import 'package:revoltvpn/logic/secure_socks_session.dart';
 
 enum VpnStatus {
@@ -17,8 +18,6 @@ enum VpnStatus {
 }
 
 class VpnConnection extends ChangeNotifier {
-  static const int _maxExtremeRecoveryAttempts = 2;
-
   bool _cancelled = false;
   VpnStatus _status = VpnStatus.disconnected;
   VpnStatus get status => _status;
@@ -29,17 +28,16 @@ class VpnConnection extends ChangeNotifier {
   String? _errorMessage;
   String? get errorMessage => _errorMessage;
 
-  bool _isStartupRestoration = false;
-  bool get isStartupRestoration => _isStartupRestoration;
+  /// True when the UI attached to a tunnel that was already running, rather
+  /// than starting one itself. The session timer uses this to resume ticking.
+  bool _adoptedRunningRuntime = false;
+  bool get adoptedRunningRuntime => _adoptedRunningRuntime;
 
   bool _serverReachable = false;
   bool get serverReachable => _serverReachable;
 
   ConnectionMode _activeMode = ConnectionMode.tun;
   ConnectionMode get activeMode => _activeMode;
-
-  ResilienceMode _activeResilienceMode = ResilienceMode.standard;
-  ResilienceMode get activeResilienceMode => _activeResilienceMode;
 
   String _networkTransport = 'unknown';
   String get networkTransport => _networkTransport;
@@ -70,16 +68,10 @@ class VpnConnection extends ChangeNotifier {
   }
 
   Timer? _healthTimer;
-  Timer? _restartTimer;
   StreamSubscription<NetworkSnapshot>? _networkSubscription;
 
-  String? _lastBaseConfig;
-  String _lastRemark = 'Revolt VPN';
-  bool _lastVerifyLocalSocks = false;
   SecureSocksSession? _lastSecureSocks;
-  bool _restartInProgress = false;
   bool _userDisconnecting = false;
-  int _connectionEpoch = 0;
 
   late final FlutterVless _vless;
   bool _initialized = false;
@@ -88,7 +80,6 @@ class VpnConnection extends ChangeNotifier {
 
   VpnConnection() {
     _activeMode = ConnectionSettings.mode;
-    _activeResilienceMode = ConnectionSettings.resilienceMode;
     _init();
   }
 
@@ -107,7 +98,6 @@ class VpnConnection extends ChangeNotifier {
 
     await ConnectionSettings.initialize();
     _activeMode = ConnectionSettings.mode;
-    _activeResilienceMode = ConnectionSettings.resilienceMode;
 
     _vless = FlutterVless(
       onStatusChanged: (status) {
@@ -150,59 +140,30 @@ class VpnConnection extends ChangeNotifier {
     try {
       final coreVersion = await _vless.getCoreVersion();
       debugPrint('[VPN] Xray core version: $coreVersion');
-
-      final delay = await _vless.getConnectedServerDelay();
-      if (delay > 0) {
-        _isStartupRestoration = true;
-        _lastVerifyLocalSocks = _activeMode == ConnectionMode.proxy;
-        _setStatus(VpnStatus.connected, _connectedLabel);
-        unawaited(_restoreRecoverySnapshot());
-      }
     } catch (_) {}
+
+    await _adoptRunningRuntime();
   }
 
-  /// Android can kill the Dart process while the VPN foreground service keeps
-  /// running, which leaves a fresh [VpnConnection] attached to a live tunnel it
-  /// holds no config snapshot for — so Extreme recovery has nothing to restart
-  /// from. The Hivemind session is still active, so `/session/status` returns
-  /// the same VLESS parameters and the snapshot can be rebuilt without opening
-  /// a new session or running the ad bypass.
+  /// Reflect a tunnel that is already up when the UI starts.
   ///
-  /// TUN only. This mints *fresh* SOCKS credentials, which is invisible in TUN
-  /// because only tun2socks consumes them. In proxy mode those credentials are
-  /// the user's own client configuration, so rotating them behind their back
-  /// would silently break it — that case is surfaced in the UI instead.
-  Future<void> _restoreRecoverySnapshot() async {
-    if (kIsWeb || _activeMode != ConnectionMode.tun) return;
-
-    final epoch = _connectionEpoch;
-    bool stale() =>
-        _connectionEpoch != epoch ||
-        _userDisconnecting ||
-        _status != VpnStatus.connected;
-
+  /// This asks the OS whether our VPN service process is alive, rather than
+  /// probing a local SOCKS port. The old probe called getConnectedServerDelay(),
+  /// which reads AppConfigs.V2RAY_CONFIG?.LOCAL_SOCKS5_PORT ?: 10807 — but
+  /// AppConfigs lives in the VPN's own process, so from here it is always null
+  /// and the port always fell back to 10807. That was correct only while the
+  /// SOCKS port was fixed; per-session ephemeral ports made it permanently
+  /// wrong, so the app reported "connected" against a dead tunnel.
+  Future<void> _adoptRunningRuntime() async {
+    if (kIsWeb) return;
     try {
-      final realUrl = await HivemindService.fetchConfigDirectly(
-        skipAdBypass: true,
-      );
-      // A real connect() may have landed while the fetch was in flight; never
-      // overwrite a snapshot that belongs to a live connection.
-      if (stale() || _lastBaseConfig != null) return;
-
-      final parsed = FlutterVless.parse(realUrl);
-      final secureSocks = await SecureSocksSession.create(
-        parsed.getFullConfiguration(),
-      );
-      if (stale() || _lastBaseConfig != null) return;
-
-      _lastBaseConfig = secureSocks.configJson;
-      _lastRemark = parsed.remark.isNotEmpty ? parsed.remark : 'Revolt VPN';
-      _lastVerifyLocalSocks = false;
-      debugPrint('[VPN] Recovery snapshot rebuilt after process restart');
+      final state = await PowerSettings.runtimeState();
+      if (state.aliveFor(tunMode: _activeMode == ConnectionMode.tun)) {
+        _adoptedRunningRuntime = true;
+        _setStatus(VpnStatus.connected, _connectedLabel);
+      }
     } catch (e) {
-      // Best-effort: without it the tunnel still works, only Extreme recovery
-      // stays unavailable until the next manual connect.
-      debugPrint('[VPN] Could not rebuild recovery snapshot: $e');
+      debugPrint('[VPN] Runtime liveness check failed: $e');
     }
   }
 
@@ -222,40 +183,21 @@ class VpnConnection extends ChangeNotifier {
         break;
 
       case VlessConnectionState.disconnected:
-        // Repeated DISCONNECTED broadcasts during an Extreme recovery debounce
-        // must not clear the config snapshot the pending recovery needs.
-        if (_restartInProgress || (_restartTimer?.isActive ?? false)) return;
-
-        final canRecover = !_userDisconnecting &&
-            _activeResilienceMode == ResilienceMode.extreme &&
-            _lastBaseConfig != null &&
-            _status == VpnStatus.connected;
-        if (canRecover) {
-          _scheduleRuntimeRestart('Runtime disconnected');
-          return;
-        }
-
         _clearRuntimeSnapshot();
         _setStatus(VpnStatus.disconnected, 'Tap to connect');
         break;
 
       case VlessConnectionState.connecting:
-        if (!_restartInProgress) {
-          _setStatus(VpnStatus.connecting, 'Establishing tunnel…');
-        }
+        _setStatus(VpnStatus.connecting, 'Establishing tunnel…');
         break;
 
       case VlessConnectionState.disconnecting:
-        _isStartupRestoration = false;
-        if (!_restartInProgress) {
-          _setStatus(VpnStatus.disconnecting, 'Tearing down…');
-        }
+        _setStatus(VpnStatus.disconnecting, 'Tearing down…');
         break;
 
       case VlessConnectionState.unknown:
         if (_status != VpnStatus.connected &&
-            _status != VpnStatus.disconnected &&
-            !_restartInProgress) {
+            _status != VpnStatus.disconnected) {
           _setStatus(VpnStatus.error, 'Connection failed');
         }
         break;
@@ -269,12 +211,9 @@ class VpnConnection extends ChangeNotifier {
 
     _cancelled = false;
     _userDisconnecting = false;
-    _restartTimer?.cancel();
-    _connectionEpoch++;
 
     await ConnectionSettings.initialize();
     _activeMode = ConnectionSettings.mode;
-    _activeResilienceMode = ConnectionSettings.resilienceMode;
 
     if (!kIsWeb && !_initialized) {
       _errorMessage = 'VPN service unavailable.';
@@ -369,10 +308,7 @@ class VpnConnection extends ChangeNotifier {
         }
       }
 
-      _lastBaseConfig = secureSocks.configJson;
       _lastSecureSocks = secureSocks;
-      _lastRemark = remark;
-      _lastVerifyLocalSocks = verifyLocalSocks;
     } catch (e) {
       debugPrint('[VPN] Tunnel start error: $e');
       await _stopRuntime();
@@ -436,96 +372,6 @@ class VpnConnection extends ChangeNotifier {
     return _status == VpnStatus.connected;
   }
 
-  void _scheduleRuntimeRestart(String reason) {
-    if (_activeResilienceMode != ResilienceMode.extreme ||
-        _restartInProgress ||
-        _userDisconnecting ||
-        _lastBaseConfig == null ||
-        (_restartTimer?.isActive ?? false)) {
-      return;
-    }
-
-    _setStatus(VpnStatus.connecting, 'Reconnecting…');
-    _restartTimer = Timer(const Duration(milliseconds: 1200), () {
-      unawaited(_restartActiveRuntime(reason));
-    });
-  }
-
-  Future<void> _restartActiveRuntime(String reason) async {
-    if (_restartInProgress || _userDisconnecting || _lastBaseConfig == null) {
-      return;
-    }
-
-    _restartInProgress = true;
-    final epoch = _connectionEpoch;
-    Object? lastError;
-
-    try {
-      for (var attempt = 1; attempt <= _maxExtremeRecoveryAttempts; attempt++) {
-        if (_connectionEpoch != epoch || _userDisconnecting || _lastBaseConfig == null) return;
-
-        try {
-          debugPrint(
-            '[VPN] Extreme recovery attempt '
-            '$attempt/$_maxExtremeRecoveryAttempts: $reason',
-          );
-
-          await _stopRuntime();
-          if (_userDisconnecting) return;
-
-          await Future.delayed(
-            Duration(milliseconds: attempt == 1 ? 600 : 900),
-          );
-          if (_userDisconnecting || _lastBaseConfig == null) return;
-
-          await _startRuntime(
-            config: _lastBaseConfig!,
-            remark: _lastRemark,
-            proxyOnly: _activeMode == ConnectionMode.proxy,
-          );
-
-          if (!await _waitForNativeConnected()) {
-            throw StateError('VPN runtime did not recover');
-          }
-          if (_lastVerifyLocalSocks && !(await _waitForLocalSocksListener())) {
-            throw StateError('Local SOCKS5 listener did not recover');
-          }
-
-          if (_userDisconnecting) return;
-
-          _errorMessage = null;
-          _setStatus(VpnStatus.connected, _connectedLabel);
-          return;
-        } catch (e) {
-          lastError = e;
-          debugPrint(
-            '[VPN] Extreme recovery attempt '
-            '$attempt/$_maxExtremeRecoveryAttempts failed: $e',
-          );
-          await _stopRuntime();
-          if (_userDisconnecting) return;
-
-          if (attempt < _maxExtremeRecoveryAttempts) {
-            _setStatus(
-              VpnStatus.connecting,
-              'Reconnecting… (${attempt + 1}/$_maxExtremeRecoveryAttempts)',
-            );
-            await Future.delayed(const Duration(milliseconds: 700));
-          }
-        }
-      }
-
-      if (_userDisconnecting) return;
-
-      debugPrint('[VPN] Extreme recovery exhausted: $lastError');
-      _clearRuntimeSnapshot();
-      _errorMessage = 'Could not restore the connection.';
-      _setStatus(VpnStatus.error, 'Reconnect failed');
-    } finally {
-      _restartInProgress = false;
-    }
-  }
-
   Future<void> _stopRuntime() async {
     try {
       await _vless.stopVless().timeout(const Duration(seconds: 5));
@@ -535,7 +381,6 @@ class VpnConnection extends ChangeNotifier {
   Future<void> disconnect() async {
     _cancelled = true;
     _userDisconnecting = true;
-    _restartTimer?.cancel();
     HivemindService.cancel();
 
     if (_status == VpnStatus.disconnected ||
@@ -586,10 +431,8 @@ class VpnConnection extends ChangeNotifier {
   }
 
   void _clearRuntimeSnapshot() {
-    _lastBaseConfig = null;
-    _lastVerifyLocalSocks = false;
     _lastSecureSocks = null;
-    _isStartupRestoration = false;
+    _adoptedRunningRuntime = false;
   }
 
   void _setStatus(VpnStatus status, String message) {
@@ -609,7 +452,6 @@ class VpnConnection extends ChangeNotifier {
   @override
   void dispose() {
     _healthTimer?.cancel();
-    _restartTimer?.cancel();
     _networkSubscription?.cancel();
     // Provider/UI disposal is not a user disconnect command. Keeping teardown
     // in disconnect() prevents lifecycle churn from silently dropping the VPN.

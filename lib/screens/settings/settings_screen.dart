@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
+import 'package:revoltvpn/screens/settings/in_settings/background_reliability.dart';
 import 'package:revoltvpn/screens/settings/in_settings/connection_mode.dart';
 import 'package:revoltvpn/screens/settings/in_settings/haptic.dart';
 import 'package:revoltvpn/screens/settings/in_settings/lightning.dart';
 import 'package:revoltvpn/screens/settings/in_settings/rain.dart';
-import 'package:revoltvpn/screens/settings/in_settings/resilience.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -32,7 +32,7 @@ class SettingsScreen extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 8),
         children: const [
           ConnectionModeTile(),
-          ResilienceModeTile(),
+          BackgroundReliabilityTile(),
           HapticFeedbackTile(),
           RainToggleTile(),
           LightningToggleTile(),

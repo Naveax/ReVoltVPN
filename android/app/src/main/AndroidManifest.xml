@@ -7,6 +7,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <uses-permission android:name="android.permission.VIBRATE"/>
+    <!-- Doze/App Standby stop background services of non-exempt apps. A VPN
+         cannot stay up without this; Play allows it for VPN functionality. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
 
     <!-- flutter_vless 1.1.5 declares this legacy permission. ReVolt never needs it. -->
     <uses-permission

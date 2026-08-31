@@ -5,6 +5,44 @@ Versions follow [semver](https://semver.org/): MAJOR.MINOR.PATCH
 
 ---
 
+## [3.3.2] — 2026-09-01
+
+Background reliability. 3.3.1 could show "connected" against a tunnel that was no
+longer running; this release fixes the cause rather than the symptom, and removes the
+machinery that existed to work around it.
+
+### Added
+- **Background reliability settings.** Android stops background services of apps that
+  are not exempt from Doze, and tears down the process group when a task is swiped
+  away. Two OS mechanisms prevent that, and the app now surfaces both: a one-tap
+  **battery optimisation exemption**, and a deep link to Android's **Always-on VPN**
+  settings (with a note about "Block connections without VPN"). Neither can be enabled
+  programmatically — each needs a single user tap, once.
+
+### Fixed
+- **The app could report "connected" with no traffic flowing.** Startup state came from
+  `getConnectedServerDelay()`, which measures through
+  `AppConfigs.V2RAY_CONFIG?.LOCAL_SOCKS5_PORT ?: 10807`. `AppConfigs` lives in the VPN's
+  own process, so from the UI process it is always null and the port always fell back to
+  10807. That was accidentally correct while the SOCKS port was fixed; 3.3.1's
+  per-session ephemeral ports made it permanently wrong. Liveness is now determined from
+  the OS — whether our VPN service process is running, and whether a VPN transport is
+  actually present.
+- **A frozen countdown could outlive the tunnel.** The foreground notification (id 1) is
+  owned by the VPN service via `startForeground`, but the UI process was posting to the
+  same id. When that process died, its notification stayed on screen with nothing left to
+  update it. The app no longer posts for a runtime that is not alive, and clears a stale
+  notification instead.
+
+### Removed
+- **Standard/Extreme resilience modes** and the runtime-restart machinery behind them.
+  Recovery ran off a disconnect broadcast delivered to the app process, so it could never
+  fire in the case that actually matters — Android killing that process. It was
+  complexity substituting for background persistence.
+- **Startup restoration**, including the config-snapshot rebuild. With the tunnel kept
+  alive by the OS, there is nothing to restore; the app simply reports what is running.
+- The `resilience_mode` preference and its settings tile.
+
 ## [3.3.1] — 2026-08-31
 
 ### Added

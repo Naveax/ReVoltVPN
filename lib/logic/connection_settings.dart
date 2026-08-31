@@ -1,20 +1,16 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
 enum ConnectionMode { tun, proxy }
-enum ResilienceMode { standard, extreme }
 
 abstract final class ConnectionSettings {
   ConnectionSettings._();
 
   static const String _modeKey = 'connection_mode';
-  static const String _resilienceModeKey = 'resilience_mode';
 
   static ConnectionMode _mode = ConnectionMode.tun;
-  static ResilienceMode _resilienceMode = ResilienceMode.standard;
   static bool _initialized = false;
 
   static ConnectionMode get mode => _mode;
-  static ResilienceMode get resilienceMode => _resilienceMode;
 
   static Future<void> initialize() async {
     if (_initialized) return;
@@ -28,11 +24,6 @@ abstract final class ConnectionSettings {
         ? ConnectionMode.proxy
         : ConnectionMode.tun;
 
-    _resilienceMode =
-        prefs.getString(_resilienceModeKey) == ResilienceMode.extreme.name
-            ? ResilienceMode.extreme
-            : ResilienceMode.standard;
-
     if (storedMode != _mode.name) {
       await prefs.setString(_modeKey, _mode.name);
     }
@@ -45,12 +36,5 @@ abstract final class ConnectionSettings {
     _initialized = true;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_modeKey, mode.name);
-  }
-
-  static Future<void> setResilienceMode(ResilienceMode mode) async {
-    _resilienceMode = mode;
-    _initialized = true;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_resilienceModeKey, mode.name);
   }
 }

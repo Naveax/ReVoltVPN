@@ -94,7 +94,7 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
 
     if (vpn.status != VpnStatus.connected || !vpn.canTestActiveLocalSocks) {
       final orphaned =
-          vpn.status == VpnStatus.connected && vpn.isStartupRestoration;
+          vpn.status == VpnStatus.connected && vpn.adoptedRunningRuntime;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -174,7 +174,7 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
                 // memory that died with it. Saying "Connect" there would be a
                 // lie — the user is already connected.
                 final orphaned = vpn.status == VpnStatus.connected &&
-                    vpn.isStartupRestoration;
+                    vpn.adoptedRunningRuntime;
                 if (orphaned) {
                   return Padding(
                     padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
