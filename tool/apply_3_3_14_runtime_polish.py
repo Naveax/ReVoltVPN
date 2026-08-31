@@ -108,7 +108,7 @@ timer = timer_path.read_text()
 timer = replace_once(
     timer,
     "import 'package:flutter/foundation.dart';\n",
-    "import 'package:flutter/foundation.dart';\nimport 'package:flutter/widgets.dart';\n",
+    "import 'package:flutter/widgets.dart';\n",
     'widgets lifecycle import',
 )
 
