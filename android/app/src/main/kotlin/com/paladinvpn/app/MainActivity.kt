@@ -7,9 +7,6 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.content.pm.ResolveInfo
-import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -26,14 +23,11 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
-import java.io.ByteArrayOutputStream
-import kotlin.math.roundToInt
 
 class MainActivity : FlutterActivity() {
     private val installerChannel = "com.revoltvpn.app/installer"
     private val notificationChannel = "com.revoltvpn.app/notification"
     private val hapticsChannel = "com.revoltvpn.app/haptics"
-    private val appsChannel = "com.revoltvpn.app/apps"
     private val networkChannel = "com.revoltvpn.app/network"
 
     private var notificationChannelReady = false
@@ -70,15 +64,6 @@ class MainActivity : FlutterActivity() {
                 if (call.method == "impact") {
                     val kind = call.argument<String>("kind") ?: "tap"
                     result.success(performHaptic(kind))
-                } else {
-                    result.notImplemented()
-                }
-            }
-
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, appsChannel)
-            .setMethodCallHandler { call, result ->
-                if (call.method == "getLaunchableApps") {
-                    result.success(launchableApps())
                 } else {
                     result.notImplemented()
                 }
@@ -129,6 +114,14 @@ class MainActivity : FlutterActivity() {
         stopIntent.putExtra("COMMAND", AppConfigs.V2RAY_SERVICE_COMMANDS.STOP_SERVICE)
         val stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, flags)
 
+        // Public lock-screen preview: keep the VPN status visible but hide the
+        // session countdown/speed so usage metadata never reaches the lock screen.
+        val publicVersion = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+            .setSmallIcon(R.drawable.notification_status_icon)
+            .setContentTitle("Revolt VPN")
+            .setContentText("VPN is active")
+            .build()
+
         val builder = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.notification_status_icon)
             .setContentTitle(title)
@@ -142,6 +135,8 @@ class MainActivity : FlutterActivity() {
             .setSilent(true)
             .setShowWhen(false)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicVersion)
 
         if (launchIntent != null) {
             builder.setContentIntent(PendingIntent.getActivity(this, 0, launchIntent, flags))
@@ -306,54 +301,6 @@ class MainActivity : FlutterActivity() {
         } else {
             @Suppress("DEPRECATION")
             packageManager.getInstallerPackageName(packageName)
-        }
-    } catch (_: Exception) {
-        null
-    }
-
-    private fun launchableApps(): List<Map<String, Any>> {
-        val intent = Intent(Intent.ACTION_MAIN).apply {
-            addCategory(Intent.CATEGORY_LAUNCHER)
-        }
-
-        val resolved = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            packageManager.queryIntentActivities(
-                intent,
-                PackageManager.ResolveInfoFlags.of(0L),
-            )
-        } else {
-            @Suppress("DEPRECATION")
-            packageManager.queryIntentActivities(intent, 0)
-        }
-
-        return resolved
-            .mapNotNull { info ->
-                val appPackage = info.activityInfo?.packageName ?: return@mapNotNull null
-                if (appPackage == packageName) return@mapNotNull null
-
-                val item = mutableMapOf<String, Any>(
-                    "packageName" to appPackage,
-                    "label" to info.loadLabel(packageManager).toString(),
-                )
-                appIconPng(info)?.let { item["icon"] = it }
-                item
-            }
-            .distinctBy { it["packageName"] as String }
-            .sortedBy { (it["label"] as String).lowercase() }
-    }
-
-    private fun appIconPng(info: ResolveInfo): ByteArray? = try {
-        val drawable = info.loadIcon(packageManager)
-        val density = resources.displayMetrics.density
-        val size = (48f * density).roundToInt().coerceIn(48, 144)
-        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        drawable.setBounds(0, 0, size, size)
-        drawable.draw(canvas)
-
-        ByteArrayOutputStream().use { output ->
-            bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
-            output.toByteArray()
         }
     } catch (_: Exception) {
         null

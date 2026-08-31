@@ -4,8 +4,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-enum HapticKind { tap, selection, success }
-
 abstract final class HapticSettings {
   HapticSettings._();
 
@@ -13,7 +11,7 @@ abstract final class HapticSettings {
   static const MethodChannel _channel =
       MethodChannel('com.revoltvpn.app/haptics');
 
-  static bool _enabled = true;
+  static bool _enabled = false;
   static bool _initialized = false;
 
   static bool get enabled => _enabled;
@@ -23,10 +21,10 @@ abstract final class HapticSettings {
 
     try {
       final prefs = await SharedPreferences.getInstance();
-      _enabled = prefs.getBool(_prefKey) ?? true;
+      _enabled = prefs.getBool(_prefKey) ?? false;
     } catch (e) {
       debugPrint('[Haptics] Failed to load preference: $e');
-      _enabled = true;
+      _enabled = false;
     } finally {
       _initialized = true;
     }
@@ -48,11 +46,11 @@ abstract final class HapticSettings {
     }
   }
 
-  static void tap() => unawaited(_impact(HapticKind.tap));
-  static void selection() => unawaited(_impact(HapticKind.selection));
-  static void success() => unawaited(_impact(HapticKind.success));
+  /// Confirmation haptic for a successful connect/disconnect. Best-effort: a
+  /// vibration failure must never block or fail the VPN action.
+  static void success() => unawaited(_impact());
 
-  static Future<void> _impact(HapticKind kind) async {
+  static Future<void> _impact() async {
     if (!_initialized) await initialize();
     if (!_enabled || kIsWeb) return;
 
@@ -60,7 +58,7 @@ abstract final class HapticSettings {
       try {
         final handled = await _channel.invokeMethod<bool>(
               'impact',
-              <String, Object>{'kind': kind.name},
+              <String, Object>{'kind': 'success'},
             ) ??
             false;
         if (handled) return;
@@ -69,16 +67,6 @@ abstract final class HapticSettings {
       }
     }
 
-    switch (kind) {
-      case HapticKind.tap:
-        await HapticFeedback.lightImpact();
-        break;
-      case HapticKind.selection:
-        await HapticFeedback.selectionClick();
-        break;
-      case HapticKind.success:
-        await HapticFeedback.mediumImpact();
-        break;
-    }
+    await HapticFeedback.mediumImpact();
   }
 }

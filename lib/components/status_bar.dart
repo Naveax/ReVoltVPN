@@ -104,6 +104,18 @@ class StatusBar extends StatelessWidget {
                       label: statusLabel,
                     ),
                     const Spacer(),
+                    if (vpn.networkTransport != 'unknown' &&
+                        vpn.networkTransport != 'none')
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: Text(
+                          vpn.networkTransport,
+                          style: const TextStyle(
+                            color: AppColors.textDim,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ),
                     if (isConnected)
                       const Icon(
                         Icons.lock,

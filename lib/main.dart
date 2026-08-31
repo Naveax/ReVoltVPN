@@ -3,7 +3,6 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'package:revoltvpn/components/app_haptic_surface.dart';
 import 'package:revoltvpn/logic/ad_manager.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/logic/connection_settings.dart';
@@ -63,8 +62,6 @@ class ReVoltApp extends StatelessWidget {
         title: 'ReVolt VPN',
         debugShowCheckedModeBanner: false,
         theme: _buildDarkTheme(),
-        builder: (context, child) =>
-            AppHapticSurface(child: child ?? const SizedBox.shrink()),
         home: const IntroScreen(),
       ),
     );

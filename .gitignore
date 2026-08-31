@@ -18,9 +18,6 @@ android/admob.properties
 lib/logic/app_config.dart
 
 # ── File types the shipped app does not contain ────────────────────────────
-#  Server code, infrastructure configs, captures, archives, dumps and logs.
-#  None of these extensions are tracked, so a blanket rule is safe and stays
-#  safe — it covers files that do not exist yet.
 *.py
 *.pyc
 *.json
@@ -53,6 +50,7 @@ scraped/
 backup/
 backups/
 lib/logic/backup/
+server_files/
 
 # ── Flutter / Dart build output ────────────────────────────────────────────
 .dart_tool/
