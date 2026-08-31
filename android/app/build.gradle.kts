@@ -30,7 +30,7 @@ val flutterVlessPatchScript = File(
 )
 val flutterVlessSecureSocksPatchScript = File(
     projectRootDir,
-    "tool/patch_flutter_vless_secure_socks.dart",
+    "tool/patch_flutter_vless_secure_socks_v2.dart",
 )
 
 val patchFlutterVlessAllowedApps = tasks.register<Exec>("patchFlutterVlessAllowedApps") {
