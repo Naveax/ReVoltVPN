@@ -1,9 +1,77 @@
 import java.util.Properties
+import java.io.File
 import java.io.FileInputStream
 
 plugins {
     id("com.android.application")
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+val projectRootDir = rootProject.projectDir.parentFile
+val localPropertiesFile = rootProject.file("local.properties")
+val localProperties = Properties().apply {
+    if (localPropertiesFile.exists()) {
+        localPropertiesFile.inputStream().use { load(it) }
+    }
+}
+val flutterSdkPath = localProperties.getProperty("flutter.sdk")
+    ?: throw GradleException("flutter.sdk not set in android/local.properties")
+val dartExecutable = File(
+    flutterSdkPath,
+    if (System.getProperty("os.name").lowercase().contains("windows")) {
+        "bin/cache/dart-sdk/bin/dart.exe"
+    } else {
+        "bin/cache/dart-sdk/bin/dart"
+    },
+)
+val flutterVlessPatchScript = File(
+    projectRootDir,
+    "tool/patch_flutter_vless_allowed_apps.dart",
+)
+
+val patchFlutterVlessAllowedApps = tasks.register<Exec>("patchFlutterVlessAllowedApps") {
+    group = "build setup"
+    description = "Patch pinned flutter_vless_android 1.1.5 with ReVolt routing/runtime hardening"
+    workingDir(projectRootDir)
+
+    doFirst {
+        if (!dartExecutable.isFile) {
+            throw GradleException("Flutter Dart executable not found: ${dartExecutable.absolutePath}")
+        }
+        if (!flutterVlessPatchScript.isFile) {
+            throw GradleException("flutter_vless patch script missing: ${flutterVlessPatchScript.absolutePath}")
+        }
+        if (!File(projectRootDir, ".dart_tool/package_config.json").isFile) {
+            throw GradleException("Flutter package metadata missing. Run `flutter pub get` before Android compilation.")
+        }
+    }
+
+    commandLine(
+        dartExecutable.absolutePath,
+        "run",
+        flutterVlessPatchScript.absolutePath,
+    )
+}
+
+// App compilation and the transitive Android plugin compilation must both wait
+// for the pinned runtime hardening. Plain `flutter build apk` must behave like
+// CI instead of relying on a hidden manual pre-build step.
+tasks.configureEach {
+    if (name == "preBuild") {
+        dependsOn(patchFlutterVlessAllowedApps)
+    }
+}
+
+gradle.projectsEvaluated {
+    // `gradle wrapper` may run before Flutter has generated plugin metadata.
+    // Once pub get has loaded the plugin project, wire its Android preBuild to
+    // the same deterministic patch task.
+    rootProject.findProject(":flutter_vless_android")
+        ?.tasks
+        ?.matching { it.name == "preBuild" }
+        ?.configureEach {
+            dependsOn(patchFlutterVlessAllowedApps)
+        }
 }
 
 android {
@@ -39,10 +107,7 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        manifestPlaceholders["ADMOB_APP_ID"] = admobProperties.getProperty(
-            "ADMOB_APP_ID",
-            "ca-app-pub-0000000000000000~0000000000",
-        )
+        manifestPlaceholders["ADMOB_APP_ID"] = admobProperties.getProperty("ADMOB_APP_ID", "ca-app-pub-0000000000000000~0000000000")
     }
 
     signingConfigs {
@@ -61,7 +126,7 @@ android {
             isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro",
+                "proguard-rules.pro"
             )
         }
     }
