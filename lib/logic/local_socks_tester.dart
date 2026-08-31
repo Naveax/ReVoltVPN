@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -18,24 +17,19 @@ class LocalSocksTestResult {
 abstract final class LocalSocksTester {
   LocalSocksTester._();
 
+  /// Fast local readiness probe used while starting the VPN.
+  ///
+  /// This deliberately stops after the SOCKS5 greeting. Startup must not fail
+  /// just because an unrelated external test host is temporarily unreachable.
   static Future<LocalSocksTestResult> testListener({
     String host = '127.0.0.1',
-    required int port,
-    String username = '',
-    String password = '',
+    int port = 10807,
   }) async {
     final stopwatch = Stopwatch()..start();
     Socket? socket;
     _SocketReader? reader;
 
     try {
-      if (port <= 0) {
-        return const LocalSocksTestResult(
-          ok: false,
-          latencyMs: null,
-          message: 'Local SOCKS5 session is not ready.',
-        );
-      }
       socket = await Socket.connect(
         host,
         port,
@@ -44,17 +38,17 @@ abstract final class LocalSocksTester {
       socket.setOption(SocketOption.tcpNoDelay, true);
       reader = _SocketReader(socket);
 
-      if (!await _authenticate(
-        socket,
-        reader,
-        username: username,
-        password: password,
+      socket.add(const <int>[0x05, 0x01, 0x00]);
+      await socket.flush();
+      final greeting = await reader.readExactly(
+        2,
         timeout: const Duration(seconds: 1),
-      )) {
+      );
+      if (greeting[0] != 0x05 || greeting[1] != 0x00) {
         return const LocalSocksTestResult(
           ok: false,
           latencyMs: null,
-          message: 'Local SOCKS5 authentication failed.',
+          message: 'Local SOCKS5 listener rejected the handshake.',
         );
       }
 
@@ -74,7 +68,7 @@ abstract final class LocalSocksTester {
       return const LocalSocksTestResult(
         ok: false,
         latencyMs: null,
-        message: 'Local SOCKS5 session is not listening.',
+        message: 'Local SOCKS5 is not listening on 127.0.0.1:10807.',
       );
     } catch (_) {
       return const LocalSocksTestResult(
@@ -88,14 +82,10 @@ abstract final class LocalSocksTester {
     }
   }
 
-  /// Full user-facing test: authenticated local SOCKS handshake plus outbound
-  /// CONNECT. It verifies the Xray egress; native TUN/FD readiness is checked
-  /// separately by NativeTunnelControl before the VPN may show Secured.
+  /// Full user-facing test: local SOCKS handshake plus outbound CONNECT.
   static Future<LocalSocksTestResult> test({
     String host = '127.0.0.1',
-    required int port,
-    String username = '',
-    String password = '',
+    int port = 10807,
     String targetHost = 'paladinvpn.duckdns.org',
     int targetPort = 443,
   }) async {
@@ -104,13 +94,6 @@ abstract final class LocalSocksTester {
     _SocketReader? reader;
 
     try {
-      if (port <= 0) {
-        return const LocalSocksTestResult(
-          ok: false,
-          latencyMs: null,
-          message: 'Local SOCKS5 session is not ready.',
-        );
-      }
       socket = await Socket.connect(
         host,
         port,
@@ -119,20 +102,18 @@ abstract final class LocalSocksTester {
       socket.setOption(SocketOption.tcpNoDelay, true);
       reader = _SocketReader(socket);
 
-      if (!await _authenticate(
-        socket,
-        reader,
-        username: username,
-        password: password,
-      )) {
+      socket.add(const <int>[0x05, 0x01, 0x00]);
+      await socket.flush();
+      final greeting = await reader.readExactly(2);
+      if (greeting[0] != 0x05 || greeting[1] != 0x00) {
         return const LocalSocksTestResult(
           ok: false,
           latencyMs: null,
-          message: 'Local SOCKS5 authentication failed.',
+          message: 'Local SOCKS5 listener rejected the handshake.',
         );
       }
 
-      final hostBytes = utf8.encode(targetHost);
+      final hostBytes = targetHost.codeUnits;
       if (hostBytes.length > 255) {
         return const LocalSocksTestResult(
           ok: false,
@@ -158,7 +139,7 @@ abstract final class LocalSocksTester {
         return const LocalSocksTestResult(
           ok: false,
           latencyMs: null,
-          message: 'SOCKS5 is ready, but the ReVolt outbound could not reach the test target.',
+          message: 'SOCKS5 is listening, but the ReVolt route could not reach the test target.',
         );
       }
 
@@ -167,7 +148,7 @@ abstract final class LocalSocksTester {
       return LocalSocksTestResult(
         ok: true,
         latencyMs: stopwatch.elapsedMilliseconds,
-        message: 'Authenticated Local SOCKS5 and the ReVolt outbound are reachable.',
+        message: 'Local SOCKS5 and the ReVolt outbound are reachable.',
       );
     } on TimeoutException {
       return const LocalSocksTestResult(
@@ -179,7 +160,7 @@ abstract final class LocalSocksTester {
       return const LocalSocksTestResult(
         ok: false,
         latencyMs: null,
-        message: 'Local SOCKS5 session is not listening.',
+        message: 'Local SOCKS5 is not listening on 127.0.0.1:10807.',
       );
     } catch (_) {
       return const LocalSocksTestResult(
@@ -193,45 +174,7 @@ abstract final class LocalSocksTester {
     }
   }
 
-  static Future<bool> _authenticate(
-    Socket socket,
-    _SocketReader reader, {
-    required String username,
-    required String password,
-    Duration timeout = const Duration(seconds: 4),
-  }) async {
-    final usePassword = username.isNotEmpty;
-    socket.add(<int>[0x05, 0x01, usePassword ? 0x02 : 0x00]);
-    await socket.flush();
-    final greeting = await reader.readExactly(2, timeout: timeout);
-    if (greeting[0] != 0x05 || greeting[1] != (usePassword ? 0x02 : 0x00)) {
-      return false;
-    }
-    if (!usePassword) return true;
-
-    final userBytes = utf8.encode(username);
-    final passBytes = utf8.encode(password);
-    if (userBytes.isEmpty ||
-        userBytes.length > 255 ||
-        passBytes.length > 255) {
-      return false;
-    }
-    socket.add(<int>[
-      0x01,
-      userBytes.length,
-      ...userBytes,
-      passBytes.length,
-      ...passBytes,
-    ]);
-    await socket.flush();
-    final authReply = await reader.readExactly(2, timeout: timeout);
-    return authReply[0] == 0x01 && authReply[1] == 0x00;
-  }
-
-  static Future<void> _consumeAddress(
-    _SocketReader reader,
-    int addressType,
-  ) async {
+  static Future<void> _consumeAddress(_SocketReader reader, int addressType) async {
     if (addressType == 0x01) {
       await reader.readExactly(4 + 2);
       return;
