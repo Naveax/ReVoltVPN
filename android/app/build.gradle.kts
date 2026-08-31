@@ -28,6 +28,10 @@ val flutterVlessPatchScript = File(
     projectRootDir,
     "tool/patch_flutter_vless_allowed_apps.dart",
 )
+val flutterVlessSecureSocksPatchScript = File(
+    projectRootDir,
+    "tool/patch_flutter_vless_secure_socks.dart",
+)
 
 val patchFlutterVlessAllowedApps = tasks.register<Exec>("patchFlutterVlessAllowedApps") {
     group = "build setup"
@@ -53,24 +57,46 @@ val patchFlutterVlessAllowedApps = tasks.register<Exec>("patchFlutterVlessAllowe
     )
 }
 
+val patchFlutterVlessSecureSocks = tasks.register<Exec>("patchFlutterVlessSecureSocks") {
+    group = "build setup"
+    description = "Add authenticated ephemeral SOCKS5 and fail-closed process recovery to pinned flutter_vless_android 1.1.5"
+    workingDir(projectRootDir)
+    dependsOn(patchFlutterVlessAllowedApps)
+
+    doFirst {
+        if (!dartExecutable.isFile) {
+            throw GradleException("Flutter Dart executable not found: ${dartExecutable.absolutePath}")
+        }
+        if (!flutterVlessSecureSocksPatchScript.isFile) {
+            throw GradleException("secure SOCKS patch script missing: ${flutterVlessSecureSocksPatchScript.absolutePath}")
+        }
+        if (!File(projectRootDir, ".dart_tool/package_config.json").isFile) {
+            throw GradleException("Flutter package metadata missing. Run `flutter pub get` before Android compilation.")
+        }
+    }
+
+    commandLine(
+        dartExecutable.absolutePath,
+        "run",
+        flutterVlessSecureSocksPatchScript.absolutePath,
+    )
+}
+
 // App compilation and the transitive Android plugin compilation must both wait
-// for the pinned runtime hardening. Plain `flutter build apk` must behave like
-// CI instead of relying on a hidden manual pre-build step.
+// for the pinned runtime patches. Plain `flutter build apk` must behave like CI
+// instead of relying on a hidden manual pre-build step.
 tasks.configureEach {
     if (name == "preBuild") {
-        dependsOn(patchFlutterVlessAllowedApps)
+        dependsOn(patchFlutterVlessSecureSocks)
     }
 }
 
 gradle.projectsEvaluated {
-    // `gradle wrapper` may run before Flutter has generated plugin metadata.
-    // Once pub get has loaded the plugin project, wire its Android preBuild to
-    // the same deterministic patch task.
     rootProject.findProject(":flutter_vless_android")
         ?.tasks
         ?.matching { it.name == "preBuild" }
         ?.configureEach {
-            dependsOn(patchFlutterVlessAllowedApps)
+            dependsOn(patchFlutterVlessSecureSocks)
         }
 }
 
