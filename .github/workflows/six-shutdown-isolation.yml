@@ -1,0 +1,207 @@
+name: Six VPN shutdown isolation APKs
+
+on:
+  push:
+    branches:
+      - diag/six-shutdown-isolation
+
+permissions:
+  contents: read
+
+concurrency:
+  group: six-vpn-shutdown-isolation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-six:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Set up Gradle 8.14
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+          cache-read-only: true
+
+      - name: Generate local test configuration
+        shell: bash
+        run: |
+          cat > lib/logic/app_config.dart <<'DART'
+          abstract final class AppConfig {
+            AppConfig._();
+            static const String serverIp = '204.168.246.88';
+            static const String hivemindApiPublic = 'https://paladinvpn.duckdns.org/api';
+            static const String realityFp = 'chrome';
+            static const String vlessSecurity = 'reality';
+            static const String vlessType = 'xhttp';
+            static const String vlessPath = '/revolt';
+            static const String applicationId = 'com.paladinvpn.app';
+            static const String githubOwner = 'esefxdz';
+            static const String githubRepo = 'ReVoltVPN';
+            static const String githubReleasesUrl =
+                'https://github.com/$githubOwner/$githubRepo/releases/latest';
+            static const String adUnitId =
+                'ca-app-pub-5671224884648691/9198987725';
+          }
+          DART
+
+          cat > android/admob.properties <<'PROPS'
+          ADMOB_APP_ID=ca-app-pub-3940256099942544~3347511713
+          PROPS
+
+          {
+            printf 'flutter.sdk=%s\n' "$FLUTTER_ROOT"
+            printf 'sdk.dir=%s\n' "$ANDROID_HOME"
+          } > android/local.properties
+
+      - name: Generate one shared temporary signing key
+        shell: bash
+        run: |
+          keytool -genkeypair \
+            -keystore android/revolt-ab.jks \
+            -storepass revoltabtest \
+            -keypass revoltabtest \
+            -alias revolt-ab \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650 \
+            -dname "CN=ReVoltVPN AB Test,O=ReVoltVPN,C=US"
+
+          cat > android/key.properties <<'PROPS'
+          storePassword=revoltabtest
+          keyPassword=revoltabtest
+          keyAlias=revolt-ab
+          storeFile=revolt-ab.jks
+          PROPS
+
+      - name: Generate Gradle wrapper
+        shell: bash
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.14 --distribution-type all
+          chmod +x gradlew
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Baseline analyze and unit tests
+        shell: bash
+        run: |
+          flutter analyze --no-fatal-warnings
+          flutter test
+
+      - name: Build six one-variable APKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ab-apks
+
+          SERVICE='third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt'
+          CORE='third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/core/XrayCoreManager.kt'
+          DART='lib/logic/vpn_connection.dart'
+
+          variants=(
+            FD_GATE_OFF
+            SOCKS_AUTH_OFF
+            SOCKS_WATCHDOG_OFF
+            TUN2SOCKS_MONITOR_OFF
+            DART_READINESS_STOP_OFF
+            GENERATION_GUARD_OFF
+          )
+
+          index=0
+          for variant in "${variants[@]}"; do
+            index=$((index + 1))
+            echo "============================================================"
+            echo "Building AB variant $index/6: $variant"
+            echo "============================================================"
+
+            # Every APK starts from the exact same source baseline.
+            git checkout HEAD -- "$SERVICE" "$CORE" "$DART"
+
+            # Reproduce the exact FD timing used by the tested 3.3.10 build.
+            python3 tool/patch_fd_handoff_compat.py
+
+            # Disable exactly one shutdown mechanism.
+            python3 tool/apply_shutdown_ab_variant.py "$variant"
+
+            # Kotlin's conditional integer expression needs an explicit Byte cast.
+            if [ "$variant" = 'SOCKS_AUTH_OFF' ]; then
+              python3 - <<'PY'
+          from pathlib import Path
+          p = Path('third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/core/XrayCoreManager.kt')
+          s = p.read_text()
+          old = 'byteArrayOf(0x05, 0x01, if (noAuth) 0x00 else 0x02)'
+          new = 'byteArrayOf(0x05, 0x01, (if (noAuth) 0x00 else 0x02).toByte())'
+          if old not in s:
+              raise SystemExit('SOCKS_AUTH_OFF byte-cast source not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+            fi
+
+            # Static marker proves the intended single variable was applied.
+            case "$variant" in
+              FD_GATE_OFF) grep -q 'AB FD_GATE_OFF' "$SERVICE" ;;
+              SOCKS_AUTH_OFF) grep -q 'LOCAL_SOCKS5_PORT = 10807' "$SERVICE" ;;
+              SOCKS_WATCHDOG_OFF) grep -q 'AB SOCKS_WATCHDOG_OFF' "$SERVICE" ;;
+              TUN2SOCKS_MONITOR_OFF) grep -q 'AB TUN2SOCKS_MONITOR_OFF' "$SERVICE" ;;
+              DART_READINESS_STOP_OFF) grep -q 'DART_READINESS_STOP_OFF' "$DART" ;;
+              GENERATION_GUARD_OFF) grep -q 'AB GENERATION_GUARD_OFF' "$SERVICE" ;;
+            esac
+
+            flutter build apk \
+              --release \
+              --build-name 3.3.10 \
+              --build-number 40
+
+            out=$(printf 'ab-apks/%02d-%s.apk' "$index" "$variant")
+            cp build/app/outputs/flutter-apk/app-release.apk "$out"
+            sha256sum "$out" > "$out.sha256"
+            test -s "$out"
+            unzip -l "$out" | grep -q 'libtun2socks.so'
+            unzip -l "$out" | grep -q 'libxray.so'
+          done
+
+          cat > ab-apks/README.txt <<'TXT'
+          ReVoltVPN 3.3.10 six-way shutdown isolation test
+
+          All APKs use the same source baseline, same versionCode and same temporary signing key.
+          Exactly one suspected shutdown mechanism is disabled per APK:
+
+          01 FD_GATE_OFF
+          02 SOCKS_AUTH_OFF
+          03 SOCKS_WATCHDOG_OFF
+          04 TUN2SOCKS_MONITOR_OFF
+          05 DART_READINESS_STOP_OFF
+          06 GENERATION_GUARD_OFF
+
+          Test each with TUN + Standard + All Apps first.
+          Report which APK remains connected and whether internet traffic works.
+          TXT
+
+          cat ab-apks/*.sha256 > ab-apks/SHA256SUMS.txt
+          ls -lh ab-apks
+
+      - name: Upload all six APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReVoltVPN-3.3.10-six-shutdown-isolation
+          path: ab-apks/
+          retention-days: 5
+          if-no-files-found: error
