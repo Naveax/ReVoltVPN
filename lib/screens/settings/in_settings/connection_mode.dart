@@ -15,8 +15,6 @@ class ConnectionModeTile extends StatefulWidget {
 }
 
 class _ConnectionModeTileState extends State<ConnectionModeTile> {
-  static const String localSocksAddress = '127.0.0.1:10807';
-
   ConnectionMode _mode = ConnectionSettings.mode;
   bool _testingLocalSocks = false;
   LocalSocksTestResult? _lastSocksTest;
@@ -29,9 +27,7 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
 
   Future<void> _load() async {
     await ConnectionSettings.initialize();
-    if (mounted) {
-      setState(() => _mode = ConnectionSettings.mode);
-    }
+    if (mounted) setState(() => _mode = ConnectionSettings.mode);
   }
 
   bool _isTunnelBusy(VpnStatus status) {
@@ -64,18 +60,20 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
   }
 
   Future<void> _testLocalSocks() async {
+    if (_testingLocalSocks) return;
     final vpn = context.read<VpnConnection>();
-    if (vpn.status != VpnStatus.connected) {
+
+    if (vpn.status != VpnStatus.connected || !vpn.canTestActiveLocalSocks) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Connect first, then test Local SOCKS5.')),
+        const SnackBar(
+          content: Text('Connect with SOCKS5 first, then run the local test.'),
+        ),
       );
       return;
     }
 
-    if (_testingLocalSocks) return;
     setState(() => _testingLocalSocks = true);
-
-    final result = await LocalSocksTester.test();
+    final result = await vpn.testActiveLocalSocks();
     if (!mounted) return;
 
     setState(() {
@@ -91,12 +89,10 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
 
   String get _subtitle {
     switch (_mode) {
-      case ConnectionMode.auto:
-        return 'Auto: All/Exclude uses the stable TUN path. Selected only uses compatibility per-app routing.';
       case ConnectionMode.tun:
-        return 'TUN: Android VPN routing. Selected only keeps Android network helpers available for app compatibility.';
+        return 'TUN: Android VPN routing for normal device traffic.';
       case ConnectionMode.proxy:
-        return 'SOCKS5: transparent gateway. Normal apps are routed automatically while $localSocksAddress stays available.';
+        return 'SOCKS5: authenticated per-session local gateway with transparent Android routing.';
     }
   }
 
@@ -121,10 +117,6 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
               onChanged: _changeMode,
               items: const [
                 DropdownMenuItem(
-                  value: ConnectionMode.auto,
-                  child: Text('Auto'),
-                ),
-                DropdownMenuItem(
                   value: ConnectionMode.tun,
                   child: Text('TUN'),
                 ),
@@ -136,38 +128,44 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
             ),
           ),
         ),
-        if (_mode == ConnectionMode.proxy)
+        if (_mode == ConnectionMode.proxy) ...[
           const Padding(
             padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
             child: Text(
-              'Transparent routing + SOCKS5: 127.0.0.1:10807 · HTTP: 127.0.0.1:10808',
+              'Secure Local SOCKS5 uses a private port and new credentials for every VPN session.',
               style: TextStyle(color: AppColors.textMuted, fontSize: 12),
             ),
           ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-          child: OutlinedButton.icon(
-            onPressed: _testingLocalSocks ? null : _testLocalSocks,
-            icon: _testingLocalSocks
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.network_check),
-            label: Text(_testingLocalSocks ? 'Testing…' : 'Test Local SOCKS'),
-          ),
-        ),
-        if (_lastSocksTest != null)
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-            child: Text(
-              _lastSocksTest!.ok
-                  ? 'Last test: OK${_lastSocksTest!.latencyMs == null ? '' : ' · ${_lastSocksTest!.latencyMs} ms'}'
-                  : 'Last test: Failed · ${_lastSocksTest!.message}',
-              style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+            child: OutlinedButton.icon(
+              onPressed: _testingLocalSocks ? null : _testLocalSocks,
+              icon: _testingLocalSocks
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.network_check),
+              label: Text(
+                _testingLocalSocks ? 'Testing…' : 'Test Local SOCKS',
+              ),
             ),
           ),
+          if (_lastSocksTest != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: Text(
+                _lastSocksTest!.ok
+                    ? 'Last test: OK${_lastSocksTest!.latencyMs == null ? '' : ' · ${_lastSocksTest!.latencyMs} ms'}'
+                    : 'Last test: Failed · ${_lastSocksTest!.message}',
+                style: const TextStyle(
+                  color: AppColors.textMuted,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+        ],
       ],
     );
   }
