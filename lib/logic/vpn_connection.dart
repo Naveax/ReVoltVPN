@@ -48,7 +48,7 @@ class VpnConnection extends ChangeNotifier {
   bool _serverReachable = false;
   bool get serverReachable => _serverReachable;
 
-  ConnectionMode _activeMode = ConnectionMode.auto;
+  ConnectionMode _activeMode = ConnectionMode.tun;
   ConnectionMode get activeMode => _activeMode;
 
   ResilienceMode _activeResilienceMode = ResilienceMode.standard;
@@ -89,6 +89,29 @@ class VpnConnection extends ChangeNotifier {
       _status == VpnStatus.connected || _status == VpnStatus.connecting
           ? 'server'
           : 'inactive';
+
+  bool get canTestActiveLocalSocks =>
+      _status == VpnStatus.connected &&
+      _activeMode == ConnectionMode.proxy &&
+      _lastSecureSocks != null;
+
+  Future<LocalSocksTestResult> testActiveLocalSocks() async {
+    final active = _lastSecureSocks;
+    if (!canTestActiveLocalSocks || active == null) {
+      return const LocalSocksTestResult(
+        ok: false,
+        latencyMs: null,
+        message: 'No active authenticated SOCKS5 session.',
+      );
+    }
+
+    return LocalSocksTester.test(
+      host: '127.0.0.1',
+      port: active.port,
+      username: active.username,
+      password: active.password,
+    );
+  }
 
   Timer? _healthTimer;
   Timer? _restartTimer;
@@ -145,7 +168,7 @@ class VpnConnection extends ChangeNotifier {
       await _vless.initializeVless(
         providerBundleIdentifier: 'com.paladinvpn.app',
         notificationIconResourceType: 'drawable',
-        notificationIconResourceName: 'notification_icon',
+        notificationIconResourceName: 'notification_status_icon',
       );
       _initialized = true;
     } catch (e) {
@@ -206,10 +229,6 @@ class VpnConnection extends ChangeNotifier {
 
   String get _connectedLabel {
     switch (_activeMode) {
-      case ConnectionMode.auto:
-        return _selectedRoutingActive
-            ? 'Auto · selected apps secured'
-            : 'Auto · secured';
       case ConnectionMode.proxy:
         return _selectedRoutingActive
             ? 'SOCKS5 · selected apps secured'
@@ -298,8 +317,8 @@ class VpnConnection extends ChangeNotifier {
       return false;
     }
 
-    // Auto, TUN and transparent SOCKS5 all use one Android VpnService/TUN.
-    // SOCKS5 remains available locally at 127.0.0.1:10807 behind that wrapper.
+    // TUN and SOCKS5 share the stable Android VpnService. SOCKS5 uses
+    // an authenticated per-session local ingress instead of a fixed port.
     if (!kIsWeb) {
       final ok = await _vless.requestPermission();
       if (!ok) {
@@ -310,9 +329,6 @@ class VpnConnection extends ChangeNotifier {
     }
 
     final startingMessage = switch (_activeMode) {
-      ConnectionMode.auto => routingPlan.selectedOnly
-          ? 'Auto · starting selected-app route…'
-          : 'Auto · starting TUN…',
       ConnectionMode.tun => routingPlan.selectedOnly
           ? 'Starting selected-app tunnel…'
           : 'Establishing secure channel…',
@@ -421,12 +437,6 @@ class VpnConnection extends ChangeNotifier {
     final selected = ConnectionSettings.appPackages;
 
     switch (_activeMode) {
-      case ConnectionMode.auto:
-        if (routingMode == AppRoutingMode.selected) {
-          return _selectedCompatibilityPlan();
-        }
-        return _tunPlan(routingMode, selected);
-
       case ConnectionMode.tun:
         if (routingMode == AppRoutingMode.selected) {
           return _selectedCompatibilityPlan();

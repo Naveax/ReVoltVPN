@@ -1,19 +1,20 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 
-class SessionTimer extends ChangeNotifier {
+class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _timer;
   int _tickCount = 0;
 
   final VpnConnection vpnConnection;
 
   int _remainingSeconds = 0;
+  int _remainingAtLastSync = 0;
   int _usedBytes = 0;
 
   bool _hasSyncedOnce = false;
@@ -39,6 +40,7 @@ class SessionTimer extends ChangeNotifier {
   double _currentSpeedKBps = 0.0;
 
   SessionTimer({required this.vpnConnection}) {
+    WidgetsBinding.instance.addObserver(this);
     vpnConnection.addListener(_onVpnConnectionChanged);
     unawaited(_loadSupportRewardState());
   }
@@ -138,6 +140,7 @@ class SessionTimer extends ChangeNotifier {
     _timer = null;
     _currentSpeedKBps = 0.0;
     _remainingSeconds = 0;
+    _remainingAtLastSync = 0;
     _hasSyncedOnce = false;
     _lastSuccessfulSyncAt = null;
     _consecutiveFailures = 0;
@@ -147,6 +150,7 @@ class SessionTimer extends ChangeNotifier {
 
   Future<void> start() async {
     _remainingSeconds = 0;
+    _remainingAtLastSync = 0;
     _usedBytes = 0;
     _lastUsedBytes = 0;
     _lastSuccessfulSyncAt = null;
@@ -175,9 +179,7 @@ class SessionTimer extends ChangeNotifier {
   void _tick(Timer t) {
     if (_isDisconnecting) return;
     if (_hasSyncedOnce && _consecutiveFailures < _maxConsecutiveFailures) {
-      if (_remainingSeconds > 0) {
-        _remainingSeconds--;
-      }
+      _reconcileElapsedTime();
     }
 
     if (_consecutiveFailures >= _maxConsecutiveFailures) {
@@ -274,7 +276,8 @@ class SessionTimer extends ChangeNotifier {
           _markSyncFailure();
           return;
         }
-        _remainingSeconds = expiresValue.toInt();
+        _remainingAtLastSync = expiresValue.toInt();
+        _remainingSeconds = _remainingAtLastSync;
         _usedBytes = _readNonNegativeInt(data['used_bytes'], _usedBytes);
 
         final now = DateTime.now();
@@ -323,16 +326,42 @@ class SessionTimer extends ChangeNotifier {
     }
   }
 
+  void _reconcileElapsedTime() {
+    final syncedAt = _lastSuccessfulSyncAt;
+    if (!_hasSyncedOnce || syncedAt == null) return;
+
+    final elapsed = DateTime.now().difference(syncedAt).inSeconds;
+    _remainingSeconds =
+        (_remainingAtLastSync - elapsed).clamp(0, 1 << 31).toInt();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed || _isDisconnecting) return;
+    if (vpnConnection.status != VpnStatus.connected) return;
+
+    _reconcileElapsedTime();
+    if (!isRunning) {
+      _resumeTicking();
+      return;
+    }
+
+    unawaited(_syncWithHivemind());
+    notifyListeners();
+  }
+
   void _resumeTicking() {
+    _reconcileElapsedTime();
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), _tick);
     _isDisconnecting = false;
-    _syncWithHivemind();
+    unawaited(_syncWithHivemind());
     notifyListeners();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     vpnConnection.removeListener(_onVpnConnectionChanged);
     _timer?.cancel();
     super.dispose();
