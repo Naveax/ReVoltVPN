@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:flutter/widgets.dart';
-import 'package:revoltvpn/logic/hivemind_service.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:revoltvpn/logic/app_config.dart';
-import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
+import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/notification_service.dart';
+import 'package:revoltvpn/logic/vpn_connection.dart';
 
 class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _timer;
@@ -15,12 +17,20 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   final VpnConnection vpnConnection;
 
   int _remainingSeconds = 0;
-  int _usedBytes       = 0;
+  int _remainingAtLastSync = 0;
+  int _usedBytes = 0;
 
-  bool _hasSyncedOnce       = false;
-  int  _consecutiveFailures = 0;
-  bool _isDisconnecting     = false;
-  bool _syncInProgress      = false;
+  bool _hasSyncedOnce = false;
+  int _consecutiveFailures = 0;
+  bool _isDisconnecting = false;
+  bool _syncInProgress = false;
+  bool _supportRewardClaimed = false;
+  bool _supportRewardStateLoaded = false;
+  int _supportStateEpoch = 0;
+
+  static const String _supportRewardClaimKey =
+      'support_reward_claimed_active_session';
+  static const FlutterSecureStorage _supportStorage = FlutterSecureStorage();
 
   static const int _maxConsecutiveFailures = 3;
   static const int _maxOfflineSeconds = 120;
@@ -29,21 +39,24 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   static const int _pollIntervalSeconds = 5;
   static const int _backgroundPollIntervalSeconds = 30;
 
-  int      _lastUsedBytes    = 0;
-  double   _currentSpeedKBps = 0.0;
-  DateTime? _lastSyncAt;
+  int _lastUsedBytes = 0;
+  DateTime? _lastSuccessfulSyncAt;
+  double _currentSpeedKBps = 0.0;
 
   SessionTimer({required this.vpnConnection}) {
     WidgetsBinding.instance.addObserver(this);
     vpnConnection.addListener(_onVpnConnectionChanged);
+    unawaited(_loadSupportRewardState());
   }
 
-  int  get remaining        => _remainingSeconds;
-  bool get isRunning        => _timer != null && _timer!.isActive;
-  bool get isExpired        => _remainingSeconds <= 0 && !isRunning;
-  bool get hasSyncedOnce    => _hasSyncedOnce;
+  int get remaining => _remainingSeconds;
+  bool get isRunning => _timer != null && _timer!.isActive;
+  bool get isExpired => _remainingSeconds <= 0 && !isRunning;
+  bool get hasSyncedOnce => _hasSyncedOnce;
+  bool get supportRewardClaimed => _supportRewardClaimed;
+  bool get supportRewardStateLoaded => _supportRewardStateLoaded;
 
-  int    get usedBytes      => _usedBytes;
+  int get usedBytes => _usedBytes;
   double get currentSpeedKBps => _currentSpeedKBps;
 
   String get formatted {
@@ -53,8 +66,42 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     return '$h:$m:$s';
   }
 
+  Future<void> _loadSupportRewardState() async {
+    final epoch = _supportStateEpoch;
+    var claimed = false;
+    try {
+      claimed =
+          (await _supportStorage.read(key: _supportRewardClaimKey)) == '1';
+    } catch (e) {
+      debugPrint('[Timer] Failed to load support reward state: $e');
+    }
+
+    if (epoch != _supportStateEpoch) return;
+    _supportRewardClaimed = claimed;
+    _supportRewardStateLoaded = true;
+    notifyListeners();
+  }
+
+  Future<void> _persistSupportRewardState(bool value) async {
+    try {
+      await _supportStorage.write(
+        key: _supportRewardClaimKey,
+        value: value ? '1' : '0',
+      );
+    } catch (e) {
+      debugPrint('[Timer] Failed to persist support reward state: $e');
+    }
+  }
+
+  Future<void> markSupportRewardClaimed() async {
+    if (_supportRewardClaimed) return;
+    _supportRewardClaimed = true;
+    _supportRewardStateLoaded = true;
+    notifyListeners();
+    await _persistSupportRewardState(true);
+  }
+
   void _onVpnConnectionChanged() {
-    // Restore timer if VPN was already running at app launch.
     if (vpnConnection.status == VpnStatus.connected &&
         !isRunning &&
         vpnConnection.isStartupRestoration) {
@@ -62,59 +109,90 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
-    // Resume after brief tunnel disconnection.
     if (vpnConnection.status == VpnStatus.connected &&
         !isRunning &&
         !_isDisconnecting &&
         _hasSyncedOnce) {
-      debugPrint('[Timer] VPN reconnected after blip — resuming.');
+      debugPrint('[Timer] VPN reconnected after blip - resuming.');
       _resumeTicking();
       return;
     }
 
-    if (vpnConnection.status == VpnStatus.disconnected && !_isDisconnecting) {
-      _doDisconnect('VPN tunnel dropped');
+    final hadActiveSession = isRunning || _hasSyncedOnce;
+    if (!hadActiveSession || _isDisconnecting) return;
+
+    if (vpnConnection.status == VpnStatus.error) {
+      _stopForVpnFailure('VPN entered error state');
+      return;
+    }
+
+    if (vpnConnection.status == VpnStatus.disconnected) {
+      unawaited(_doDisconnect('VPN tunnel dropped'));
     }
   }
 
-  Future<void> start() async {
-    _remainingSeconds    = 0;
-    _usedBytes           = 0;
-    _lastUsedBytes       = 0;
-    _currentSpeedKBps    = 0.0;
-    _lastSyncAt          = null;
-    NotificationService.reset();
-    _tickCount           = 0;
-    _hasSyncedOnce       = false;
+  void _stopForVpnFailure(String reason) {
+    if (_isDisconnecting) return;
+    _isDisconnecting = true;
+    debugPrint('[Timer] Stopping after VPN failure: $reason');
+
+    _timer?.cancel();
+    _timer = null;
+    _currentSpeedKBps = 0.0;
+    _remainingSeconds = 0;
+    _remainingAtLastSync = 0;
+    _hasSyncedOnce = false;
+    _lastSuccessfulSyncAt = null;
     _consecutiveFailures = 0;
-    _offlineSeconds      = 0;
-    _isDisconnecting     = false;
-    _appBackgrounded     = false;
+    _offlineSeconds = 0;
+    NotificationService.reset();
+    notifyListeners();
+  }
+
+  Future<void> start() async {
+    _remainingSeconds = 0;
+    _remainingAtLastSync = 0;
+    _usedBytes = 0;
+    _lastUsedBytes = 0;
+    _lastSuccessfulSyncAt = null;
+    _currentSpeedKBps = 0.0;
+    _tickCount = 0;
+    _hasSyncedOnce = false;
+    _consecutiveFailures = 0;
+    _offlineSeconds = 0;
+    _isDisconnecting = false;
+    _appBackgrounded = false;
+    NotificationService.reset();
+
+    _supportStateEpoch++;
+    _supportRewardClaimed = false;
+    _supportRewardStateLoaded = true;
+    unawaited(_persistSupportRewardState(false));
 
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), _tick);
 
     notifyListeners();
-    _syncWithHivemind();
+    unawaited(_syncWithHivemind());
   }
 
   void _tick(Timer t) {
     if (_isDisconnecting) return;
-    // A local clock: poll failures are about the network, not the clock.
-    if (_hasSyncedOnce && _remainingSeconds > 0) {
-      _remainingSeconds--;
+
+    if (_hasSyncedOnce && _consecutiveFailures < _maxConsecutiveFailures) {
+      _reconcileElapsedTime();
     }
 
     if (_consecutiveFailures >= _maxConsecutiveFailures) {
       _offlineSeconds++;
       if (_offlineSeconds >= _maxOfflineSeconds) {
-        _doDisconnect('Server unreachable');
+        unawaited(_doDisconnect('Server unreachable'));
         return;
       }
     }
 
     if (_hasSyncedOnce && _remainingSeconds <= 0) {
-      _doDisconnect('Session expired');
+      unawaited(_doDisconnect('Session expired'));
       return;
     }
 
@@ -123,16 +201,12 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
         ? _backgroundPollIntervalSeconds
         : _pollIntervalSeconds;
     if (_tickCount % pollInterval == 0) {
-      _syncWithHivemind();
+      unawaited(_syncWithHivemind());
     }
 
     notifyListeners();
 
-    // Gated on a live tunnel. The plugin cancels the notification when the
-    // service stops, and re-posting after that leaves an ongoing notification
-    // the user cannot swipe away below Android 14.
-    if (_hasSyncedOnce &&
-        vpnConnection.status == VpnStatus.connected) {
+    if (_hasSyncedOnce && vpnConnection.status == VpnStatus.connected) {
       NotificationService.updateTimer(formatted);
     }
   }
@@ -150,8 +224,9 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     _timer = null;
     _currentSpeedKBps = 0.0;
     _remainingSeconds = 0;
+    _remainingAtLastSync = 0;
     _hasSyncedOnce = false;
-    _lastSyncAt = null;
+    _lastSuccessfulSyncAt = null;
     NotificationService.reset();
     notifyListeners();
 
@@ -162,45 +237,72 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  int _readNonNegativeInt(dynamic value, int fallback) {
+    if (value is int) return value >= 0 ? value : fallback;
+    if (value is num && value >= 0) return value.toInt();
+    return fallback;
+  }
+
   Future<void> _syncWithHivemind() async {
     if (_isDisconnecting || _syncInProgress) return;
     _syncInProgress = true;
     try {
       final deviceId = await CryptoService.getDeviceId();
-      final url = Uri.parse(
-          '${AppConfig.hivemindApiPublic}/session/status?device_id=$deviceId');
+      final base = Uri.parse('${AppConfig.hivemindApiPublic}/session/status');
+      final url = base.replace(queryParameters: {'device_id': deviceId});
       final response = await HivemindService.directGet(url);
+      if (_isDisconnecting) return;
 
       if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
+        final decoded = jsonDecode(response.body);
+        if (decoded is! Map<String, dynamic>) {
+          debugPrint('[Timer] Invalid session payload type.');
+          _markSyncFailure();
+          return;
+        }
+        final data = decoded;
 
-        final bool active = data['active'] ?? false;
-        if (!active) {
+        final activeValue = data['active'];
+        if (activeValue is! bool) {
+          debugPrint('[Timer] Session payload missing boolean active state.');
+          _markSyncFailure();
+          return;
+        }
+        if (!activeValue) {
           await _doDisconnect('Server ended session');
           return;
         }
 
-        _remainingSeconds = data['expires_in_seconds'] ?? _remainingSeconds;
-        _usedBytes        = data['used_bytes']        ?? _usedBytes;
+        final expiresValue = data['expires_in_seconds'];
+        if (expiresValue is! num ||
+            !expiresValue.isFinite ||
+            expiresValue < 0) {
+          debugPrint('[Timer] Session payload has invalid expiry.');
+          _markSyncFailure();
+          return;
+        }
 
-        // Measure the real gap between polls: the interval is 5 s in the
-        // foreground, 30 s in the background, and arbitrary on a resume sync.
-        final now      = DateTime.now();
-        final lastSync = _lastSyncAt;
-        _lastSyncAt    = now;
+        _remainingAtLastSync = expiresValue.toInt();
+        _remainingSeconds = _remainingAtLastSync;
+        _usedBytes = _readNonNegativeInt(data['used_bytes'], _usedBytes);
 
-        final int deltaBytes = _usedBytes - _lastUsedBytes;
-        if (_hasSyncedOnce && deltaBytes > 0 && lastSync != null) {
-          final elapsed = now.difference(lastSync).inMilliseconds / 1000.0;
-          _currentSpeedKBps =
-              elapsed > 0 ? (deltaBytes / elapsed) / 1000 : _currentSpeedKBps;
-        } else if (!_hasSyncedOnce) {
+        final now = DateTime.now();
+        final previousSyncAt = _lastSuccessfulSyncAt;
+        final deltaBytes = _usedBytes - _lastUsedBytes;
+        if (_hasSyncedOnce && previousSyncAt != null) {
+          final elapsedMs = now.difference(previousSyncAt).inMilliseconds;
+          if (deltaBytes > 0 && elapsedMs > 0) {
+            _currentSpeedKBps = (deltaBytes / (elapsedMs / 1000.0)) / 1000.0;
+          } else {
+            _currentSpeedKBps = 0.0;
+          }
+        } else {
           _currentSpeedKBps = 0.0;
         }
         _lastUsedBytes = _usedBytes;
+        _lastSuccessfulSyncAt = now;
 
-        final capExhausted = data['cap_exhausted'] ?? false;
-        if (capExhausted) {
+        if (data['cap_exhausted'] == true) {
           await _doDisconnect('Data cap reached');
           return;
         }
@@ -213,8 +315,10 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
         _markSyncFailure();
       }
     } catch (e) {
-      debugPrint('Hivemind sync error: $e');
-      _markSyncFailure();
+      if (!_isDisconnecting) {
+        debugPrint('Hivemind sync error: $e');
+        _markSyncFailure();
+      }
     } finally {
       _syncInProgress = false;
     }
@@ -227,27 +331,46 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  void _resumeTicking() {
-    _lastSyncAt = null;
-    _timer?.cancel();
-    _timer = Timer.periodic(const Duration(seconds: 1), _tick);
-    _isDisconnecting = false;
-    _syncWithHivemind();
-    notifyListeners();
+  void _reconcileElapsedTime() {
+    final syncedAt = _lastSuccessfulSyncAt;
+    if (!_hasSyncedOnce || syncedAt == null) return;
+
+    final elapsed = DateTime.now().difference(syncedAt).inSeconds;
+    _remainingSeconds =
+        (_remainingAtLastSync - elapsed).clamp(0, 1 << 31).toInt();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached) {
-      // Keep ticking, but slow the poll — the 5 s one wakes the radio.
+        state == AppLifecycleState.detached ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden) {
       _appBackgrounded = true;
-    } else if (state == AppLifecycleState.resumed) {
-      _appBackgrounded = false;
-      if (_timer != null && _timer!.isActive) {
-        _syncWithHivemind();
-      }
+      return;
     }
+
+    if (state != AppLifecycleState.resumed || _isDisconnecting) return;
+    _appBackgrounded = false;
+    if (vpnConnection.status != VpnStatus.connected) return;
+
+    _reconcileElapsedTime();
+    if (!isRunning) {
+      _resumeTicking();
+      return;
+    }
+
+    unawaited(_syncWithHivemind());
+    notifyListeners();
+  }
+
+  void _resumeTicking() {
+    _reconcileElapsedTime();
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(seconds: 1), _tick);
+    _isDisconnecting = false;
+    unawaited(_syncWithHivemind());
+    notifyListeners();
   }
 
   @override

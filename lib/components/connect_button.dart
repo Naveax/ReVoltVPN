@@ -1,11 +1,9 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/logic/session_timer.dart';
 import 'package:revoltvpn/logic/ad_manager.dart';
-import 'package:revoltvpn/screens/settings/in_settings/haptic.dart';
 
 class ConnectButton extends StatefulWidget {
   const ConnectButton({super.key});
@@ -17,7 +15,7 @@ class ConnectButton extends StatefulWidget {
 class _ConnectButtonState extends State<ConnectButton>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   bool _busy = false;
-  DateTime _lastTap = DateTime.now();
+  DateTime _lastTap = DateTime.fromMillisecondsSinceEpoch(0);
   AnimationController? _pulse;
   Animation<double>? _pulseAnim;
 
@@ -26,12 +24,17 @@ class _ConnectButtonState extends State<ConnectButton>
   @override
   void initState() {
     super.initState();
-    final pulse = AnimationController(vsync: this, duration: const Duration(milliseconds: 2000));
+    final pulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2000),
+    );
     _pulse = pulse;
-    _pulseAnim = Tween(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: pulse, curve: Curves.easeInOut));
+    _pulseAnim = Tween(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: pulse, curve: Curves.easeInOut),
+    );
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<VpnConnection>().addListener(_onVpnChanged);
+      if (mounted) context.read<VpnConnection>().addListener(_onVpnChanged);
     });
   }
 
@@ -68,7 +71,6 @@ class _ConnectButtonState extends State<ConnectButton>
   }
 
   Future<void> _handleTap() async {
-
     final now = DateTime.now();
     if (now.difference(_lastTap).inMilliseconds < 1000) return;
     _lastTap = now;
@@ -77,32 +79,21 @@ class _ConnectButtonState extends State<ConnectButton>
     final timer = context.read<SessionTimer>();
     final ad = context.read<AdManager>();
 
-
     if (vpn.status == VpnStatus.connected || vpn.status == VpnStatus.connecting) {
       _busy = false;
       await timer.disconnect();
-      unawaited(Haptics.connectionChanged());
       return;
     }
 
-
-    if (vpn.status == VpnStatus.disconnecting) return;
-
-
-    if (_busy) return;
+    if (vpn.status == VpnStatus.disconnecting || _busy) return;
 
     setState(() => _busy = true);
     try {
       final adWatched = await ad.showAd('main');
-      if (!adWatched && AdManager.adsEnabled) {
-        setState(() => _busy = false);
-        return;
-      }
+      if (!adWatched && AdManager.adsEnabled) return;
+
       final ok = await vpn.connect();
-      if (ok) {
-        timer.start();
-        unawaited(Haptics.connectionChanged());
-      }
+      if (ok) await timer.start();
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -170,7 +161,7 @@ class _ConnectButtonState extends State<ConnectButton>
                   color: Color.fromARGB(glowAlpha, 255, 214, 0),
                   blurRadius: glowRadius,
                   spreadRadius: glowRadius * 0.3,
-                )
+                ),
               ]
             : [],
       ),

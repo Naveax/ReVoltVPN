@@ -1,9 +1,132 @@
 import java.util.Properties
+import java.io.File
 import java.io.FileInputStream
 
 plugins {
     id("com.android.application")
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+val projectRootDir = rootProject.projectDir.parentFile
+val localPropertiesFile = rootProject.file("local.properties")
+val localProperties = Properties().apply {
+    if (localPropertiesFile.exists()) {
+        localPropertiesFile.inputStream().use { load(it) }
+    }
+}
+val flutterSdkPath = localProperties.getProperty("flutter.sdk")
+    ?: throw GradleException("flutter.sdk not set in android/local.properties")
+val dartExecutable = File(
+    flutterSdkPath,
+    if (System.getProperty("os.name").lowercase().contains("windows")) {
+        "bin/cache/dart-sdk/bin/dart.exe"
+    } else {
+        "bin/cache/dart-sdk/bin/dart"
+    },
+)
+val flutterVlessPatchScript = File(
+    projectRootDir,
+    "tool/patch_flutter_vless_allowed_apps.dart",
+)
+val flutterVlessSecureSocksPatchScript = File(
+    projectRootDir,
+    "tool/patch_flutter_vless_secure_socks_v2.dart",
+)
+val flutterVlessSecureSocksScopeFixScript = File(
+    projectRootDir,
+    "tool/patch_flutter_vless_secure_socks_scope_fix.dart",
+)
+
+val patchFlutterVlessAllowedApps = tasks.register<Exec>("patchFlutterVlessAllowedApps") {
+    group = "build setup"
+    description = "Patch pinned flutter_vless_android 1.1.5 with ReVolt routing/runtime hardening"
+    workingDir(projectRootDir)
+
+    doFirst {
+        if (!dartExecutable.isFile) {
+            throw GradleException("Flutter Dart executable not found: ${dartExecutable.absolutePath}")
+        }
+        if (!flutterVlessPatchScript.isFile) {
+            throw GradleException("flutter_vless patch script missing: ${flutterVlessPatchScript.absolutePath}")
+        }
+        if (!File(projectRootDir, ".dart_tool/package_config.json").isFile) {
+            throw GradleException("Flutter package metadata missing. Run `flutter pub get` before Android compilation.")
+        }
+    }
+
+    commandLine(
+        dartExecutable.absolutePath,
+        "run",
+        flutterVlessPatchScript.absolutePath,
+    )
+}
+
+val patchFlutterVlessSecureSocks = tasks.register<Exec>("patchFlutterVlessSecureSocks") {
+    group = "build setup"
+    description = "Add authenticated ephemeral SOCKS5 and fail-closed process recovery to pinned flutter_vless_android 1.1.5"
+    workingDir(projectRootDir)
+    dependsOn(patchFlutterVlessAllowedApps)
+
+    doFirst {
+        if (!dartExecutable.isFile) {
+            throw GradleException("Flutter Dart executable not found: ${dartExecutable.absolutePath}")
+        }
+        if (!flutterVlessSecureSocksPatchScript.isFile) {
+            throw GradleException("secure SOCKS patch script missing: ${flutterVlessSecureSocksPatchScript.absolutePath}")
+        }
+        if (!File(projectRootDir, ".dart_tool/package_config.json").isFile) {
+            throw GradleException("Flutter package metadata missing. Run `flutter pub get` before Android compilation.")
+        }
+    }
+
+    commandLine(
+        dartExecutable.absolutePath,
+        "run",
+        flutterVlessSecureSocksPatchScript.absolutePath,
+    )
+}
+
+val patchFlutterVlessSecureSocksScopeFix = tasks.register<Exec>("patchFlutterVlessSecureSocksScopeFix") {
+    group = "build setup"
+    description = "Repair the secure Xray process monitor capture without changing stock 1.1.5 runtime sequencing"
+    workingDir(projectRootDir)
+    dependsOn(patchFlutterVlessSecureSocks)
+
+    doFirst {
+        if (!dartExecutable.isFile) {
+            throw GradleException("Flutter Dart executable not found: ${dartExecutable.absolutePath}")
+        }
+        if (!flutterVlessSecureSocksScopeFixScript.isFile) {
+            throw GradleException("secure SOCKS scope fix script missing: ${flutterVlessSecureSocksScopeFixScript.absolutePath}")
+        }
+        if (!File(projectRootDir, ".dart_tool/package_config.json").isFile) {
+            throw GradleException("Flutter package metadata missing. Run `flutter pub get` before Android compilation.")
+        }
+    }
+
+    commandLine(
+        dartExecutable.absolutePath,
+        "run",
+        flutterVlessSecureSocksScopeFixScript.absolutePath,
+    )
+}
+
+// App compilation and the transitive Android plugin compilation must both wait
+// for the pinned runtime patches. Plain `flutter build apk` must behave like CI
+// instead of relying on a hidden manual pre-build step.
+tasks.configureEach {
+    if (name == "preBuild") {
+        dependsOn(patchFlutterVlessSecureSocksScopeFix)
+    }
+}
+
+gradle.projectsEvaluated {
+    rootProject.findProject(":flutter_vless_android")
+        ?.tasks
+        ?.matching { it.name == "preBuild" }
+        ?.configureEach {
+            dependsOn(patchFlutterVlessSecureSocksScopeFix)
+        }
 }
 
 android {

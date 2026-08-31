@@ -5,6 +5,65 @@ Versions follow [semver](https://semver.org/): MAJOR.MINOR.PATCH
 
 ---
 
+## [3.3.1] — 2026-08-31
+
+### Added
+- **Explicit TUN and SOCKS5 connection modes.** The previous Auto mode is removed so
+  routing behavior is selected deliberately instead of inferred at runtime.
+- **Per-app routing** with All apps, Exclude apps and Selected only policies. Android
+  enumerates launcher applications without requesting `QUERY_ALL_PACKAGES`.
+- **Authenticated per-session Local SOCKS5.** Every connection creates a loopback-only
+  SOCKS ingress with a random high port plus fresh username/password credentials.
+  Credentials stay in memory and the diagnostic test uses the active session instead
+  of fixed `10807`/`10808` ports.
+- **Network resilience controls** with Standard and Extreme profiles plus Android
+  physical-network monitoring that ignores VPN-created network callback loops.
+- Native Android bridges for installed-app discovery, network state and haptic feedback.
+- Regression tests for legacy Auto/ASS migrations, secure SOCKS session generation and
+  the patched stock Xray SOCKS authentication schema.
+
+### Changed
+- Legacy `auto` preferences migrate to TUN. Legacy `ass` preferences migrate to SOCKS5
+  while preserving selected-app package lists.
+- Keep the hosted `flutter_vless_android` **1.1.5** runtime instead of restoring the
+  experimental vendored Android service. Required routing, recovery and authenticated
+  SOCKS behavior is applied by idempotent build-time patchers.
+- Session countdown reconciliation now uses elapsed wall-clock time, re-syncs immediately
+  on resume and preserves the existing 5 s foreground / 30 s background poll policy.
+- Haptic feedback is initialized at startup and routed through a native Android channel;
+  duplicate toggle feedback is removed and the setting remains persistent.
+- VPN notification uses a dedicated 24 dp status icon, remains ongoing/no-clear while the
+  foreground service is active and keeps session metadata out of public lock-screen previews.
+- Hivemind session parsing is split into typed validation steps and nonce generation uses
+  `Random.secure()` without logging nonce values.
+- Increase Gradle release-build heap to 4 GiB and cap workers at two so Flutter/Jetifier
+  transforms do not fail on the release classpath under constrained CI runners.
+- App version is now `3.3.1+27`.
+
+### Fixed
+- Recoverable Xray/tun2socks startup and readiness failures no longer follow the unstable
+  vendored-runtime self-stop path used during development.
+- SOCKS5 readiness checks authenticate against the exact active session instead of merely
+  checking whether a fixed local port accepts connections.
+- Returning from Android background state reconciles the session timer and server status,
+  reducing stale countdowns and false `Syncing…` presentation after Dart throttling.
+- Sidebar update checks retain valid navigator/messenger handles after the drawer closes.
+- Settings startup uses the persistent haptic manager instead of the removed legacy loader.
+
+### Security & privacy
+- Local SOCKS5 listens only on `127.0.0.1`, requires per-session authentication and does not
+  persist or log generated credentials.
+- The app picker relies on launcher-app queries rather than broad package visibility.
+- Session time/speed notification metadata is marked private for lock-screen previews.
+- Existing AdMob bypass/callback behavior is intentionally unchanged by this release.
+- Server, nginx and Reality configuration are not modified by this client-side release.
+
+### Validation
+- `flutter analyze` completed without fatal warnings or infos.
+- All four Flutter regression tests passed.
+- Android release Kotlin compilation passed.
+- The 3.3.1 release APK built successfully and the packaged VPN runtime verification passed.
+
 ## [3.3.0] — 2026-08-30
 
 ### Added

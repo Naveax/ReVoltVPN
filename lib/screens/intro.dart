@@ -2,11 +2,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
+import 'package:revoltvpn/logic/haptic_settings.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/screens/main_screen.dart';
 import 'package:revoltvpn/screens/settings/in_settings/rain.dart';
 import 'package:revoltvpn/screens/settings/in_settings/lightning.dart';
-import 'package:revoltvpn/screens/settings/in_settings/haptic.dart';
 
 class IntroScreen extends StatefulWidget {
   const IntroScreen({super.key});
@@ -45,10 +45,12 @@ class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
     final elapsed = Stopwatch()..start();
     final vpn = context.read<VpnConnection>();
 
-    // The overlays read these in initState, so they must land before
-    // MainScreen mounts.
-    final settingsPrefs = Future.wait(
-        [loadRainPref(), loadLightningPref(), loadHapticPref()]);
+    // The overlays and haptic layer read these before MainScreen mounts.
+    final settingsPrefs = Future.wait([
+      loadRainPref(),
+      loadLightningPref(),
+      HapticSettings.initialize(),
+    ]);
 
     try {
       await vpn.ready.timeout(_bootTimeout);
@@ -79,7 +81,7 @@ class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
   void _navigateIfReady() {
     if (!mounted || _navigated || !_bootComplete) return;
     if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused) {
-      return; // resume will call back in
+      return;
     }
     _navigated = true;
 
@@ -101,7 +103,6 @@ class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
       body: Column(
         children: [
           const Spacer(flex: 7),
-          // Image slightly below center
           Center(
             child: Image.asset(
               'assets/brand.png',
@@ -116,7 +117,6 @@ class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
               },
             ),
           ),
-          // Spinner + text paired together below the image
           const SizedBox(height: 8),
           const SizedBox(
             width: 40,
@@ -137,7 +137,6 @@ class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
             ),
           ),
           const SizedBox(height: 10),
-          // Says what the spinner is actually waiting on.
           AnimatedSwitcher(
             duration: const Duration(milliseconds: 250),
             child: Text(
