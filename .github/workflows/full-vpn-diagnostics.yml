@@ -1,0 +1,160 @@
+name: Full VPN diagnostics APK
+
+on:
+  push:
+    branches:
+      - diag/full-log-console
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-vpn-diagnostics-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Set up Gradle 8.14
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+          cache-read-only: true
+
+      - name: Generate local build configuration
+        shell: bash
+        run: |
+          cat > lib/logic/app_config.dart <<'DART'
+          abstract final class AppConfig {
+            AppConfig._();
+            static const String serverIp = '204.168.246.88';
+            static const String hivemindApiPublic = 'https://paladinvpn.duckdns.org/api';
+            static const String realityFp = 'chrome';
+            static const String vlessSecurity = 'reality';
+            static const String vlessType = 'xhttp';
+            static const String vlessPath = '/revolt';
+            static const String applicationId = 'com.paladinvpn.app';
+            static const String githubOwner = 'esefxdz';
+            static const String githubRepo = 'ReVoltVPN';
+            static const String githubReleasesUrl =
+                'https://github.com/$githubOwner/$githubRepo/releases/latest';
+            static const String adUnitId =
+                'ca-app-pub-5671224884648691/9198987725';
+          }
+          DART
+
+          cat > android/admob.properties <<'PROPS'
+          ADMOB_APP_ID=ca-app-pub-3940256099942544~3347511713
+          PROPS
+
+          {
+            printf 'flutter.sdk=%s\n' "$FLUTTER_ROOT"
+            printf 'sdk.dir=%s\n' "$ANDROID_HOME"
+          } > android/local.properties
+
+      - name: Generate temporary diagnostic release key
+        shell: bash
+        run: |
+          keytool -genkeypair \
+            -keystore android/revolt-full-diag.jks \
+            -storepass revoltfulldiag \
+            -keypass revoltfulldiag \
+            -alias revolt-full-diag \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650 \
+            -dname "CN=ReVoltVPN Full Diagnostics,O=ReVoltVPN,C=US"
+
+          cat > android/key.properties <<'PROPS'
+          storePassword=revoltfulldiag
+          keyPassword=revoltfulldiag
+          keyAlias=revolt-full-diag
+          storeFile=revolt-full-diag.jks
+          PROPS
+
+      - name: Generate Gradle wrapper
+        shell: bash
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.14 --distribution-type all
+          chmod +x gradlew
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Reproduce 3.3.10 FD timing baseline
+        run: python3 tool/patch_fd_handoff_compat.py
+
+      - name: Apply full diagnostic logging
+        run: python3 tool/apply_full_diagnostics.py
+
+      - name: Verify diagnostic instrumentation
+        shell: bash
+        run: |
+          test -f third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/utils/VpnDiagnosticLog.kt
+          test -f lib/screens/settings/in_settings/vpn_diagnostics.dart
+          grep -q 'getDiagnosticLog' third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/FlutterVlessPlugin.kt
+          grep -q 'STOP requested by Flutter' third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/FlutterVlessPlugin.kt
+          grep -q 'TERMINATE' third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt
+          grep -q 'TUN2SOCKS_OUT' third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt
+          grep -q 'XRAY_EXIT' third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/core/XrayCoreManager.kt
+          grep -q 'VpnDiagnosticsTile' lib/screens/settings/settings_screen.dart
+
+      - name: Format generated Dart diagnostics
+        run: dart format lib/screens/settings/in_settings/vpn_diagnostics.dart lib/screens/settings/settings_screen.dart
+
+      - name: Flutter analyze
+        run: flutter analyze --no-fatal-warnings
+
+      - name: Unit tests
+        run: flutter test
+
+      - name: Kotlin release compile
+        shell: bash
+        run: |
+          cd android
+          ./gradlew :app:compileReleaseKotlin --stacktrace
+
+      - name: Build full diagnostic APK
+        run: flutter build apk --release --build-name 3.3.12 --build-number 38
+
+      - name: Verify packaged VPN runtime
+        shell: bash
+        run: |
+          test -s build/app/outputs/flutter-apk/app-release.apk
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libtun2socks.so'
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libxray.so'
+
+      - name: Package APK
+        shell: bash
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk ReVoltVPN-3.3.12-full-vpn-logs.apk
+          sha256sum ReVoltVPN-3.3.12-full-vpn-logs.apk > ReVoltVPN-3.3.12-full-vpn-logs.apk.sha256
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReVoltVPN-3.3.12-full-vpn-logs
+          path: |
+            ReVoltVPN-3.3.12-full-vpn-logs.apk
+            ReVoltVPN-3.3.12-full-vpn-logs.apk.sha256
+          retention-days: 3
+          if-no-files-found: error
