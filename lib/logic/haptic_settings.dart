@@ -4,8 +4,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-enum HapticKind { tap, selection, success }
-
 abstract final class HapticSettings {
   HapticSettings._();
 
@@ -48,37 +46,21 @@ abstract final class HapticSettings {
     }
   }
 
-  static void tap() => unawaited(_impact(HapticKind.tap));
-  static void selection() => unawaited(_impact(HapticKind.selection));
-  static void success() => unawaited(_impact(HapticKind.success));
+  static void tap() => unawaited(_impact());
 
-  static Future<void> _impact(HapticKind kind) async {
+  static Future<void> _impact() async {
     if (!_initialized) await initialize();
     if (!_enabled || kIsWeb) return;
 
     if (defaultTargetPlatform == TargetPlatform.android) {
       try {
-        final handled = await _channel.invokeMethod<bool>(
-              'impact',
-              <String, Object>{'kind': kind.name},
-            ) ??
-            false;
+        final handled = await _channel.invokeMethod<bool>('impact') ?? false;
         if (handled) return;
       } catch (e) {
         debugPrint('[Haptics] Native vibration unavailable: $e');
       }
     }
 
-    switch (kind) {
-      case HapticKind.tap:
-        await HapticFeedback.lightImpact();
-        break;
-      case HapticKind.selection:
-        await HapticFeedback.selectionClick();
-        break;
-      case HapticKind.success:
-        await HapticFeedback.mediumImpact();
-        break;
-    }
+    await HapticFeedback.lightImpact();
   }
 }
