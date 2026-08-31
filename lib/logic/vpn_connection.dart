@@ -817,9 +817,8 @@ class VpnConnection extends ChangeNotifier {
     _healthTimer?.cancel();
     _restartTimer?.cancel();
     _networkSubscription?.cancel();
-    if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
-      unawaited(_vless.stopVless());
-    }
+    // Provider/widget lifetime is not the VPN lifetime. Native teardown is
+    // owned only by explicit disconnect/permission-revoke paths.
     super.dispose();
   }
 }

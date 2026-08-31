@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.os.ResultReceiver
+import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import com.github.tfox.flutter_vless.xray.core.XrayCoreManager
@@ -30,10 +31,28 @@ class XrayVPNService : VpnService() {
     @Volatile private var currentGeneration = 0L
     @Volatile private var runtimeExpected = false
     @Volatile private var stopping = false
+    @Volatile private var recoveringRuntime = false
+    private var recoveryWindowStartedAtMs = 0L
+    private var recoveryAttempts = 0
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent == null) {
-            terminateService("Service restarted without command")
+            // START_STICKY may recreate a service with a null intent. Killing the
+            // VPN in that callback turns normal Android process/service recovery
+            // into a user-visible disconnect. Prefer redelivery for future starts
+            // and recover from an in-process snapshot when one still exists.
+            val config = currentConfig ?: AppConfigs.V2RAY_CONFIG
+            if (config != null && !stopping && startForegroundSafely("Restoring secure tunnel…")) {
+                val proxyOnly = currentProxyOnly ||
+                    AppConfigs.V2RAY_CONNECTION_MODE == AppConfigs.V2RAY_CONNECTION_MODES.PROXY_ONLY
+                Thread { startRuntime(config, proxyOnly) }.start()
+                return START_REDELIVER_INTENT
+            }
+            stopping = true
+            AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
+            AppConfigs.resetReadiness("Service restarted without runtime snapshot")
+            XrayCoreManager.sendStateBroadcast(this)
+            stopSelf()
             return START_NOT_STICKY
         }
 
@@ -79,6 +98,15 @@ class XrayVPNService : VpnService() {
             return START_NOT_STICKY
         }
 
+        if (command == AppConfigs.V2RAY_SERVICE_COMMANDS.START_SERVICE ||
+            command == AppConfigs.V2RAY_SERVICE_COMMANDS.RESTART_SERVICE
+        ) {
+            // A previous QUERY_STATE may have scheduled an empty service
+            // instance for stop. This newer startId supersedes that query-only
+            // lifecycle decision, so let the requested runtime actually start.
+            stopping = false
+        }
+
         if (!startForegroundSafely("Starting secure tunnel…")) {
             failBeforeRuntime("Could not start foreground VPN service")
             return START_NOT_STICKY
@@ -118,7 +146,10 @@ class XrayVPNService : VpnService() {
                 return START_NOT_STICKY
             }
         }
-        return START_STICKY
+        // If Android has to recreate this foreground VPN service, redeliver the
+        // START/RESTART intent containing the runtime configuration instead of
+        // invoking us with a null intent that cannot rebuild the tunnel.
+        return START_REDELIVER_INTENT
     }
 
     private fun buildStateBundle(): Bundle {
@@ -142,15 +173,27 @@ class XrayVPNService : VpnService() {
     }
 
     private fun failBeforeRuntime(reason: String) {
+        stopping = true
         AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
         AppConfigs.resetReadiness(reason)
         XrayCoreManager.sendStateBroadcast(this)
         stopSelf()
     }
 
-    private fun startRuntime(config: XrayConfig, proxyOnly: Boolean) {
+    private fun startRuntime(
+        config: XrayConfig,
+        proxyOnly: Boolean,
+        isRecovery: Boolean = false,
+    ) {
         synchronized(runtimeLock) {
             if (stopping) return
+            if (!isRecovery) {
+                recoveringRuntime = false
+                recoveryWindowStartedAtMs = 0L
+                recoveryAttempts = 0
+            }
+            currentConfig = config
+            currentProxyOnly = proxyOnly
             val generation = ++currentGeneration
             runtimeExpected = false
             shutdownRuntimeInternal(broadcast = false, keepConfig = true)
@@ -189,8 +232,15 @@ class XrayVPNService : VpnService() {
                     throw IllegalStateException("Native readiness state was incomplete")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Runtime start failed", e)
+                Log.e(TAG, if (isRecovery) "Runtime recovery failed" else "Runtime start failed", e)
                 AppConfigs.LAST_ERROR = e.message ?: "Runtime start failed"
+                if (isRecovery) {
+                    // Keep the foreground service alive while the bounded recovery
+                    // loop retries. Do not broadcast a transient DISCONNECTED state
+                    // that would make Flutter clear its recovery snapshot.
+                    shutdownRuntimeInternal(broadcast = false, keepConfig = true)
+                    throw e
+                }
                 terminateServiceLocked(AppConfigs.LAST_ERROR, preserveConfig = false)
             }
         }
@@ -315,19 +365,16 @@ class XrayVPNService : VpnService() {
                 val code = process.waitFor()
                 if (generation == currentGeneration && runtimeExpected && !stopping) {
                     Log.e(TAG, "tun2socks exited unexpectedly with code $code")
-                    terminateService(
-                        "tun2socks exited unexpectedly",
-                        preserveConfig = true,
+                    requestRuntimeRecovery(
+                        "tun2socks exited unexpectedly with code $code",
+                        generation,
                     )
                 }
             } catch (_: InterruptedException) {
             } catch (e: Exception) {
                 if (generation == currentGeneration && runtimeExpected && !stopping) {
                     Log.e(TAG, "tun2socks monitor failed", e)
-                    terminateService(
-                        "tun2socks monitor failed",
-                        preserveConfig = true,
-                    )
+                    requestRuntimeRecovery("tun2socks monitor failed", generation)
                 }
             }
         }.start()
@@ -337,31 +384,49 @@ class XrayVPNService : VpnService() {
         val pfd = mInterface ?: return false
         val fd = pfd.fileDescriptor
         val sockPath = File(filesDir, "sock_path").absolutePath
-        for (attempt in 1..12) {
-            if (generation != currentGeneration ||
-                stopping ||
-                tun2socksProcess?.isAlive != true
-            ) return false
-            var socket: LocalSocket? = null
-            try {
-                Thread.sleep(if (attempt == 1) 120L else 250L)
-                socket = LocalSocket()
-                socket.connect(LocalSocketAddress(sockPath, LocalSocketAddress.Namespace.FILESYSTEM))
-                socket.setFileDescriptorsForSend(arrayOf(fd))
-                socket.outputStream.write(32)
-                socket.outputStream.flush()
-                socket.setFileDescriptorsForSend(null)
-                socket.shutdownOutput()
-                socket.close()
-                Thread.sleep(250)
-                return generation == currentGeneration &&
-                    !stopping &&
-                    tun2socksProcess?.isAlive == true
-            } catch (_: Exception) {
-                try { socket?.close() } catch (_: Exception) {}
+
+        // flutter_vless_android 1.1.5 waits 500 ms between UDS attempts and
+        // does not use Process.isAlive as a precondition for connecting to the
+        // FD socket. Preserve that proven device timing while still returning
+        // a real success/failure result to the hardened fail-closed caller.
+        var delivered = false
+        val worker = Thread {
+            var tries = 0
+            while (tries < 10 && generation == currentGeneration && !stopping) {
+                var socket: LocalSocket? = null
+                try {
+                    Thread.sleep(500L)
+                    socket = LocalSocket()
+                    socket.connect(
+                        LocalSocketAddress(sockPath, LocalSocketAddress.Namespace.FILESYSTEM)
+                    )
+                    socket.setFileDescriptorsForSend(arrayOf(fd))
+                    socket.outputStream.write(32)
+                    socket.outputStream.flush()
+                    socket.setFileDescriptorsForSend(null)
+                    socket.shutdownOutput()
+                    socket.close()
+                    delivered = true
+                    break
+                } catch (_: Exception) {
+                    tries++
+                    try { socket?.close() } catch (_: Exception) {}
+                }
             }
         }
-        return false
+        worker.start()
+        worker.join(6000L)
+        if (worker.isAlive) {
+            worker.interrupt()
+            return false
+        }
+        if (!delivered || generation != currentGeneration || stopping) return false
+
+        // Fail closed only after the exact 1.1.5 FD transfer had a chance to
+        // complete. A child that dies immediately after accepting the FD is not
+        // a usable data path.
+        Thread.sleep(250L)
+        return tun2socksProcess?.isAlive == true
     }
 
     private fun waitForSocks(config: XrayConfig, generation: Long): Boolean {
@@ -381,10 +446,74 @@ class XrayVPNService : VpnService() {
 
     fun handleXrayCoreExit(generation: Long) {
         if (generation != currentGeneration || stopping) return
-        terminateService(
-            "Xray core exited unexpectedly",
-            preserveConfig = true,
-        )
+        requestRuntimeRecovery("Xray core exited unexpectedly", generation)
+    }
+
+    private fun requestRuntimeRecovery(reason: String, generation: Long) {
+        var runtimeConfig: XrayConfig? = null
+        var proxyOnly = false
+        synchronized(runtimeLock) {
+            if (generation != currentGeneration || stopping || !runtimeExpected || recoveringRuntime) return
+            runtimeConfig = currentConfig ?: AppConfigs.V2RAY_CONFIG
+            if (runtimeConfig == null) {
+                terminateServiceLocked("$reason; runtime snapshot missing", preserveConfig = false)
+                return
+            }
+            proxyOnly = currentProxyOnly
+            recoveringRuntime = true
+            runtimeExpected = false
+            AppConfigs.LAST_ERROR = reason
+            Log.w(TAG, "Keeping VPN service alive for bounded runtime recovery: $reason")
+        }
+
+        val config = runtimeConfig ?: return
+        Thread recoveryThread@ {
+            var lastFailure = reason
+            while (true) {
+                var attempt = 0
+                synchronized(runtimeLock) {
+                    if (stopping || !recoveringRuntime) return@recoveryThread
+                    val now = SystemClock.elapsedRealtime()
+                    if (recoveryWindowStartedAtMs == 0L ||
+                        now - recoveryWindowStartedAtMs > RECOVERY_WINDOW_MS
+                    ) {
+                        recoveryWindowStartedAtMs = now
+                        recoveryAttempts = 0
+                    }
+                    if (recoveryAttempts >= MAX_RUNTIME_RECOVERY_ATTEMPTS) {
+                        recoveringRuntime = false
+                        terminateServiceLocked(
+                            "Runtime recovery exhausted: $lastFailure",
+                            preserveConfig = true,
+                        )
+                        return@recoveryThread
+                    }
+                    recoveryAttempts++
+                    attempt = recoveryAttempts
+                }
+
+                try {
+                    Thread.sleep(RECOVERY_BASE_DELAY_MS * attempt)
+                    startRuntime(config, proxyOnly, isRecovery = true)
+                    val recovered = synchronized(runtimeLock) {
+                        val ready = !stopping &&
+                            runtimeExpected &&
+                            AppConfigs.V2RAY_STATE == AppConfigs.V2RAY_STATES.V2RAY_CONNECTED
+                        if (!stopping) recoveringRuntime = false
+                        ready
+                    }
+                    // Explicit disconnect/revoke can race the recovery sleep. In that
+                    // case startRuntime intentionally returns without restarting and
+                    // this worker must exit quietly rather than claiming success.
+                    if (!recovered) return@recoveryThread
+                    Log.i(TAG, "Runtime recovered on attempt $attempt")
+                    return@recoveryThread
+                } catch (e: Exception) {
+                    lastFailure = e.message ?: "runtime recovery failed"
+                    Log.e(TAG, "Runtime recovery attempt $attempt failed", e)
+                }
+            }
+        }.start()
     }
 
     private fun shutdownRuntimeInternal(broadcast: Boolean, keepConfig: Boolean) {
@@ -491,5 +620,8 @@ class XrayVPNService : VpnService() {
     companion object {
         private const val TAG = "XrayVPNService"
         private const val FOREGROUND_SERVICE_TYPE_SPECIAL_USE = 0x40000000
+        private const val MAX_RUNTIME_RECOVERY_ATTEMPTS = 3
+        private const val RECOVERY_WINDOW_MS = 60_000L
+        private const val RECOVERY_BASE_DELAY_MS = 450L
     }
 }
