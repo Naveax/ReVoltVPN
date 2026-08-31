@@ -1,30 +1,44 @@
 package com.paladinvpn.app
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ResolveInfo
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.github.tfox.flutter_vless.xray.service.XrayVPNService
 import com.github.tfox.flutter_vless.xray.utils.AppConfigs
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayOutputStream
+import kotlin.math.roundToInt
 
 class MainActivity : FlutterActivity() {
-
-    // Channel id only — not the application id, which is com.paladinvpn.app.
-    // Must match the string in lib/logic/updater.dart.
     private val installerChannel = "com.revoltvpn.app/installer"
-
-    // Must match lib/logic/notification_service.dart.
     private val notificationChannel = "com.revoltvpn.app/notification"
+    private val hapticsChannel = "com.revoltvpn.app/haptics"
+    private val appsChannel = "com.revoltvpn.app/apps"
+    private val networkChannel = "com.revoltvpn.app/network"
 
     private var notificationChannelReady = false
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var networkEvents: EventChannel.EventSink? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -50,16 +64,45 @@ class MainActivity : FlutterActivity() {
                     result.notImplemented()
                 }
             }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, hapticsChannel)
+            .setMethodCallHandler { call, result ->
+                if (call.method == "impact") {
+                    val kind = call.argument<String>("kind") ?: "tap"
+                    result.success(performHaptic(kind))
+                } else {
+                    result.notImplemented()
+                }
+            }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, appsChannel)
+            .setMethodCallHandler { call, result ->
+                if (call.method == "getLaunchableApps") {
+                    result.success(launchableApps())
+                } else {
+                    result.notImplemented()
+                }
+            }
+
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, networkChannel)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    networkEvents = events
+                    startNetworkMonitor()
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    networkEvents = null
+                    stopNetworkMonitor()
+                }
+            })
     }
 
-    /**
-     * Sets the session countdown as the VPN notification's content text.
-     *
-     * notify() is per-package, so re-posting flutter_vless's notification id
-     * replaces it wholesale — every field the plugin set has to be rebuilt
-     * here or it is dropped, the Disconnect action most of all. Keep in sync
-     * with XrayCoreManager.showNotification().
-     */
+    override fun onDestroy() {
+        stopNetworkMonitor()
+        super.onDestroy()
+    }
+
     private fun updateVpnNotification(title: String, text: String, actionLabel: String) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
@@ -76,58 +119,52 @@ class MainActivity : FlutterActivity() {
             PendingIntent.FLAG_UPDATE_CURRENT
         }
 
-        // Same intent shape as the plugin, so a tap brings the running task
-        // forward instead of starting a second one.
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
         launchIntent?.action = "FROM_DISCONNECT_BTN"
         launchIntent?.flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or
             Intent.FLAG_ACTIVITY_CLEAR_TOP or
             Intent.FLAG_ACTIVITY_NEW_TASK
 
-        // Tapping "Disconnect" stops the tunnel without opening the app.
         val stopIntent = Intent(this, XrayVPNService::class.java)
-        stopIntent.putExtra(
-            "COMMAND",
-            AppConfigs.V2RAY_SERVICE_COMMANDS.STOP_SERVICE
-        )
+        stopIntent.putExtra("COMMAND", AppConfigs.V2RAY_SERVICE_COMMANDS.STOP_SERVICE)
         val stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, flags)
 
         val builder = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setSmallIcon(R.drawable.notification_icon)
+            .setSmallIcon(R.drawable.notification_status_icon)
             .setContentTitle(title)
             .setContentText(text)
             .addAction(0, actionLabel, stopPendingIntent)
             .setColorized(true)
             .setColor(0xFF0D1117.toInt())
             .setOngoing(true)
+            .setAutoCancel(false)
             .setOnlyAlertOnce(true)
             .setSilent(true)
             .setShowWhen(false)
             .setPriority(NotificationCompat.PRIORITY_LOW)
 
         if (launchIntent != null) {
-            builder.setContentIntent(
-                PendingIntent.getActivity(this, 0, launchIntent, flags)
-            )
+            builder.setContentIntent(PendingIntent.getActivity(this, 0, launchIntent, flags))
         }
 
         try {
-            NotificationManagerCompat.from(this).notify(NOTIFICATION_ID, builder.build())
+            val notification = builder.build()
+            notification.flags = notification.flags or
+                Notification.FLAG_ONGOING_EVENT or Notification.FLAG_NO_CLEAR
+            NotificationManagerCompat.from(this).notify(NOTIFICATION_ID, notification)
         } catch (_: Exception) {
-            // The foreground notification may not be up yet — the update is cosmetic.
+            // The native foreground notification may not be ready yet.
         }
     }
 
-    /** A binder round-trip, and the caller runs once a second — so, once per process. */
     private fun ensureNotificationChannel() {
         if (notificationChannelReady) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val manager =
-                getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val channel = NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
                 "Revolt VPN Background Service",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_LOW,
             )
             channel.setShowBadge(false)
             manager.createNotificationChannel(channel)
@@ -135,11 +172,134 @@ class MainActivity : FlutterActivity() {
         notificationChannelReady = true
     }
 
-    /**
-     * Package name of whatever installed us ("com.android.vending" for Play
-     * Store), or null when unknown. Without this the Dart side always falls
-     * back to sideload and points every user at GitHub releases.
-     */
+    private fun startNetworkMonitor() {
+        if (networkCallback != null) return
+
+        val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                emitBestPhysicalNetwork(manager, "available")
+            }
+
+            override fun onLost(network: Network) {
+                emitBestPhysicalNetwork(manager, "lost")
+            }
+
+            override fun onCapabilitiesChanged(
+                network: Network,
+                capabilities: NetworkCapabilities,
+            ) {
+                emitBestPhysicalNetwork(manager, "changed")
+            }
+        }
+
+        try {
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                .build()
+            manager.registerNetworkCallback(request, callback)
+            networkCallback = callback
+            emitBestPhysicalNetwork(manager, "initial")
+        } catch (e: Exception) {
+            networkEvents?.error("NETWORK_MONITOR", e.message, null)
+        }
+    }
+
+    private fun stopNetworkMonitor() {
+        val callback = networkCallback ?: return
+        val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        try {
+            manager.unregisterNetworkCallback(callback)
+        } catch (_: Exception) {
+        }
+        networkCallback = null
+    }
+
+    private fun emitBestPhysicalNetwork(
+        manager: ConnectivityManager,
+        reason: String,
+    ) {
+        val best = manager.allNetworks
+            .mapNotNull { network ->
+                val capabilities = manager.getNetworkCapabilities(network)
+                    ?: return@mapNotNull null
+                if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+                    return@mapNotNull null
+                }
+                if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) ||
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                ) {
+                    return@mapNotNull null
+                }
+                Triple(network, capabilities, physicalNetworkScore(capabilities))
+            }
+            .maxByOrNull { it.third }
+
+        if (best == null) {
+            emitNetworkPayload(
+                mapOf<String, Any>(
+                    "reason" to reason,
+                    "transport" to "none",
+                    "connected" to false,
+                    "validated" to false,
+                    "metered" to false,
+                    "timestamp" to System.currentTimeMillis(),
+                ),
+            )
+            return
+        }
+
+        emitNetworkState(best.first, best.second, reason)
+    }
+
+    private fun physicalNetworkScore(capabilities: NetworkCapabilities): Int {
+        var score = 0
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        ) {
+            score += 100
+        }
+        score += when {
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> 40
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> 30
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> 20
+            else -> 10
+        }
+        return score
+    }
+
+    private fun emitNetworkState(
+        network: Network,
+        capabilities: NetworkCapabilities,
+        reason: String,
+    ) {
+        val transport = when {
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+            else -> "other"
+        }
+        val validated = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        val metered = !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+
+        emitNetworkPayload(
+            mapOf<String, Any>(
+                "reason" to reason,
+                "transport" to transport,
+                "connected" to true,
+                "validated" to validated,
+                "metered" to metered,
+                "timestamp" to System.currentTimeMillis(),
+            ),
+        )
+    }
+
+    private fun emitNetworkPayload(payload: Map<String, Any>) {
+        runOnUiThread { networkEvents?.success(payload) }
+    }
+
     private fun installerPackage(): String? = try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             packageManager.getInstallSourceInfo(packageName).installingPackageName
@@ -147,12 +307,95 @@ class MainActivity : FlutterActivity() {
             @Suppress("DEPRECATION")
             packageManager.getInstallerPackageName(packageName)
         }
-    } catch (e: Exception) {
+    } catch (_: Exception) {
         null
     }
 
+    private fun launchableApps(): List<Map<String, Any>> {
+        val intent = Intent(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_LAUNCHER)
+        }
+
+        val resolved = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.queryIntentActivities(
+                intent,
+                PackageManager.ResolveInfoFlags.of(0L),
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            packageManager.queryIntentActivities(intent, 0)
+        }
+
+        return resolved
+            .mapNotNull { info ->
+                val appPackage = info.activityInfo?.packageName ?: return@mapNotNull null
+                if (appPackage == packageName) return@mapNotNull null
+
+                val item = mutableMapOf<String, Any>(
+                    "packageName" to appPackage,
+                    "label" to info.loadLabel(packageManager).toString(),
+                )
+                appIconPng(info)?.let { item["icon"] = it }
+                item
+            }
+            .distinctBy { it["packageName"] as String }
+            .sortedBy { (it["label"] as String).lowercase() }
+    }
+
+    private fun appIconPng(info: ResolveInfo): ByteArray? = try {
+        val drawable = info.loadIcon(packageManager)
+        val density = resources.displayMetrics.density
+        val size = (48f * density).roundToInt().coerceIn(48, 144)
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        drawable.setBounds(0, 0, size, size)
+        drawable.draw(canvas)
+
+        ByteArrayOutputStream().use { output ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+            output.toByteArray()
+        }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun performHaptic(kind: String): Boolean {
+        return try {
+            val vibrator: Vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val manager =
+                    getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                manager.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            }
+
+            if (!vibrator.hasVibrator()) {
+                false
+            } else {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val effect = when (kind) {
+                        "selection" -> VibrationEffect.EFFECT_TICK
+                        "success" -> VibrationEffect.EFFECT_HEAVY_CLICK
+                        else -> VibrationEffect.EFFECT_CLICK
+                    }
+                    vibrator.vibrate(VibrationEffect.createPredefined(effect))
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    val durationMs = if (kind == "success") 24L else 14L
+                    val amplitude = if (kind == "success") 110 else 70
+                    vibrator.vibrate(VibrationEffect.createOneShot(durationMs, amplitude))
+                } else {
+                    @Suppress("DEPRECATION")
+                    vibrator.vibrate(if (kind == "success") 24L else 14L)
+                }
+                true
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     companion object {
-        // Must match flutter_vless's XrayCoreManager.
         private const val NOTIFICATION_ID = 1
         private const val NOTIFICATION_CHANNEL_ID = "XRAY_SERVICE_CHANNEL"
     }

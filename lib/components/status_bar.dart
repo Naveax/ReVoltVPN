@@ -7,16 +7,6 @@ import 'package:revoltvpn/logic/server_list.dart';
 import 'package:revoltvpn/components/online_dot.dart';
 import 'package:revoltvpn/screens/server_selector/selection_screen.dart';
 
-// ── lib/components/status_bar.dart ──────────────────────────────────────────
-// Two-card layout at the bottom of the main screen.
-//
-// Top card:   server location from ServerList provider (flag + city).
-//             Tappable → opens server selector. Always visible.
-// Bottom card: connection status (health dot + label + lock icon).
-//
-// Separated into two rows — no more RenderFlex overflow and ready for
-// multi-server picker.
-
 class StatusBar extends StatelessWidget {
   const StatusBar({super.key});
 
@@ -28,15 +18,14 @@ class StatusBar extends StatelessWidget {
         final isConnecting = vpn.status == VpnStatus.connecting;
         final serverHealthy =
             vpn.serverReachable || (isConnected && timer.hasSyncedOnce);
+        final sessionOrTunnelHealthy = timer.hasSyncedOnce || vpn.serverReachable;
 
         final statusLabel = isConnected
-            ? (timer.hasSyncedOnce ? 'Online' : 'Syncing…')
+            ? (sessionOrTunnelHealthy ? 'Online' : 'Syncing…')
             : (isConnecting
                 ? 'Connecting…'
                 : (vpn.serverReachable ? 'Ready' : 'Offline'));
 
-        // Read from the ServerList provider — the source of truth for
-        // which server is selected and what it looks like.
         final server = context.watch<ServerList>().selected;
 
         return Padding(
@@ -44,7 +33,6 @@ class StatusBar extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // ── Server location ──────────────────────────────────────────
               GestureDetector(
                 onTap: () {
                   Navigator.of(context).push(
@@ -56,10 +44,12 @@ class StatusBar extends StatelessWidget {
                           position: Tween<Offset>(
                             begin: const Offset(1.0, 0.0),
                             end: Offset.zero,
-                          ).animate(CurvedAnimation(
-                            parent: animation,
-                            curve: Curves.easeOut,
-                          )),
+                          ).animate(
+                            CurvedAnimation(
+                              parent: animation,
+                              curve: Curves.easeOut,
+                            ),
+                          ),
                           child: child,
                         );
                       },
@@ -79,24 +69,26 @@ class StatusBar extends StatelessWidget {
                       Image.asset(server.flagAsset, width: 20, height: 20),
                       const SizedBox(width: 8),
                       Expanded(
-                        child: Text(server.name,
-                            style: const TextStyle(
-                              color: AppColors.accent,
-                              fontWeight: FontWeight.w600,
-                              fontSize: 13,
-                              letterSpacing: 0.5,
-                            )),
+                        child: Text(
+                          server.name,
+                          style: const TextStyle(
+                            color: AppColors.accent,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
                       ),
-                      const Icon(Icons.chevron_right,
-                          color: AppColors.textDim, size: 20),
+                      const Icon(
+                        Icons.chevron_right,
+                        color: AppColors.textDim,
+                        size: 20,
+                      ),
                     ],
                   ),
                 ),
               ),
-
               const SizedBox(height: 8),
-
-              // ── Connection status ────────────────────────────────────────
               Container(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
@@ -113,8 +105,11 @@ class StatusBar extends StatelessWidget {
                     ),
                     const Spacer(),
                     if (isConnected)
-                      const Icon(Icons.lock,
-                          color: AppColors.green50, size: 14),
+                      const Icon(
+                        Icons.lock,
+                        color: AppColors.green50,
+                        size: 14,
+                      ),
                   ],
                 ),
               ),

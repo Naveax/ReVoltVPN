@@ -141,7 +141,10 @@ class _SidebarDrawerState extends State<SidebarDrawer> {
                 final messenger = ScaffoldMessenger.of(context);
                 Navigator.of(context).pop();
                 unawaited(
-                  Updater.check(navigator: navigator, messenger: messenger),
+                  Updater.checkWithHandles(
+                    navigator: navigator,
+                    messenger: messenger,
+                  ),
                 );
               },
             ),

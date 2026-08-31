@@ -1,43 +1,6 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
-
-// A plain bool, not a ValueNotifier: this is only read at the moment of a tap,
-// so nothing has to react to it changing. Default: false.
-bool hapticEnabled = false;
-
-/// Hydrates [hapticEnabled] from disk. Called at boot — the toggle tile below
-/// only mounts once Settings is opened.
-Future<void> loadHapticPref() async {
-  final prefs = await SharedPreferences.getInstance();
-  hapticEnabled = prefs.getBool('haptic_feedback_enabled') ?? false;
-}
-
-/// Haptic calls are deliberately best-effort: a vibration failure must never
-/// block or fail a VPN connect/disconnect. `mediumImpact` is used instead of
-/// `lightImpact` — the latter is imperceptible on many Android devices.
-class Haptics {
-  Haptics._();
-
-  static Future<void> connectionChanged() async {
-    if (!hapticEnabled) return;
-    try {
-      await HapticFeedback.mediumImpact();
-    } catch (e) {
-      debugPrint('[Haptics] Feedback unavailable: $e');
-    }
-  }
-
-  static Future<void> previewEnabled() async {
-    try {
-      await HapticFeedback.selectionClick();
-    } catch (e) {
-      debugPrint('[Haptics] Preview unavailable: $e');
-    }
-  }
-}
+import 'package:revoltvpn/logic/haptic_settings.dart';
 
 class HapticFeedbackTile extends StatefulWidget {
   const HapticFeedbackTile({super.key});
@@ -47,7 +10,8 @@ class HapticFeedbackTile extends StatefulWidget {
 }
 
 class _HapticFeedbackTileState extends State<HapticFeedbackTile> {
-  bool _on = false;
+  bool _on = HapticSettings.enabled;
+  bool _saving = false;
 
   @override
   void initState() {
@@ -56,18 +20,24 @@ class _HapticFeedbackTileState extends State<HapticFeedbackTile> {
   }
 
   Future<void> _load() async {
-    await loadHapticPref();
-    if (mounted) setState(() => _on = hapticEnabled);
+    await HapticSettings.initialize();
+    if (mounted) setState(() => _on = HapticSettings.enabled);
   }
 
-  // Writes to SharedPreferences AND updates the live bool so the connect
-  // button sees the change immediately — no restart needed.
   Future<void> _toggle(bool value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('haptic_feedback_enabled', value);
-    hapticEnabled = value;
-    if (value) unawaited(Haptics.previewEnabled());
-    setState(() => _on = value);
+    if (_saving) return;
+    setState(() {
+      _saving = true;
+      _on = value;
+    });
+
+    try {
+      await HapticSettings.setEnabled(value);
+    } catch (_) {
+      if (mounted) setState(() => _on = HapticSettings.enabled);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
   @override
@@ -78,7 +48,7 @@ class _HapticFeedbackTileState extends State<HapticFeedbackTile> {
         style: TextStyle(color: AppColors.textWhite, fontSize: 15),
       ),
       value: _on,
-      onChanged: _toggle,
+      onChanged: _saving ? null : _toggle,
       activeTrackColor: AppColors.accent.withAlpha(80),
       activeThumbColor: AppColors.accent,
       contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
