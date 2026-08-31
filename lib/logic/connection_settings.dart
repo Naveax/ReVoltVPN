@@ -1,6 +1,6 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
-enum ConnectionMode { auto, tun, proxy }
+enum ConnectionMode { tun, proxy }
 enum AppRoutingMode { all, exclude, selected }
 enum ResilienceMode { standard, extreme }
 
@@ -13,7 +13,7 @@ abstract final class ConnectionSettings {
   static const String _legacyBlockedAppsKey = 'blocked_apps';
   static const String _resilienceModeKey = 'resilience_mode';
 
-  static ConnectionMode _mode = ConnectionMode.auto;
+  static ConnectionMode _mode = ConnectionMode.tun;
   static AppRoutingMode _routingMode = AppRoutingMode.all;
   static ResilienceMode _resilienceMode = ResilienceMode.standard;
   static List<String> _appPackages = const <String>[];
@@ -30,13 +30,12 @@ abstract final class ConnectionSettings {
     final prefs = await SharedPreferences.getInstance();
     final storedMode = prefs.getString(_modeKey);
     final migrateLegacyAss = storedMode == 'ass';
+    final migrateLegacyAuto = storedMode == 'auto' || storedMode == null;
 
-    if (storedMode == ConnectionMode.tun.name) {
-      _mode = ConnectionMode.tun;
-    } else if (storedMode == ConnectionMode.proxy.name || migrateLegacyAss) {
+    if (storedMode == ConnectionMode.proxy.name || migrateLegacyAss) {
       _mode = ConnectionMode.proxy;
     } else {
-      _mode = ConnectionMode.auto;
+      _mode = ConnectionMode.tun;
     }
 
     final legacyBlocked =
@@ -46,9 +45,6 @@ abstract final class ConnectionSettings {
 
     final storedRoutingMode = prefs.getString(_routingModeKey);
     if (migrateLegacyAss) {
-      // ASS used to mean selected apps through the local SOCKS path. SOCKS5
-      // now supports Selected only directly, so preserve that behavior when
-      // upgrading instead of leaving an obsolete connection mode behind.
       _routingMode = _appPackages.isEmpty
           ? AppRoutingMode.all
           : AppRoutingMode.selected;
@@ -70,6 +66,8 @@ abstract final class ConnectionSettings {
     if (migrateLegacyAss) {
       await prefs.setString(_modeKey, ConnectionMode.proxy.name);
       await prefs.setString(_routingModeKey, _routingMode.name);
+    } else if (migrateLegacyAuto) {
+      await prefs.setString(_modeKey, ConnectionMode.tun.name);
     }
 
     _initialized = true;
