@@ -20,13 +20,21 @@ class _SupportButtonState extends State<SupportButton> {
     final ad = context.read<AdManager>();
     final timer = context.read<SessionTimer>();
 
-    // Only available when there's an active session.
-    if (!timer.isRunning && !timer.hasSyncedOnce) return;
+    // Only available when there's an active session, once the persisted
+    // support state is known, and only once per client-side VPN session.
+    if ((!timer.isRunning && !timer.hasSyncedOnce) ||
+        !timer.supportRewardStateLoaded ||
+        timer.supportRewardClaimed) {
+      return;
+    }
 
     setState(() => _busy = true);
 
     try {
-      await ad.showAd('support');
+      final rewarded = await ad.showAd('support');
+      if (rewarded) {
+        await timer.markSupportRewardClaimed();
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -34,48 +42,62 @@ class _SupportButtonState extends State<SupportButton> {
 
   @override
   Widget build(BuildContext context) {
-    return Selector<SessionTimer, bool>(
-      selector: (_, timer) => timer.isRunning || timer.hasSyncedOnce,
-      builder: (context, visible, _) {
-        if (!visible) {
+    return Consumer<SessionTimer>(
+      builder: (context, timer, _) {
+        if (!timer.isRunning && !timer.hasSyncedOnce) {
           return const SizedBox.shrink();
         }
 
+        final stateLoaded = timer.supportRewardStateLoaded;
+        final claimed = timer.supportRewardClaimed;
+        final disabled = !stateLoaded || claimed;
+
         return GestureDetector(
-          onTap: _handleTap,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-            decoration: BoxDecoration(
-              color: AppColors.glassBg,
-              borderRadius: BorderRadius.circular(24),
-              border: Border.all(
-                color: AppColors.accent.withAlpha(100),
-                width: 1,
+          onTap: disabled ? null : _handleTap,
+          child: Opacity(
+            opacity: disabled ? 0.55 : 1.0,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+              decoration: BoxDecoration(
+                color: AppColors.glassBg,
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(
+                  color: AppColors.accent.withAlpha(100),
+                  width: 1,
+                ),
               ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.favorite_border, color: AppColors.accent, size: 20),
-                const SizedBox(width: 8),
-                _busy
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: AppColors.accent,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    claimed ? Icons.check_circle_outline : Icons.favorite_border,
+                    color: AppColors.accent,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 8),
+                  _busy
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: AppColors.accent,
+                          ),
+                        )
+                      : Text(
+                          !stateLoaded
+                              ? 'Checking support bonus…'
+                              : claimed
+                                  ? 'Support bonus used'
+                                  : 'Support us — 30 min!',
+                          style: const TextStyle(
+                            color: AppColors.textWhite,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
-                      )
-                    : const Text(
-                        'Support us \u2014 30 min!',
-                        style: TextStyle(
-                          color: AppColors.textWhite,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-              ],
+                ],
+              ),
             ),
           ),
         );
