@@ -1,4 +1,4 @@
-name: Build VPN self-stop fix
+name: Build VPN stability final
 
 on:
   push:
@@ -74,20 +74,20 @@ jobs:
         shell: bash
         run: |
           keytool -genkeypair \
-            -keystore android/revolt-self-stop-fix.jks \
-            -storepass revoltselfstop \
-            -keypass revoltselfstop \
-            -alias revolt-self-stop \
+            -keystore android/revolt-stability-final.jks \
+            -storepass revoltstability \
+            -keypass revoltstability \
+            -alias revolt-stability \
             -keyalg RSA \
             -keysize 2048 \
             -validity 3650 \
-            -dname "CN=ReVoltVPN Self Stop Fix,O=ReVoltVPN,C=US"
+            -dname "CN=ReVoltVPN Stability Final,O=ReVoltVPN,C=US"
 
           cat > android/key.properties <<'PROPS'
-          storePassword=revoltselfstop
-          keyPassword=revoltselfstop
-          keyAlias=revolt-self-stop
-          storeFile=revolt-self-stop-fix.jks
+          storePassword=revoltstability
+          keyPassword=revoltstability
+          keyAlias=revolt-stability
+          storeFile=revolt-stability-final.jks
           PROPS
 
       - name: Generate Gradle wrapper
@@ -100,18 +100,17 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      - name: Apply 3.3.10 FD handoff baseline
-        run: python3 tool/patch_fd_handoff_compat.py
+      - name: Apply SessionTimer stability hardening
+        run: python3 tool/apply_session_timer_stability_fix.py
 
-      - name: Apply VPN self-stop fix
-        run: |
-          python3 tool/apply_vpn_self_stop_fix.py
-          python3 tool/finalize_vpn_self_stop_fix.py
+      - name: Format SessionTimer
+        run: dart format lib/logic/session_timer.dart
 
-      - name: Verify lifecycle invariants
+      - name: Verify lifecycle and session invariants
         shell: bash
         run: |
           SERVICE='third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt'
+          TIMER='lib/logic/session_timer.dart'
           grep -q 'START_REDELIVER_INTENT' "$SERVICE"
           grep -q 'requestRuntimeRecovery' "$SERVICE"
           grep -q 'MAX_RUNTIME_RECOVERY_ATTEMPTS = 3' "$SERVICE"
@@ -120,6 +119,11 @@ jobs:
           ! grep -q 'terminateService("tun2socks exited unexpectedly"' "$SERVICE"
           ! grep -q 'terminateService("Xray core exited unexpectedly"' "$SERVICE"
           ! grep -q 'return START_STICKY' "$SERVICE"
+          grep -q "activeValue is! bool" "$TIMER"
+          grep -q "expiresValue is! num" "$TIMER"
+          grep -q "await _doDisconnect('Server ended session')" "$TIMER"
+          grep -q "await _doDisconnect('Data cap reached')" "$TIMER"
+          ! grep -q "final active = data\['active'\] == true" "$TIMER"
           python3 - <<'PY'
           from pathlib import Path
           dart = Path('lib/logic/vpn_connection.dart').read_text()
@@ -130,6 +134,12 @@ jobs:
           assert 'STOP_SERVICE' in service
           assert 'onRevoke()' in service
           assert 'terminateService("VPN permission revoked"' in service
+          timer = Path('lib/logic/session_timer.dart').read_text()
+          assert "activeValue is! bool" in timer
+          assert "expiresValue is! num" in timer
+          assert "!expiresValue.isFinite" in timer
+          assert "expiresValue < 0" in timer
+          assert "_remainingSeconds = expiresValue.toInt();" in timer
           PY
           git diff --check
 
@@ -145,8 +155,8 @@ jobs:
           cd android
           ./gradlew :app:compileReleaseKotlin --stacktrace
 
-      - name: Build 3.3.11 validation APK
-        run: flutter build apk --release --build-name 3.3.11 --build-number 39
+      - name: Build 3.3.11 final validation APK
+        run: flutter build apk --release --build-name 3.3.11 --build-number 40
 
       - name: Verify packaged VPN runtime
         shell: bash
@@ -155,33 +165,31 @@ jobs:
           unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libtun2socks.so'
           unzip -l build/app/outputs/flutter-apk/app-release.apk | grep 'libxray.so'
 
-      - name: Materialize validated source fix on branch
+      - name: Materialize validated SessionTimer fix on branch
         shell: bash
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add \
-            lib/logic/vpn_connection.dart \
-            third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt
+          git add lib/logic/session_timer.dart
           if git diff --cached --quiet; then
-            echo 'Validated source fix is already materialized.'
+            echo 'SessionTimer fix is already materialized.'
           else
-            git commit -m 'fix: prevent VPN self-stop after connect [skip ci]'
+            git commit -m 'fix: harden session auto-disconnect parsing [skip ci]'
             git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
 
       - name: Package APK
         shell: bash
         run: |
-          cp build/app/outputs/flutter-apk/app-release.apk ReVoltVPN-3.3.11-vpn-self-stop-fix.apk
-          sha256sum ReVoltVPN-3.3.11-vpn-self-stop-fix.apk > ReVoltVPN-3.3.11-vpn-self-stop-fix.apk.sha256
+          cp build/app/outputs/flutter-apk/app-release.apk ReVoltVPN-3.3.11-vpn-stability-final.apk
+          sha256sum ReVoltVPN-3.3.11-vpn-stability-final.apk > ReVoltVPN-3.3.11-vpn-stability-final.apk.sha256
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ReVoltVPN-3.3.11-vpn-self-stop-fix
+          name: ReVoltVPN-3.3.11-vpn-stability-final
           path: |
-            ReVoltVPN-3.3.11-vpn-self-stop-fix.apk
-            ReVoltVPN-3.3.11-vpn-self-stop-fix.apk.sha256
+            ReVoltVPN-3.3.11-vpn-stability-final.apk
+            ReVoltVPN-3.3.11-vpn-stability-final.apk.sha256
           retention-days: 7
           if-no-files-found: error
