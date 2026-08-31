@@ -82,7 +82,6 @@ jobs:
             -keysize 2048 \
             -validity 3650 \
             -dname "CN=ReVoltVPN AB Test,O=ReVoltVPN,C=US"
-
           cat > android/key.properties <<'PROPS'
           storePassword=revoltabtest
           keyPassword=revoltabtest
@@ -111,37 +110,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ab-apks
-
           SERVICE='third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt'
           CORE='third_party/flutter_vless_android/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/core/XrayCoreManager.kt'
           DART='lib/logic/vpn_connection.dart'
-
-          variants=(
-            FD_GATE_OFF
-            SOCKS_AUTH_OFF
-            SOCKS_WATCHDOG_OFF
-            TUN2SOCKS_MONITOR_OFF
-            DART_READINESS_STOP_OFF
-            GENERATION_GUARD_OFF
-          )
-
+          variants=(FD_GATE_OFF SOCKS_AUTH_OFF SOCKS_WATCHDOG_OFF TUN2SOCKS_MONITOR_OFF DART_READINESS_STOP_OFF GENERATION_GUARD_OFF)
           index=0
           for variant in "${variants[@]}"; do
             index=$((index + 1))
-            echo "============================================================"
             echo "Building AB variant $index/6: $variant"
-            echo "============================================================"
-
-            # Every APK starts from the exact same source baseline.
             git checkout HEAD -- "$SERVICE" "$CORE" "$DART"
-
-            # Reproduce the exact FD timing used by the tested 3.3.10 build.
             python3 tool/patch_fd_handoff_compat.py
-
-            # Disable exactly one shutdown mechanism.
             python3 tool/apply_shutdown_ab_variant.py "$variant"
-
-            # Kotlin's conditional integer expression needs an explicit Byte cast.
             if [ "$variant" = 'SOCKS_AUTH_OFF' ]; then
               python3 - <<'PY'
           from pathlib import Path
@@ -154,8 +133,6 @@ jobs:
           p.write_text(s.replace(old, new, 1))
           PY
             fi
-
-            # Static marker proves the intended single variable was applied.
             case "$variant" in
               FD_GATE_OFF) grep -q 'AB FD_GATE_OFF' "$SERVICE" ;;
               SOCKS_AUTH_OFF) grep -q 'LOCAL_SOCKS5_PORT = 10807' "$SERVICE" ;;
@@ -164,12 +141,7 @@ jobs:
               DART_READINESS_STOP_OFF) grep -q 'DART_READINESS_STOP_OFF' "$DART" ;;
               GENERATION_GUARD_OFF) grep -q 'AB GENERATION_GUARD_OFF' "$SERVICE" ;;
             esac
-
-            flutter build apk \
-              --release \
-              --build-name 3.3.10 \
-              --build-number 40
-
+            flutter build apk --release --build-name 3.3.10 --build-number 40
             out=$(printf 'ab-apks/%02d-%s.apk' "$index" "$variant")
             cp build/app/outputs/flutter-apk/app-release.apk "$out"
             sha256sum "$out" > "$out.sha256"
@@ -177,31 +149,69 @@ jobs:
             unzip -l "$out" | grep -q 'libtun2socks.so'
             unzip -l "$out" | grep -q 'libxray.so'
           done
-
           cat > ab-apks/README.txt <<'TXT'
           ReVoltVPN 3.3.10 six-way shutdown isolation test
-
-          All APKs use the same source baseline, same versionCode and same temporary signing key.
-          Exactly one suspected shutdown mechanism is disabled per APK:
-
+          All APKs use the same baseline, versionCode, and temporary signing key.
           01 FD_GATE_OFF
           02 SOCKS_AUTH_OFF
           03 SOCKS_WATCHDOG_OFF
           04 TUN2SOCKS_MONITOR_OFF
           05 DART_READINESS_STOP_OFF
           06 GENERATION_GUARD_OFF
-
-          Test each with TUN + Standard + All Apps first.
-          Report which APK remains connected and whether internet traffic works.
+          Test TUN + Standard + All Apps first.
           TXT
-
           cat ab-apks/*.sha256 > ab-apks/SHA256SUMS.txt
-          ls -lh ab-apks
 
-      - name: Upload all six APKs
+      - name: Upload 01 FD gate off
         uses: actions/upload-artifact@v4
         with:
-          name: ReVoltVPN-3.3.10-six-shutdown-isolation
-          path: ab-apks/
+          name: 01-FD_GATE_OFF
+          path: |
+            ab-apks/01-FD_GATE_OFF.apk
+            ab-apks/01-FD_GATE_OFF.apk.sha256
           retention-days: 5
-          if-no-files-found: error
+
+      - name: Upload 02 SOCKS auth off
+        uses: actions/upload-artifact@v4
+        with:
+          name: 02-SOCKS_AUTH_OFF
+          path: |
+            ab-apks/02-SOCKS_AUTH_OFF.apk
+            ab-apks/02-SOCKS_AUTH_OFF.apk.sha256
+          retention-days: 5
+
+      - name: Upload 03 SOCKS watchdog off
+        uses: actions/upload-artifact@v4
+        with:
+          name: 03-SOCKS_WATCHDOG_OFF
+          path: |
+            ab-apks/03-SOCKS_WATCHDOG_OFF.apk
+            ab-apks/03-SOCKS_WATCHDOG_OFF.apk.sha256
+          retention-days: 5
+
+      - name: Upload 04 tun2socks monitor off
+        uses: actions/upload-artifact@v4
+        with:
+          name: 04-TUN2SOCKS_MONITOR_OFF
+          path: |
+            ab-apks/04-TUN2SOCKS_MONITOR_OFF.apk
+            ab-apks/04-TUN2SOCKS_MONITOR_OFF.apk.sha256
+          retention-days: 5
+
+      - name: Upload 05 Dart readiness stop off
+        uses: actions/upload-artifact@v4
+        with:
+          name: 05-DART_READINESS_STOP_OFF
+          path: |
+            ab-apks/05-DART_READINESS_STOP_OFF.apk
+            ab-apks/05-DART_READINESS_STOP_OFF.apk.sha256
+          retention-days: 5
+
+      - name: Upload 06 generation guard off
+        uses: actions/upload-artifact@v4
+        with:
+          name: 06-GENERATION_GUARD_OFF
+          path: |
+            ab-apks/06-GENERATION_GUARD_OFF.apk
+            ab-apks/06-GENERATION_GUARD_OFF.apk.sha256
+          retention-days: 5
