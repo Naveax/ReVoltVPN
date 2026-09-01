@@ -32,44 +32,4 @@ abstract final class PowerSettings {
       return false;
     }
   }
-
-  /// Whether the native runtime is alive according to the OS-facing bridge.
-  /// This remains a coarse liveness signal until the native runtime exposes a
-  /// ReVolt-specific health record.
-  static Future<VpnRuntimeState> runtimeState() async {
-    if (kIsWeb) {
-      return const VpnRuntimeState(
-        processAlive: false,
-        vpnTransport: false,
-      );
-    }
-    try {
-      final result = await _channel.invokeMapMethod<String, dynamic>(
-        'isVpnRuntimeAlive',
-      );
-      return VpnRuntimeState(
-        processAlive: result?['processAlive'] == true,
-        vpnTransport: result?['vpnTransport'] == true,
-      );
-    } catch (_) {
-      return const VpnRuntimeState(
-        processAlive: false,
-        vpnTransport: false,
-      );
-    }
-  }
-}
-
-@immutable
-class VpnRuntimeState {
-  final bool processAlive;
-  final bool vpnTransport;
-
-  const VpnRuntimeState({
-    required this.processAlive,
-    required this.vpnTransport,
-  });
-
-  bool aliveFor({required bool tunMode}) =>
-      processAlive && (!tunMode || vpnTransport);
 }

@@ -6,7 +6,6 @@ import 'package:revoltvpn/logic/connection_settings.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/local_socks_tester.dart';
 import 'package:revoltvpn/logic/network_monitor.dart';
-import 'package:revoltvpn/logic/power_settings.dart';
 import 'package:revoltvpn/logic/secure_socks_session.dart';
 
 enum VpnStatus {
@@ -143,29 +142,6 @@ class VpnConnection extends ChangeNotifier {
       final coreVersion = await _vless.getCoreVersion();
       debugPrint('[VPN] Xray core version: $coreVersion');
     } catch (_) {}
-
-    await _adoptRunningRuntime();
-  }
-
-  /// Reflect a tunnel that is already up when the UI starts.
-  Future<void> _adoptRunningRuntime() async {
-    if (kIsWeb) return;
-    final epoch = _connectEpoch;
-    try {
-      final state = await PowerSettings.runtimeState();
-      if (epoch != _connectEpoch ||
-          _userDisconnecting ||
-          _suppressNativeConnect ||
-          _status != VpnStatus.disconnected) {
-        return;
-      }
-      if (state.aliveFor(tunMode: _activeMode == ConnectionMode.tun)) {
-        _adoptedRunningRuntime = true;
-        _setStatus(VpnStatus.connected, _connectedLabel);
-      }
-    } catch (e) {
-      debugPrint('[VPN] Runtime liveness check failed: $e');
-    }
   }
 
   String get _connectedLabel {
@@ -184,6 +160,11 @@ class VpnConnection extends ChangeNotifier {
     switch (status.connectionState) {
       case VlessConnectionState.connected:
         if (_suppressNativeConnect || _userDisconnecting) return;
+        // Before the app starts its own connect flow the epoch is zero. A
+        // native CONNECTED heartbeat at that point is proof that this UI has
+        // attached to an already-running ReVolt runtime, without relying on
+        // ActivityManager or an unrelated system VPN transport.
+        if (_connectEpoch == 0) _adoptedRunningRuntime = true;
         _setStatus(VpnStatus.connected, _connectedLabel);
         break;
 

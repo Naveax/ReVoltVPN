@@ -48,6 +48,8 @@ void main() {
   test('security patch keeps full-tunnel and private IPC invariants', () {
     final patch = File('tool/patch_flutter_vless_security_invariants.dart')
         .readAsStringSync();
+    final hygiene = File('tool/patch_flutter_vless_runtime_hygiene.dart')
+        .readAsStringSync();
 
     expect(patch, contains('builder.addRoute("0.0.0.0", 0)'));
     expect(patch, contains('builder.addRoute("::", 0)'));
@@ -57,20 +59,34 @@ void main() {
     expect(patch, contains('Android refused to establish VPN interface'));
     expect(patch, contains('Per-app VPN bypass is disabled in ReVolt'));
     expect(patch, contains('NotificationManager.IMPORTANCE_LOW'));
-    expect(patch, contains('XRAY_SERVICE_CHANNEL'));
     expect(patch, contains("Queries Xray's stats API"));
     expect(patch, contains('stats helper end anchor missing'));
+
+    expect(hygiene, contains('REVOLT_VPN_SERVICE'));
+    expect(hygiene, contains('android.permission.CHANGE_NETWORK_STATE'));
+    expect(hygiene, contains('android.permission.READ_EXTERNAL_STORAGE'));
+    expect(hygiene, contains('reader.forEachLine { _ -> }'));
   });
 
-  test('native app bridge does not advertise unsupported Always-on behavior', () {
+  test('native app bridge keeps runtime adoption on private heartbeat only', () {
     final source = File(
       'android/app/src/main/kotlin/com/paladinvpn/app/MainActivity.kt',
     ).readAsStringSync();
+    final vpnSource = File('lib/logic/vpn_connection.dart').readAsStringSync();
+    final powerSource = File('lib/logic/power_settings.dart').readAsStringSync();
 
     expect(source, isNot(contains('openVpnSettings')));
     expect(source, isNot(contains('ACTION_VPN_SETTINGS')));
     expect(source, isNot(contains('FROM_DISCONNECT_BTN')));
-    expect(source, contains('not proof of packet flow'));
+    expect(source, isNot(contains('isVpnRuntimeAlive')));
+    expect(source, contains('isVpnServiceProcessAlive'));
+    expect(source, contains('REVOLT_VPN_SERVICE'));
+
+    expect(vpnSource, contains('if (_connectEpoch == 0) _adoptedRunningRuntime = true;'));
+    expect(vpnSource, isNot(contains('PowerSettings.runtimeState')));
+    expect(vpnSource, isNot(contains('_adoptRunningRuntime')));
+    expect(powerSource, isNot(contains('runtimeState')));
+    expect(powerSource, isNot(contains('VpnRuntimeState')));
   });
 
   test('configured AdMob bypass contract remains intact', () {

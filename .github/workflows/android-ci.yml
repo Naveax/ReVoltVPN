@@ -18,16 +18,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Java 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Set up Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           flutter-version: '3.47.2'
           channel: stable
@@ -59,10 +59,15 @@ jobs:
 
           test -f "$MANIFEST"
           grep -q 'android:value="true"' "$MANIFEST"
+          grep -q 'android.permission.CHANGE_NETWORK_STATE' "$MANIFEST"
+          grep -q 'android.permission.READ_EXTERNAL_STORAGE' "$MANIFEST"
           grep -q 'Context.RECEIVER_EXPORTED' "$PLUGIN"
           ! grep -q 'fd00:26:26::1' "$SERVICE"
           grep -q 'NotificationManager.IMPORTANCE_DEFAULT' "$CORE"
+          grep -q '"XRAY_SERVICE_CHANNEL"' "$CORE"
           grep -q '"vpn_service_channel"' "$SERVICE"
+          grep -q 'Log.d(TAG, "xray: $line")' "$CORE"
+          grep -q 'Log.d(TAG, "tun2socks: $line")' "$SERVICE"
           grep -q 'fun getV2rayTraffic' "$CORE"
           grep -q 'for (pkg in config.BLOCKED_APPS)' "$SERVICE"
 
@@ -79,6 +84,8 @@ jobs:
           SERVICE="$PKG/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt"
 
           grep -q 'android:value="false"' "$MANIFEST"
+          ! grep -q 'android.permission.CHANGE_NETWORK_STATE' "$MANIFEST"
+          ! grep -q 'android.permission.READ_EXTERNAL_STORAGE' "$MANIFEST"
           grep -q 'ContextCompat.RECEIVER_NOT_EXPORTED' "$PLUGIN"
           ! grep -q 'Context.RECEIVER_EXPORTED' "$PLUGIN"
           grep -q 'setPackage(context.packageName)' "$CORE"
@@ -94,22 +101,27 @@ jobs:
           ! grep -q 'lastProxyDownlink' "$CORE"
           grep -q 'NotificationManager.IMPORTANCE_LOW' "$CORE"
           ! grep -q 'NotificationManager.IMPORTANCE_DEFAULT' "$CORE"
-          grep -q '"XRAY_SERVICE_CHANNEL"' "$SERVICE"
+          grep -q '"REVOLT_VPN_SERVICE"' "$CORE"
+          grep -q '"REVOLT_VPN_SERVICE"' "$SERVICE"
+          ! grep -q '"XRAY_SERVICE_CHANNEL"' "$CORE"
+          ! grep -q '"XRAY_SERVICE_CHANNEL"' "$SERVICE"
           ! grep -q '"vpn_service_channel"' "$SERVICE"
+          ! grep -q 'Log.d(TAG, "xray: $line")' "$CORE"
+          ! grep -q 'Log.d(TAG, "tun2socks: $line")' "$SERVICE"
           ! grep -q 'FROM_DISCONNECT_BTN' "$CORE"
 
       - name: Warm APK build
         run: flutter build apk --debug
 
       - name: Upload APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: revoltvpn-debug-apk
           if-no-files-found: error
           path: build/app/outputs/flutter-apk/app-debug.apk
 
       - name: Upload resolved lockfile
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: revoltvpn-resolved-lockfile
           if-no-files-found: error

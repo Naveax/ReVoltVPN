@@ -68,11 +68,90 @@ void replaceOnce(
   stdout.writeln('[runtime hygiene] patched: ${file.path}');
 }
 
+void writeIfChanged(File file, String before, String after) {
+  if (before == after) {
+    stdout.writeln('[runtime hygiene] already current: ${file.path}');
+    return;
+  }
+  file.writeAsStringSync(after);
+  stdout.writeln('[runtime hygiene] patched: ${file.path}');
+}
+
+void patchManifest(File file) {
+  if (!file.existsSync()) fail('missing upstream source: ${file.path}');
+  final before = file.readAsStringSync();
+  var text = before;
+
+  // VpnService does not need to mutate global network state, and ReVolt never
+  // reads shared/external storage. Do not inherit legacy permissions from the
+  // pinned plugin when its runtime does not use them.
+  text = text.replaceAll(
+    '    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />\n',
+    '',
+  );
+  text = text.replaceAll(
+    '    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />\n',
+    '',
+  );
+
+  writeIfChanged(file, before, text);
+}
+
+void patchCore(File file) {
+  if (!file.existsSync()) fail('missing upstream source: ${file.path}');
+  final before = file.readAsStringSync();
+  var text = before;
+
+  // A new channel ID is intentional: Android keeps a channel's original
+  // importance across app upgrades. Reusing XRAY_SERVICE_CHANNEL would leave
+  // users who once received the DEFAULT channel stuck with its old importance.
+  text = text.replaceAll('"XRAY_SERVICE_CHANNEL"', '"REVOLT_VPN_SERVICE"');
+
+  const noisyXray = r'''                        reader.forEachLine { line ->
+                            Log.d(TAG, "xray: $line")
+                        }
+''';
+  const silentXray = r'''                        reader.forEachLine { _ -> }
+''';
+  if (text.contains(noisyXray)) {
+    text = text.replaceFirst(noisyXray, silentXray);
+  } else if (!text.contains(silentXray)) {
+    fail('upstream Xray stdout monitor changed');
+  }
+
+  writeIfChanged(file, before, text);
+}
+
+void patchService(File file) {
+  if (!file.existsSync()) fail('missing upstream source: ${file.path}');
+  final before = file.readAsStringSync();
+  var text = before;
+
+  text = text.replaceAll('"vpn_service_channel"', '"REVOLT_VPN_SERVICE"');
+  text = text.replaceAll('"XRAY_SERVICE_CHANNEL"', '"REVOLT_VPN_SERVICE"');
+
+  const noisyTun = r'''                        reader.forEachLine { line ->
+                            Log.d(TAG, "tun2socks: $line")
+                        }
+''';
+  const silentTun = r'''                        reader.forEachLine { _ -> }
+''';
+  if (text.contains(noisyTun)) {
+    text = text.replaceFirst(noisyTun, silentTun);
+  } else if (!text.contains(silentTun)) {
+    fail('upstream tun2socks stdout monitor changed');
+  }
+
+  writeIfChanged(file, before, text);
+}
+
 void main() {
   final root = packageRoot();
-  final serviceFile = File(
-    '${root.path}/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt',
-  );
+  final androidRoot = '${root.path}/android/src/main';
+  final kotlin = '$androidRoot/kotlin/com/github/tfox/flutter_vless';
+  final manifestFile = File('$androidRoot/AndroidManifest.xml');
+  final coreFile = File('$kotlin/xray/core/XrayCoreManager.kt');
+  final serviceFile = File('$kotlin/xray/service/XrayVPNService.kt');
 
   replaceOnce(
     serviceFile,
@@ -107,5 +186,9 @@ void main() {
     'Could not delete stale tun2socks socket',
   );
 
-  stdout.writeln('[runtime hygiene] stale runtime cleanup is ready');
+  patchManifest(manifestFile);
+  patchCore(coreFile);
+  patchService(serviceFile);
+
+  stdout.writeln('[runtime hygiene] native runtime hygiene is ready');
 }

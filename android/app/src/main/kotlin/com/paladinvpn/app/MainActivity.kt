@@ -61,9 +61,6 @@ class MainActivity : FlutterActivity() {
                         result.success(isIgnoringBatteryOptimizations())
                     "requestIgnoreBatteryOptimizations" ->
                         result.success(requestIgnoreBatteryOptimizations())
-                    // The VPN service runs in a separate process; expose only a
-                    // coarse OS-facing liveness snapshot to Flutter.
-                    "isVpnRuntimeAlive" -> result.success(isVpnRuntimeAlive())
                     else -> result.notImplemented()
                 }
             }
@@ -149,35 +146,20 @@ class MainActivity : FlutterActivity() {
     }
 
     /**
-     * Coarse VPN runtime liveness snapshot.
+     * Notification-only process liveness guard.
      *
-     * The Xray service runs in :RunSoLibXrayDaemon, a separate process, so its
-     * statics are not shared with this activity process. Process presence and
-     * an OS VPN transport are useful restart hints, not proof of packet flow.
+     * Runtime adoption is driven by the private flutter_vless status heartbeat;
+     * this check only prevents this activity process from posting notification
+     * updates after the foreground-service process has disappeared.
      */
-    private fun isVpnRuntimeAlive(): Map<String, Any> {
-        var processAlive = false
-        try {
+    private fun isVpnServiceProcessAlive(): Boolean {
+        return try {
             val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            processAlive = am.runningAppProcesses
+            am.runningAppProcesses
                 ?.any { it.processName.endsWith(VPN_PROCESS_SUFFIX) } == true
         } catch (_: Exception) {
+            false
         }
-
-        var vpnTransport = false
-        try {
-            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            vpnTransport = cm.allNetworks.any { network ->
-                cm.getNetworkCapabilities(network)
-                    ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
-            }
-        } catch (_: Exception) {
-        }
-
-        return mapOf(
-            "processAlive" to processAlive,
-            "vpnTransport" to vpnTransport,
-        )
     }
 
     /** Removes a notification left behind by a runtime that is no longer alive. */
@@ -199,8 +181,7 @@ class MainActivity : FlutterActivity() {
         // The foreground notification (id 1) is owned by XrayVPNService via
         // startForeground. Posting to it from this process while the service is
         // gone leaves a frozen countdown nothing will ever update again.
-        val alive = isVpnRuntimeAlive()["processAlive"] == true
-        if (!alive) {
+        if (!isVpnServiceProcessAlive()) {
             cancelVpnNotification()
             return
         }
@@ -453,6 +434,6 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val NOTIFICATION_ID = 1
         private const val VPN_PROCESS_SUFFIX = ":RunSoLibXrayDaemon"
-        private const val NOTIFICATION_CHANNEL_ID = "XRAY_SERVICE_CHANNEL"
+        private const val NOTIFICATION_CHANNEL_ID = "REVOLT_VPN_SERVICE"
     }
 }
