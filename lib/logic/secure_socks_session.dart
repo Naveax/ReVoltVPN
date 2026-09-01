@@ -39,20 +39,13 @@ class SecureSocksSession {
     final username = _token(16);
     final password = _token(32);
 
-    final sourceInbounds = decoded['inbounds'];
+    // ReVolt owns every client-side Android ingress. Server-provided inbounds
+    // are intentionally discarded rather than filtered by protocol: accepting
+    // an imported dokodemo-door, transparent proxy, API listener, or future
+    // inbound type could expose an unexpected local/network listener. The only
+    // ingress allowed into the runtime is the authenticated loopback SOCKS5
+    // listener created below.
     final inbounds = <dynamic>[];
-    if (sourceInbounds is List) {
-      for (final value in sourceInbounds) {
-        if (value is Map) {
-          final protocol = value['protocol']?.toString().toLowerCase();
-          // ReVolt owns local proxy ingress on Android. Drop imported SOCKS/HTTP
-          // listeners so a stale no-auth proxy cannot remain reachable beside
-          // the authenticated session listener.
-          if (protocol == 'socks' || protocol == 'http') continue;
-        }
-        inbounds.add(value);
-      }
-    }
 
     inbounds.add(<String, dynamic>{
       'tag': inboundTag,
