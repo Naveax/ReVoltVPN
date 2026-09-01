@@ -140,6 +140,10 @@ class HivemindService {
 }
 
 class _HivemindSessionConfig {
+  static final RegExp _uuidPattern = RegExp(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+  );
+
   final String uuid;
   final String host;
   final int port;
@@ -162,32 +166,54 @@ class _HivemindSessionConfig {
 
   factory _HivemindSessionConfig.fromJson(Map<String, dynamic> json) {
     final uuid = _requiredString(json, 'vless_uuid');
-    final host = _stringOr(json['vless_ip'], AppConfig.serverIp);
+    if (!_uuidPattern.hasMatch(uuid)) {
+      throw const FormatException('Invalid VLESS UUID');
+    }
+
+    final pinnedHost = AppConfig.serverIp.trim();
+    if (pinnedHost.isEmpty) {
+      throw const FormatException('Pinned VLESS server is empty');
+    }
+    final advertisedHost = json['vless_ip'];
+    if (advertisedHost != null) {
+      if (advertisedHost is! String ||
+          advertisedHost.trim().isEmpty ||
+          advertisedHost.trim() != pinnedHost) {
+        throw const FormatException('Session attempted to change pinned VLESS server');
+      }
+    }
+
     final port = _portOr(json['vless_port'], 443);
+    final publicKey = _requiredString(json, 'reality_pbk');
     final sni = _requiredString(json, 'reality_sni');
+    final path = _stringOr(json['xhttp_path'], AppConfig.vlessPath).trim();
+    if (path.isEmpty || !path.startsWith('/') || path.length > 256) {
+      throw const FormatException('Invalid XHTTP path');
+    }
 
     return _HivemindSessionConfig(
       uuid: uuid,
-      host: host,
+      host: pinnedHost,
       port: port,
-      publicKey: _stringOr(json['reality_pbk'], ''),
-      shortId: _stringOr(json['reality_sid'], ''),
+      publicKey: publicKey,
+      shortId: _stringOr(json['reality_sid'], '').trim(),
       sni: sni,
-      fingerprint: _stringOr(json['reality_fp'], AppConfig.realityFp),
-      path: _stringOr(json['xhttp_path'], AppConfig.vlessPath),
+      fingerprint: _stringOr(json['reality_fp'], AppConfig.realityFp).trim(),
+      path: path,
     );
   }
 
   String toVlessUrl() {
-    return 'vless://$uuid@$host:$port'
-        '?security=${AppConfig.vlessSecurity}'
-        '&type=${AppConfig.vlessType}'
-        '&path=$path'
+    final authorityHost = host.contains(':') ? '[$host]' : host;
+    return 'vless://$uuid@$authorityHost:$port'
+        '?security=${Uri.encodeComponent(AppConfig.vlessSecurity)}'
+        '&type=${Uri.encodeComponent(AppConfig.vlessType)}'
+        '&path=${Uri.encodeComponent(path)}'
         '&pbk=${Uri.encodeComponent(publicKey)}'
         '&sni=${Uri.encodeComponent(sni)}'
         '&sid=${Uri.encodeComponent(shortId)}'
         '&fp=${Uri.encodeComponent(fingerprint)}'
-        '#Revolt VPN';
+        '#Revolt%20VPN';
   }
 
   static String _requiredString(Map<String, dynamic> json, String key) {
