@@ -29,7 +29,6 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   bool _supportRewardClaimed = false;
   bool _supportRewardStateLoaded = false;
   int _supportStateEpoch = 0;
-  Future<void> _supportWriteQueue = Future<void>.value();
 
   static const String _supportRewardClaimKey =
       'support_reward_claimed_active_session';
@@ -51,9 +50,6 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     vpnConnection.addListener(_onVpnConnectionChanged);
     unawaited(_loadSupportRewardState());
 
-    // Provider creation can happen after VpnConnection already adopted a
-    // surviving native runtime. Reconcile the current state once instead of
-    // relying exclusively on an event that may already have happened.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (vpnConnection.status == VpnStatus.connected &&
           vpnConnection.adoptedRunningRuntime &&
@@ -97,28 +93,23 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  Future<void> _persistSupportRewardState(bool value, int epoch) {
-    _supportWriteQueue = _supportWriteQueue.then((_) async {
-      if (epoch != _supportStateEpoch) return;
-      try {
-        await _supportStorage.write(
-          key: _supportRewardClaimKey,
-          value: value ? '1' : '0',
-        );
-      } catch (e) {
-        debugPrint('[Timer] Failed to persist support reward state: $e');
-      }
-    });
-    return _supportWriteQueue;
+  Future<void> _persistSupportRewardState(bool value) async {
+    try {
+      await _supportStorage.write(
+        key: _supportRewardClaimKey,
+        value: value ? '1' : '0',
+      );
+    } catch (e) {
+      debugPrint('[Timer] Failed to persist support reward state: $e');
+    }
   }
 
   Future<void> markSupportRewardClaimed() async {
     if (_supportRewardClaimed) return;
-    final epoch = _supportStateEpoch;
     _supportRewardClaimed = true;
     _supportRewardStateLoaded = true;
     notifyListeners();
-    await _persistSupportRewardState(true, epoch);
+    await _persistSupportRewardState(true);
   }
 
   void _onVpnConnectionChanged() {
@@ -170,10 +161,9 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     NotificationService.reset();
 
     _supportStateEpoch++;
-    final supportEpoch = _supportStateEpoch;
     _supportRewardClaimed = false;
     _supportRewardStateLoaded = true;
-    unawaited(_persistSupportRewardState(false, supportEpoch));
+    unawaited(_persistSupportRewardState(false));
 
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), _tick);
