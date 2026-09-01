@@ -18,7 +18,9 @@ enum VpnStatus {
 }
 
 class VpnConnection extends ChangeNotifier {
-  bool _cancelled = false;
+  int _connectEpoch = 0;
+  bool _suppressNativeConnect = false;
+
   VpnStatus _status = VpnStatus.disconnected;
   VpnStatus get status => _status;
 
@@ -146,18 +148,17 @@ class VpnConnection extends ChangeNotifier {
   }
 
   /// Reflect a tunnel that is already up when the UI starts.
-  ///
-  /// This asks the OS whether our VPN service process is alive, rather than
-  /// probing a local SOCKS port. The old probe called getConnectedServerDelay(),
-  /// which reads AppConfigs.V2RAY_CONFIG?.LOCAL_SOCKS5_PORT ?: 10807 — but
-  /// AppConfigs lives in the VPN's own process, so from here it is always null
-  /// and the port always fell back to 10807. That was correct only while the
-  /// SOCKS port was fixed; per-session ephemeral ports made it permanently
-  /// wrong, so the app reported "connected" against a dead tunnel.
   Future<void> _adoptRunningRuntime() async {
     if (kIsWeb) return;
+    final epoch = _connectEpoch;
     try {
       final state = await PowerSettings.runtimeState();
+      if (epoch != _connectEpoch ||
+          _userDisconnecting ||
+          _suppressNativeConnect ||
+          _status != VpnStatus.disconnected) {
+        return;
+      }
       if (state.aliveFor(tunMode: _activeMode == ConnectionMode.tun)) {
         _adoptedRunningRuntime = true;
         _setStatus(VpnStatus.connected, _connectedLabel);
@@ -176,9 +177,13 @@ class VpnConnection extends ChangeNotifier {
     }
   }
 
+  bool _isCurrentConnect(int epoch) =>
+      epoch == _connectEpoch && !_userDisconnecting;
+
   void _mapStatus(VlessStatus status) {
     switch (status.connectionState) {
       case VlessConnectionState.connected:
+        if (_suppressNativeConnect || _userDisconnecting) return;
         _setStatus(VpnStatus.connected, _connectedLabel);
         break;
 
@@ -188,6 +193,7 @@ class VpnConnection extends ChangeNotifier {
         break;
 
       case VlessConnectionState.connecting:
+        if (_suppressNativeConnect || _userDisconnecting) return;
         _setStatus(VpnStatus.connecting, 'Establishing tunnel…');
         break;
 
@@ -196,6 +202,7 @@ class VpnConnection extends ChangeNotifier {
         break;
 
       case VlessConnectionState.unknown:
+        if (_suppressNativeConnect || _userDisconnecting) return;
         if (_status != VpnStatus.connected &&
             _status != VpnStatus.disconnected) {
           _setStatus(VpnStatus.error, 'Connection failed');
@@ -205,17 +212,23 @@ class VpnConnection extends ChangeNotifier {
   }
 
   Future<bool> connect({bool skipAdBypass = false}) async {
-    if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
+    if (_userDisconnecting ||
+        _status == VpnStatus.connected ||
+        _status == VpnStatus.connecting ||
+        _status == VpnStatus.disconnecting) {
       return false;
     }
 
-    _cancelled = false;
+    final connectEpoch = ++_connectEpoch;
+    _suppressNativeConnect = false;
     _userDisconnecting = false;
 
     await ConnectionSettings.initialize();
+    if (!_isCurrentConnect(connectEpoch)) return false;
     _activeMode = ConnectionSettings.mode;
 
     if (!kIsWeb && !_initialized) {
+      _suppressNativeConnect = true;
       _errorMessage = 'VPN service unavailable.';
       _setStatus(VpnStatus.error, 'Service unavailable');
       return false;
@@ -225,7 +238,9 @@ class VpnConnection extends ChangeNotifier {
     // authenticated proxy without a VpnService, so no VPN permission is needed.
     if (!kIsWeb && _activeMode == ConnectionMode.tun) {
       final ok = await _vless.requestPermission();
+      if (!_isCurrentConnect(connectEpoch)) return false;
       if (!ok) {
+        _suppressNativeConnect = true;
         _errorMessage = 'VPN permission denied.';
         _setStatus(VpnStatus.error, 'Permission required');
         return false;
@@ -241,6 +256,7 @@ class VpnConnection extends ChangeNotifier {
 
     if (kIsWeb) {
       await Future.delayed(const Duration(seconds: 1));
+      if (!_isCurrentConnect(connectEpoch)) return false;
       _setStatus(VpnStatus.connected, 'Secured (dev mode)');
       return true;
     }
@@ -252,6 +268,7 @@ class VpnConnection extends ChangeNotifier {
       realUrl = await HivemindService.fetchConfigDirectly(
         skipAdBypass: skipAdBypass,
         onAttempt: (attempt, total) {
+          if (!_isCurrentConnect(connectEpoch)) return;
           _setStatus(
             VpnStatus.connecting,
             'Contacting server ($attempt/$total)…',
@@ -259,9 +276,11 @@ class VpnConnection extends ChangeNotifier {
         },
       );
     } catch (e) {
+      if (!_isCurrentConnect(connectEpoch)) return false;
       debugPrint('[VPN] Config fetch error: $e');
       final raw = e.toString().replaceAll('Exception: ', '');
       if (raw.contains('Cancelled')) return false;
+      _suppressNativeConnect = true;
       if (raw.contains('timed out') || raw.contains('Session not activated')) {
         _errorMessage =
             'The server did not respond in time.\nCheck your connection and try again.';
@@ -273,11 +292,7 @@ class VpnConnection extends ChangeNotifier {
       return false;
     }
 
-    if (_cancelled) {
-      _setStatus(VpnStatus.disconnected, 'Tap to connect');
-      return false;
-    }
-
+    if (!_isCurrentConnect(connectEpoch)) return false;
     _setStatus(VpnStatus.connecting, 'Starting secure route…');
 
     try {
@@ -285,6 +300,7 @@ class VpnConnection extends ChangeNotifier {
       final baseConfig = parsed.getFullConfiguration();
       final remark = parsed.remark.isNotEmpty ? parsed.remark : 'Revolt VPN';
       final secureSocks = await SecureSocksSession.create(baseConfig);
+      if (!_isCurrentConnect(connectEpoch)) return false;
       final verifyLocalSocks = _activeMode == ConnectionMode.proxy;
 
       await _startRuntime(
@@ -292,26 +308,37 @@ class VpnConnection extends ChangeNotifier {
         remark: remark,
         proxyOnly: verifyLocalSocks,
       );
+      if (!_isCurrentConnect(connectEpoch)) return false;
 
       _setStatus(
         VpnStatus.connecting,
-        verifyLocalSocks ? 'Waiting for local SOCKS5…' : 'Waiting for VPN interface…',
+        verifyLocalSocks
+            ? 'Waiting for local SOCKS5…'
+            : 'Waiting for VPN interface…',
       );
-      if (!await _waitForNativeConnected()) {
+      if (!await _waitForNativeConnected(connectEpoch)) {
         throw StateError('VPN runtime did not report CONNECTED');
       }
 
       if (verifyLocalSocks) {
+        if (!_isCurrentConnect(connectEpoch)) return false;
         _setStatus(VpnStatus.connecting, 'Checking Local SOCKS5…');
-        if (!await _waitForLocalSocksListener(secureSocks)) {
+        if (!await _waitForLocalSocksListener(
+          secureSocks,
+          connectEpoch,
+        )) {
           throw StateError('Local SOCKS5 listener did not become ready');
         }
       }
 
+      if (!_isCurrentConnect(connectEpoch)) return false;
       _lastSecureSocks = secureSocks;
     } catch (e) {
+      if (!_isCurrentConnect(connectEpoch)) return false;
       debugPrint('[VPN] Tunnel start error: $e');
+      _suppressNativeConnect = true;
       await _stopRuntime();
+      if (!_isCurrentConnect(connectEpoch)) return false;
       _clearRuntimeSnapshot();
       _errorMessage = _activeMode == ConnectionMode.proxy
           ? 'SOCKS5 gateway failed to start.\nTry reconnecting.'
@@ -320,6 +347,7 @@ class VpnConnection extends ChangeNotifier {
       return false;
     }
 
+    if (!_isCurrentConnect(connectEpoch)) return false;
     _setStatus(VpnStatus.connected, _connectedLabel);
     return true;
   }
@@ -336,22 +364,20 @@ class VpnConnection extends ChangeNotifier {
     );
   }
 
-  Future<bool> _waitForLocalSocksListener([
-    SecureSocksSession? session,
-  ]) async {
-    final active = session ?? _lastSecureSocks;
-    if (active == null) return false;
-
+  Future<bool> _waitForLocalSocksListener(
+    SecureSocksSession session,
+    int connectEpoch,
+  ) async {
     for (var attempt = 0; attempt < 4; attempt++) {
+      if (!_isCurrentConnect(connectEpoch)) return false;
       final result = await LocalSocksTester.testListener(
         host: '127.0.0.1',
-        port: active.port,
-        username: active.username,
-        password: active.password,
+        port: session.port,
+        username: session.username,
+        password: session.password,
       );
-      if (result.ok) {
-        return true;
-      }
+      if (!_isCurrentConnect(connectEpoch)) return false;
+      if (result.ok) return true;
       if (attempt < 3) {
         await Future.delayed(const Duration(milliseconds: 250));
       }
@@ -359,17 +385,20 @@ class VpnConnection extends ChangeNotifier {
     return false;
   }
 
-  Future<bool> _waitForNativeConnected() async {
+  Future<bool> _waitForNativeConnected(int connectEpoch) async {
     // startVless() queues the Android foreground service. Wait for the native
     // service/core broadcast rather than treating MethodChannel completion as
     // proof that a TUN interface was established.
     for (var attempt = 0; attempt < 24; attempt++) {
+      if (!_isCurrentConnect(connectEpoch)) return false;
       if (_status == VpnStatus.connected) return true;
-      if (_status == VpnStatus.error) return false;
-      if (_cancelled || _userDisconnecting) return false;
+      if (_status == VpnStatus.error || _status == VpnStatus.disconnected) {
+        return false;
+      }
       await Future.delayed(const Duration(milliseconds: 250));
     }
-    return _status == VpnStatus.connected;
+    return _isCurrentConnect(connectEpoch) &&
+        _status == VpnStatus.connected;
   }
 
   Future<void> _stopRuntime() async {
@@ -379,12 +408,14 @@ class VpnConnection extends ChangeNotifier {
   }
 
   Future<void> disconnect() async {
-    _cancelled = true;
+    if (_status == VpnStatus.disconnecting) return;
+
+    _connectEpoch++;
+    _suppressNativeConnect = true;
     _userDisconnecting = true;
     HivemindService.cancel();
 
-    if (_status == VpnStatus.disconnected ||
-        _status == VpnStatus.disconnecting) {
+    if (_status == VpnStatus.disconnected) {
       _clearRuntimeSnapshot();
       _userDisconnecting = false;
       return;

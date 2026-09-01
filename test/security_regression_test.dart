@@ -71,6 +71,17 @@ void main() {
     );
   });
 
+  test('VPN connect work cannot outlive its generation', () {
+    final source = File('lib/logic/vpn_connection.dart').readAsStringSync();
+
+    expect(source, contains('int _connectEpoch = 0;'));
+    expect(source, contains('final connectEpoch = ++_connectEpoch;'));
+    expect(source, contains('epoch == _connectEpoch && !_userDisconnecting'));
+    expect(source, contains('_connectEpoch++;\n    _suppressNativeConnect = true;'));
+    expect(source, contains('if (_suppressNativeConnect || _userDisconnecting) return;'));
+    expect(source, isNot(contains('bool _cancelled = false;')));
+  });
+
   test('unsupported server picker is not wired into app state', () {
     final mainSource = File('lib/main.dart').readAsStringSync();
     final statusBar = File('lib/components/status_bar.dart').readAsStringSync();
