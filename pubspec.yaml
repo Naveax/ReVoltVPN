@@ -30,4 +30,6 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - assets/
+    - assets/background.png
+    - assets/brand.png
+    - assets/finland_flag_256.png
