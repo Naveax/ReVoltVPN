@@ -1,0 +1,99 @@
+name: Verification metadata AAPT2 fix
+
+on:
+  push:
+    branches:
+      - fix/3.3.2-esef-security-cleanup
+    paths:
+      - .github/workflows/verification-metadata-aapt2-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify official AAPT2 bytes and commit metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILE='android/gradle/verification-metadata.xml'
+          VERSION='8.11.1-12782657'
+          BASE_DL="https://dl.google.com/dl/android/maven2/com/android/tools/build/aapt2/$VERSION"
+          BASE_MAVEN="https://maven.google.com/com/android/tools/build/aapt2/$VERSION"
+
+          test "$(git hash-object "$FILE")" = '28ad5385ad7d6f3e61ca700d49a413da443cd2ec'
+
+          curl --fail --show-error --silent --location --proto '=https' --tlsv1.2 \
+            "$BASE_DL/aapt2-$VERSION-linux.jar" -o /tmp/aapt2-dl.jar
+          curl --fail --show-error --silent --location --proto '=https' --tlsv1.2 \
+            "$BASE_MAVEN/aapt2-$VERSION-linux.jar" -o /tmp/aapt2-maven.jar
+          curl --fail --show-error --silent --location --proto '=https' --tlsv1.2 \
+            "$BASE_DL/aapt2-$VERSION.pom" -o /tmp/aapt2-dl.pom
+          curl --fail --show-error --silent --location --proto '=https' --tlsv1.2 \
+            "$BASE_MAVEN/aapt2-$VERSION.pom" -o /tmp/aapt2-maven.pom
+
+          cmp /tmp/aapt2-dl.jar /tmp/aapt2-maven.jar
+          cmp /tmp/aapt2-dl.pom /tmp/aapt2-maven.pom
+          test "$(stat -c '%s' /tmp/aapt2-dl.jar)" -gt 1000000
+          grep -q '<artifactId>aapt2</artifactId>' /tmp/aapt2-dl.pom
+          grep -q '<version>8.11.1-12782657</version>' /tmp/aapt2-dl.pom
+
+          export JAR_SHA="$(sha256sum /tmp/aapt2-dl.jar | awk '{print $1}')"
+          export POM_SHA="$(sha256sum /tmp/aapt2-dl.pom | awk '{print $1}')"
+          echo "AAPT2_JAR_SHA256=$JAR_SHA"
+          echo "AAPT2_POM_SHA256=$POM_SHA"
+
+          python3 <<'PY'
+          from pathlib import Path
+          import os
+          import xml.etree.ElementTree as ET
+
+          path = Path('android/gradle/verification-metadata.xml')
+          text = path.read_text(encoding='utf-8')
+          version = '8.11.1-12782657'
+          marker = '      <component group="com.android.tools.build" name="aapt2-proto" version="8.0.0-9289358">'
+          component_id = f'<component group="com.android.tools.build" name="aapt2" version="{version}">'
+          assert text.count(marker) == 1, 'aapt2-proto insertion anchor missing or ambiguous'
+          assert component_id not in text, 'AAPT2 component already exists'
+
+          block = (
+              f'      <component group="com.android.tools.build" name="aapt2" version="{version}">\n'
+              f'         <artifact name="aapt2-{version}-linux.jar">\n'
+              f'            <sha256 value="{os.environ["JAR_SHA"]}" origin="Independently verified from Google Maven"/>\n'
+              f'         </artifact>\n'
+              f'         <artifact name="aapt2-{version}.pom">\n'
+              f'            <sha256 value="{os.environ["POM_SHA"]}" origin="Independently verified from Google Maven"/>\n'
+              f'         </artifact>\n'
+              f'      </component>\n'
+          )
+          text = text.replace(marker, block + marker, 1)
+          path.write_text(text, encoding='utf-8')
+          ET.parse(path)
+          PY
+
+          grep -q "$JAR_SHA" "$FILE"
+          grep -q "$POM_SHA" "$FILE"
+
+          META_GIT_SHA="$(git hash-object "$FILE")"
+          META_SHA256="$(sha256sum "$FILE" | awk '{print $1}')"
+          echo "META_GIT_SHA=$META_GIT_SHA"
+          echo "META_SHA256=$META_SHA256"
+
+          git add "$FILE"
+          git diff --cached --check
+          git diff --cached --stat
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'build(android): trust verified AAPT2 artifacts'
+          git push origin "HEAD:$GITHUB_REF_NAME"
