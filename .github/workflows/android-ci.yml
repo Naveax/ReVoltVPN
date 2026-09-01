@@ -14,7 +14,7 @@ permissions:
 jobs:
   android:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
       - name: Checkout
@@ -128,6 +128,40 @@ jobs:
           flutter build apk --release
           test -f build/app/outputs/flutter-apk/app-release.apk
           test -f build/app/outputs/mapping/release/mapping.txt
+
+      - name: Export Gradle verification metadata
+        shell: bash
+        env:
+          REVOLT_CI_RELEASE_SMOKE: 'true'
+        run: |
+          test -x android/gradlew
+          cd android
+          ./gradlew --no-daemon --write-verification-metadata sha256 :app:assembleRelease
+          test -s gradle/verification-metadata.xml
+
+      - name: Fetch byte-verified Gradle wrapper JAR
+        shell: bash
+        run: |
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --retry 3 --retry-all-errors \
+            --output /tmp/gradle-wrapper.jar \
+            https://raw.githubusercontent.com/gradle/gradle/v8.14.0/gradle/wrapper/gradle-wrapper.jar
+          test "$(git hash-object /tmp/gradle-wrapper.jar)" = \
+            '1b33c55baabb587c669f562ae36f953de2481846'
+
+      - name: Upload dependency verification metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: revoltvpn-gradle-verification-metadata
+          if-no-files-found: error
+          path: android/gradle/verification-metadata.xml
+
+      - name: Upload verified Gradle wrapper JAR
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: revoltvpn-gradle-wrapper-8.14.0
+          if-no-files-found: error
+          path: /tmp/gradle-wrapper.jar
 
       - name: Upload APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
