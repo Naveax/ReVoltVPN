@@ -2,12 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/logic/power_settings.dart';
 
-/// Keeping the tunnel alive is an OS concern, not an app one.
-///
-/// Android stops background services of apps that are not exempt from Doze, and
-/// removes the whole process group when its task is swiped away. There are
-/// exactly two sanctioned ways around that, both requiring one user tap, and
-/// neither can be enabled programmatically. This tile surfaces both.
 class BackgroundReliabilityTile extends StatefulWidget {
   const BackgroundReliabilityTile({super.key});
 
@@ -35,8 +29,6 @@ class _BackgroundReliabilityTileState extends State<BackgroundReliabilityTile>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // The exemption is granted in a system dialog, so the only reliable moment
-    // to re-read it is when we come back to the foreground.
     if (state == AppLifecycleState.resumed) _refresh();
   }
 
@@ -55,14 +47,6 @@ class _BackgroundReliabilityTileState extends State<BackgroundReliabilityTile>
     );
   }
 
-  Future<void> _openVpnSettings() async {
-    final opened = await PowerSettings.openVpnSettings();
-    if (!mounted || opened) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Could not open VPN settings.')),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final exempt = _batteryExempt;
@@ -76,8 +60,9 @@ class _BackgroundReliabilityTileState extends State<BackgroundReliabilityTile>
             style: TextStyle(color: AppColors.textWhite, fontSize: 15),
           ),
           subtitle: Text(
-            'Android stops background apps to save power. These two settings '
-            'are what keep the VPN running when the app is closed.',
+            'ReVolt keeps an active connection in an Android foreground VPN '
+            'service. Battery exemption is optional extra protection for '
+            'devices that aggressively restrict background work.',
             style: TextStyle(color: AppColors.textDim, fontSize: 12),
           ),
         ),
@@ -90,9 +75,10 @@ class _BackgroundReliabilityTileState extends State<BackgroundReliabilityTile>
                 exempt == null
                     ? 'Battery optimisation: checking…'
                     : exempt
-                        ? 'Battery optimisation: disabled for Revolt VPN ✓'
-                        : 'Battery optimisation: still active — the system may '
-                            'stop the VPN in the background.',
+                        ? 'Battery optimisation: unrestricted for ReVolt VPN ✓'
+                        : 'Battery optimisation: system managed. ReVolt will '
+                            'still use its foreground VPN service; unrestricted '
+                            'mode can improve reliability on aggressive devices.',
                 style: TextStyle(
                   color: exempt == true ? AppColors.accent : AppColors.textMuted,
                   fontSize: 12,
@@ -103,22 +89,17 @@ class _BackgroundReliabilityTileState extends State<BackgroundReliabilityTile>
                 OutlinedButton.icon(
                   onPressed: _requestExemption,
                   icon: const Icon(Icons.battery_saver),
-                  label: const Text('Allow background activity'),
+                  label: const Text('Allow unrestricted background'),
                 ),
               ],
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
               const Text(
-                'Always-on VPN keeps the tunnel up even after the app is closed '
-                'or the phone restarts. Turn it on for Revolt VPN in Android\'s '
-                'VPN settings, and enable "Block connections without VPN" if you '
-                'want traffic to stop rather than leak when it drops.',
+                'TUN mode is kept fail-closed while its native route recovers. '
+                'SOCKS5 mode has no Android VPN interface, so Android VPN '
+                'Always-on/lockdown settings do not apply to it. ReVolt does '
+                'not advertise reboot restoration because per-session state '
+                'cannot be reconstructed safely after a reboot.',
                 style: TextStyle(color: AppColors.textMuted, fontSize: 12),
-              ),
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: _openVpnSettings,
-                icon: const Icon(Icons.settings),
-                label: const Text('Open VPN settings'),
               ),
             ],
           ),
