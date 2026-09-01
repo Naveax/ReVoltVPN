@@ -45,9 +45,9 @@ jobs:
           test "$(sha256sum android/gradle/wrapper/gradle-wrapper.jar | awk '{print $1}')" = \
             '7d3a4ac4de1c32b59bc6a4eb8ecb8e612ccd0cf1ae1e99f66902da64df296172'
           test "$(git hash-object android/gradle/verification-metadata.xml)" = \
-            'e48bca7d6225665ef33cc0dc4bf0609be0631996'
+            'b3df8ec58d74b8d06402cdaec924bedf11069fb1'
           test "$(sha256sum android/gradle/verification-metadata.xml | awk '{print $1}')" = \
-            '90f66e5c14f1b20222b593f6beaa66e5d39ab91456a6abec8af57db25e5efad6'
+            '182594b5df51d57a2fbe11dd4034818b6742e0dc6d5986f315ff010167245d09'
 
           grep -qx \
             'distributionSha256Sum=efe9a3d147d948d7528a9887fa35abcf24ca1a43ad06439996490f77569b02d1' \
@@ -55,6 +55,8 @@ jobs:
           grep -q '<verify-metadata>true</verify-metadata>' \
             android/gradle/verification-metadata.xml
           grep -q '<verify-signatures>false</verify-signatures>' \
+            android/gradle/verification-metadata.xml
+          grep -q '55441db27e8869dfefe053059bdf478bdc7e95585642bf391f0023345fd56287' \
             android/gradle/verification-metadata.xml
 
           ! git check-ignore -q android/gradlew
