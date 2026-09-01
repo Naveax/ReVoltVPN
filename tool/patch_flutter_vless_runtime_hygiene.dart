@@ -248,6 +248,8 @@ void patchService(File file) {
     fail('upstream tun2socks stdout monitor changed');
   }
 
+  // Preserve the upstream comment used by the later route-hardening stage.
+  // Only the failure behavior changes here.
   const permissiveDns = r'''            // Add DNS servers
             try {
                 builder.addDnsServer("8.8.8.8")
@@ -256,8 +258,7 @@ void patchService(File file) {
                 // ignore
             }
 ''';
-  const failClosedDns = r'''            // DNS is part of the full-tunnel boundary. Never continue with
-            // an undefined resolver path if Android rejects the VPN DNS config.
+  const failClosedDns = r'''            // Add DNS servers
             try {
                 builder.addDnsServer("8.8.8.8")
                 builder.addDnsServer("1.1.1.1")
