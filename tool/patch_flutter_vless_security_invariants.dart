@@ -198,6 +198,31 @@ void patchCore(File file) {
     'remove per-second native stats query',
   );
 
+  // With the polling call gone, remove the dead native stats helper and state.
+  text = text.replaceAll(
+    '    private var lastProxyUplink = 0L\n    private var lastProxyDownlink = 0L\n',
+    '',
+  );
+  text = text.replaceAll(
+    '            lastProxyUplink = 0L\n            lastProxyDownlink = 0L\n',
+    '',
+  );
+  text = text.replaceAll(
+    '        lastProxyUplink = 0L\n        lastProxyDownlink = 0L\n',
+    '',
+  );
+
+  const trafficHelperStart = r'''    /**
+     * Queries Xray's stats API for traffic sent through the application proxy.
+''';
+  const stopTimerStart = '    private fun stopTimer() {\n';
+  final trafficHelperIndex = text.indexOf(trafficHelperStart);
+  if (trafficHelperIndex >= 0) {
+    final stopTimerIndex = text.indexOf(stopTimerStart, trafficHelperIndex);
+    if (stopTimerIndex < 0) fail('stats helper end anchor missing');
+    text = text.replaceRange(trafficHelperIndex, stopTimerIndex, '');
+  }
+
   const broadcastCtor =
       'val intent = Intent(AppConfigs.V2RAY_CONNECTION_INFO)';
   if (text.contains(broadcastCtor) &&
@@ -239,6 +264,21 @@ void patchCore(File file) {
 ''';
   text = replaceOnce(text, oldSanitizer, privateLogs, 'disable access logging');
 
+  // A notification channel keeps its original importance once created. ReVolt
+  // owns a single quiet foreground channel, so the core must create it LOW too.
+  text = replaceOnce(
+    text,
+    '            val channel = NotificationChannel(channelId, channelName, NotificationManager.IMPORTANCE_DEFAULT)\n',
+    '            val channel = NotificationChannel(channelId, channelName, NotificationManager.IMPORTANCE_LOW)\n',
+    'quiet Xray notification channel',
+  );
+
+  // No code handles this action; the launcher PendingIntent only needs its flags.
+  text = text.replaceAll(
+    '        launchIntent?.action = "FROM_DISCONNECT_BTN"\n',
+    '',
+  );
+
   writeIfChanged(file, before, text);
 }
 
@@ -273,6 +313,39 @@ void patchService(File file) {
     '            builder.addAddress("26.26.26.1", 30)\n'
         '            builder.addAddress("fd00:26:26::1", 126)\n',
     'IPv6 TUN address',
+  );
+
+  // ReVolt is full-tunnel only. The app UID itself must stay outside the TUN so
+  // Xray can reach the remote server, but no arbitrary app may bypass it.
+  const stockAppPolicy = r'''          try {
+    builder.addDisallowedApplication(packageName)
+} catch (e: Exception) {
+    Log.e(TAG, "Failed to exclude app from VPN", e)
+}
+
+for (pkg in config.BLOCKED_APPS) {
+    try {
+        builder.addDisallowedApplication(pkg)
+        Log.d(TAG, "Excluded from VPN: $pkg")
+    } catch (e: Exception) {
+        Log.e(TAG, "Failed to exclude $pkg from VPN", e)
+    }
+}
+''';
+  const fullTunnelAppPolicy = r'''            if (config.BLOCKED_APPS.isNotEmpty()) {
+                throw IllegalStateException("Per-app VPN bypass is disabled in ReVolt")
+            }
+            try {
+                builder.addDisallowedApplication(packageName)
+            } catch (e: Exception) {
+                throw IllegalStateException("Failed to exclude ReVolt from its own VPN", e)
+            }
+''';
+  text = replaceOnce(
+    text,
+    stockAppPolicy,
+    fullTunnelAppPolicy,
+    'full-tunnel app policy',
   );
 
   const routeStart =
@@ -310,6 +383,10 @@ void patchService(File file) {
     if (channelIndex < 0) fail('notification channel anchor missing');
     text = text.replaceRange(helperIndex, channelIndex, '');
   }
+
+  // The service and core used two channel IDs. Keep one LOW channel so Android
+  // does not preserve a louder DEFAULT channel created by the core first.
+  text = text.replaceAll('"vpn_service_channel"', '"XRAY_SERVICE_CHANNEL"');
 
   if (!text.contains('override fun onRevoke()')) {
     const destroyBlock = r'''    override fun onDestroy() {

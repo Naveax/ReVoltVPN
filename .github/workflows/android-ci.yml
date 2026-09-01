@@ -52,10 +52,19 @@ jobs:
         shell: bash
         run: |
           PKG="$HOME/.pub-cache/hosted/pub.dev/flutter_vless_android-1.1.5"
-          test -f "$PKG/android/src/main/AndroidManifest.xml"
-          grep -q 'android:value="true"' "$PKG/android/src/main/AndroidManifest.xml"
-          grep -q 'Context.RECEIVER_EXPORTED' "$PKG/android/src/main/kotlin/com/github/tfox/flutter_vless/FlutterVlessPlugin.kt"
-          ! grep -q 'fd00:26:26::1' "$PKG/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt"
+          MANIFEST="$PKG/android/src/main/AndroidManifest.xml"
+          PLUGIN="$PKG/android/src/main/kotlin/com/github/tfox/flutter_vless/FlutterVlessPlugin.kt"
+          CORE="$PKG/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/core/XrayCoreManager.kt"
+          SERVICE="$PKG/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt"
+
+          test -f "$MANIFEST"
+          grep -q 'android:value="true"' "$MANIFEST"
+          grep -q 'Context.RECEIVER_EXPORTED' "$PLUGIN"
+          ! grep -q 'fd00:26:26::1' "$SERVICE"
+          grep -q 'NotificationManager.IMPORTANCE_DEFAULT' "$CORE"
+          grep -q '"vpn_service_channel"' "$SERVICE"
+          grep -q 'fun getV2rayTraffic' "$CORE"
+          grep -q 'for (pkg in config.BLOCKED_APPS)' "$SERVICE"
 
       - name: Cold APK build
         run: flutter build apk --debug
@@ -74,18 +83,34 @@ jobs:
           ! grep -q 'Context.RECEIVER_EXPORTED' "$PLUGIN"
           grep -q 'setPackage(context.packageName)' "$CORE"
           grep -q 'fd00:26:26::1' "$SERVICE"
+          grep -q 'builder.addRoute("0.0.0.0", 0)' "$SERVICE"
           grep -q 'builder.addRoute("::", 0)' "$SERVICE"
           grep -q 'Android refused to establish VPN interface' "$SERVICE"
+          grep -q 'Per-app VPN bypass is disabled in ReVolt' "$SERVICE"
+          ! grep -q 'for (pkg in config.BLOCKED_APPS)' "$SERVICE"
           ! grep -q 'val traffic = getV2rayTraffic(context)' "$CORE"
+          ! grep -q 'fun getV2rayTraffic' "$CORE"
+          ! grep -q 'lastProxyUplink' "$CORE"
+          ! grep -q 'lastProxyDownlink' "$CORE"
+          grep -q 'NotificationManager.IMPORTANCE_LOW' "$CORE"
+          ! grep -q 'NotificationManager.IMPORTANCE_DEFAULT' "$CORE"
+          grep -q '"XRAY_SERVICE_CHANNEL"' "$SERVICE"
+          ! grep -q '"vpn_service_channel"' "$SERVICE"
+          ! grep -q 'FROM_DISCONNECT_BTN' "$CORE"
 
       - name: Warm APK build
         run: flutter build apk --debug
 
-      - name: Upload APK and resolved lockfile
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: revoltvpn-debug-ci
+          name: revoltvpn-debug-apk
           if-no-files-found: error
-          path: |
-            build/app/outputs/flutter-apk/app-debug.apk
-            pubspec.lock
+          path: build/app/outputs/flutter-apk/app-debug.apk
+
+      - name: Upload resolved lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: revoltvpn-resolved-lockfile
+          if-no-files-found: error
+          path: pubspec.lock

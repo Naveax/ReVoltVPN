@@ -55,6 +55,22 @@ void main() {
     expect(patch, contains('.setPackage(context.packageName)'));
     expect(patch, contains('android:value="false"'));
     expect(patch, contains('Android refused to establish VPN interface'));
+    expect(patch, contains('Per-app VPN bypass is disabled in ReVolt'));
+    expect(patch, contains('NotificationManager.IMPORTANCE_LOW'));
+    expect(patch, contains('XRAY_SERVICE_CHANNEL'));
+    expect(patch, contains("Queries Xray's stats API"));
+    expect(patch, contains('stats helper end anchor missing'));
+  });
+
+  test('native app bridge does not advertise unsupported Always-on behavior', () {
+    final source = File(
+      'android/app/src/main/kotlin/com/paladinvpn/app/MainActivity.kt',
+    ).readAsStringSync();
+
+    expect(source, isNot(contains('openVpnSettings')));
+    expect(source, isNot(contains('ACTION_VPN_SETTINGS')));
+    expect(source, isNot(contains('FROM_DISCONNECT_BTN')));
+    expect(source, contains('not proof of packet flow'));
   });
 
   test('hivemind rejects missing nonce and stale session responses', () {

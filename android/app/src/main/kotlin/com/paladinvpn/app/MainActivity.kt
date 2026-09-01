@@ -55,19 +55,14 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     // Doze and App Standby stop background services of apps that
-                    // are not exempt. A VPN has to be exempt to survive the screen
-                    // going off, so surface the real state rather than guessing.
+                    // are not exempt. Surface the real OS setting rather than
+                    // pretending the app can grant an exemption itself.
                     "isIgnoringBatteryOptimizations" ->
                         result.success(isIgnoringBatteryOptimizations())
                     "requestIgnoreBatteryOptimizations" ->
                         result.success(requestIgnoreBatteryOptimizations())
-                    // Android's own Always-on VPN is the only thing that keeps a
-                    // tunnel up across swipe-from-recents and reboot. It cannot be
-                    // toggled programmatically, so deep-link the user to it.
-                    "openVpnSettings" -> result.success(openVpnSettings())
-                    // Is our VPN runtime actually alive? The service lives in
-                    // :RunSoLibXrayDaemon, a separate process, so its statics are
-                    // NOT visible here -- this is the only honest check.
+                    // The VPN service runs in a separate process; expose only a
+                    // coarse OS-facing liveness snapshot to Flutter.
                     "isVpnRuntimeAlive" -> result.success(isVpnRuntimeAlive())
                     else -> result.notImplemented()
                 }
@@ -153,26 +148,12 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /** Deep-links to the OS VPN settings, where Always-on VPN lives. */
-    private fun openVpnSettings(): Boolean {
-        return try {
-            startActivity(
-                Intent(Settings.ACTION_VPN_SETTINGS)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            )
-            true
-        } catch (_: Exception) {
-            false
-        }
-    }
-
     /**
-     * Whether the VPN runtime is genuinely alive.
+     * Coarse VPN runtime liveness snapshot.
      *
      * The Xray service runs in :RunSoLibXrayDaemon, a separate process, so its
-     * statics (AppConfigs.V2RAY_CONFIG, V2RAY_STATE) are NOT visible from here --
-     * reading them yields a fresh, empty copy. getRunningAppProcesses still
-     * returns our *own* processes, which makes it the one reliable signal.
+     * statics are not shared with this activity process. Process presence and
+     * an OS VPN transport are useful restart hints, not proof of packet flow.
      */
     private fun isVpnRuntimeAlive(): Map<String, Any> {
         var processAlive = false
@@ -233,7 +214,6 @@ class MainActivity : FlutterActivity() {
         }
 
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-        launchIntent?.action = "FROM_DISCONNECT_BTN"
         launchIntent?.flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or
             Intent.FLAG_ACTIVITY_CLEAR_TOP or
             Intent.FLAG_ACTIVITY_NEW_TASK
