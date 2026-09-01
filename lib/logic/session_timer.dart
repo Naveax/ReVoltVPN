@@ -23,10 +23,13 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   bool _hasSyncedOnce = false;
   int _consecutiveFailures = 0;
   bool _isDisconnecting = false;
-  bool _syncInProgress = false;
+  int? _syncEpochInProgress;
+  int _sessionEpoch = 0;
+
   bool _supportRewardClaimed = false;
   bool _supportRewardStateLoaded = false;
   int _supportStateEpoch = 0;
+  Future<void> _supportWriteQueue = Future<void>.value();
 
   static const String _supportRewardClaimKey =
       'support_reward_claimed_active_session';
@@ -40,13 +43,25 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   static const int _backgroundPollIntervalSeconds = 30;
 
   int _lastUsedBytes = 0;
-  DateTime? _lastSuccessfulSyncAt;
+  Stopwatch? _sinceLastSuccessfulSync;
   double _currentSpeedKBps = 0.0;
 
   SessionTimer({required this.vpnConnection}) {
     WidgetsBinding.instance.addObserver(this);
     vpnConnection.addListener(_onVpnConnectionChanged);
     unawaited(_loadSupportRewardState());
+
+    // Provider creation can happen after VpnConnection already adopted a
+    // surviving native runtime. Reconcile the current state once instead of
+    // relying exclusively on an event that may already have happened.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (vpnConnection.status == VpnStatus.connected &&
+          vpnConnection.adoptedRunningRuntime &&
+          !isRunning &&
+          !_isDisconnecting) {
+        _resumeTicking();
+      }
+    });
   }
 
   int get remaining => _remainingSeconds;
@@ -82,29 +97,35 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  Future<void> _persistSupportRewardState(bool value) async {
-    try {
-      await _supportStorage.write(
-        key: _supportRewardClaimKey,
-        value: value ? '1' : '0',
-      );
-    } catch (e) {
-      debugPrint('[Timer] Failed to persist support reward state: $e');
-    }
+  Future<void> _persistSupportRewardState(bool value, int epoch) {
+    _supportWriteQueue = _supportWriteQueue.then((_) async {
+      if (epoch != _supportStateEpoch) return;
+      try {
+        await _supportStorage.write(
+          key: _supportRewardClaimKey,
+          value: value ? '1' : '0',
+        );
+      } catch (e) {
+        debugPrint('[Timer] Failed to persist support reward state: $e');
+      }
+    });
+    return _supportWriteQueue;
   }
 
   Future<void> markSupportRewardClaimed() async {
     if (_supportRewardClaimed) return;
+    final epoch = _supportStateEpoch;
     _supportRewardClaimed = true;
     _supportRewardStateLoaded = true;
     notifyListeners();
-    await _persistSupportRewardState(true);
+    await _persistSupportRewardState(true, epoch);
   }
 
   void _onVpnConnectionChanged() {
     if (vpnConnection.status == VpnStatus.connected &&
         !isRunning &&
-        vpnConnection.adoptedRunningRuntime) {
+        vpnConnection.adoptedRunningRuntime &&
+        !_isDisconnecting) {
       _resumeTicking();
       return;
     }
@@ -122,7 +143,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     if (!hadActiveSession || _isDisconnecting) return;
 
     if (vpnConnection.status == VpnStatus.error) {
-      _stopForVpnFailure('VPN entered error state');
+      unawaited(_doDisconnect('VPN entered error state'));
       return;
     }
 
@@ -131,30 +152,14 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  void _stopForVpnFailure(String reason) {
-    if (_isDisconnecting) return;
-    _isDisconnecting = true;
-    debugPrint('[Timer] Stopping after VPN failure: $reason');
-
-    _timer?.cancel();
-    _timer = null;
-    _currentSpeedKBps = 0.0;
-    _remainingSeconds = 0;
-    _remainingAtLastSync = 0;
-    _hasSyncedOnce = false;
-    _lastSuccessfulSyncAt = null;
-    _consecutiveFailures = 0;
-    _offlineSeconds = 0;
-    NotificationService.reset();
-    notifyListeners();
-  }
-
   Future<void> start() async {
+    _sessionEpoch++;
     _remainingSeconds = 0;
     _remainingAtLastSync = 0;
     _usedBytes = 0;
     _lastUsedBytes = 0;
-    _lastSuccessfulSyncAt = null;
+    _sinceLastSuccessfulSync?.stop();
+    _sinceLastSuccessfulSync = null;
     _currentSpeedKBps = 0.0;
     _tickCount = 0;
     _hasSyncedOnce = false;
@@ -165,9 +170,10 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     NotificationService.reset();
 
     _supportStateEpoch++;
+    final supportEpoch = _supportStateEpoch;
     _supportRewardClaimed = false;
     _supportRewardStateLoaded = true;
-    unawaited(_persistSupportRewardState(false));
+    unawaited(_persistSupportRewardState(false, supportEpoch));
 
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), _tick);
@@ -179,7 +185,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   void _tick(Timer t) {
     if (_isDisconnecting) return;
 
-    if (_hasSyncedOnce && _consecutiveFailures < _maxConsecutiveFailures) {
+    if (_hasSyncedOnce) {
       _reconcileElapsedTime();
     }
 
@@ -218,6 +224,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _doDisconnect(String reason) async {
     if (_isDisconnecting) return;
     _isDisconnecting = true;
+    _sessionEpoch++;
     debugPrint('[Timer] Disconnecting: $reason');
 
     _timer?.cancel();
@@ -226,13 +233,13 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     _remainingSeconds = 0;
     _remainingAtLastSync = 0;
     _hasSyncedOnce = false;
-    _lastSuccessfulSyncAt = null;
+    _sinceLastSuccessfulSync?.stop();
+    _sinceLastSuccessfulSync = null;
     NotificationService.reset();
     notifyListeners();
 
     await vpnConnection.disconnect();
 
-    if (!_isDisconnecting) return;
     _isDisconnecting = false;
     notifyListeners();
   }
@@ -244,20 +251,25 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _syncWithHivemind() async {
-    if (_isDisconnecting || _syncInProgress) return;
-    _syncInProgress = true;
+    if (_isDisconnecting) return;
+    final epoch = _sessionEpoch;
+    if (_syncEpochInProgress == epoch) return;
+    _syncEpochInProgress = epoch;
+
     try {
       final deviceId = await CryptoService.getDeviceId();
+      if (epoch != _sessionEpoch || _isDisconnecting) return;
+
       final base = Uri.parse('${AppConfig.hivemindApiPublic}/session/status');
       final url = base.replace(queryParameters: {'device_id': deviceId});
       final response = await HivemindService.directGet(url);
-      if (_isDisconnecting) return;
+      if (epoch != _sessionEpoch || _isDisconnecting) return;
 
       if (response.statusCode == 200) {
         final decoded = jsonDecode(response.body);
         if (decoded is! Map<String, dynamic>) {
           debugPrint('[Timer] Invalid session payload type.');
-          _markSyncFailure();
+          _markSyncFailure(epoch);
           return;
         }
         final data = decoded;
@@ -265,7 +277,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
         final activeValue = data['active'];
         if (activeValue is! bool) {
           debugPrint('[Timer] Session payload missing boolean active state.');
-          _markSyncFailure();
+          _markSyncFailure(epoch);
           return;
         }
         if (!activeValue) {
@@ -278,53 +290,54 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
             !expiresValue.isFinite ||
             expiresValue < 0) {
           debugPrint('[Timer] Session payload has invalid expiry.');
-          _markSyncFailure();
+          _markSyncFailure(epoch);
           return;
         }
 
+        final elapsedMs = _sinceLastSuccessfulSync?.elapsedMilliseconds;
         _remainingAtLastSync = expiresValue.toInt();
         _remainingSeconds = _remainingAtLastSync;
         _usedBytes = _readNonNegativeInt(data['used_bytes'], _usedBytes);
 
-        final now = DateTime.now();
-        final previousSyncAt = _lastSuccessfulSyncAt;
         final deltaBytes = _usedBytes - _lastUsedBytes;
-        if (_hasSyncedOnce && previousSyncAt != null) {
-          final elapsedMs = now.difference(previousSyncAt).inMilliseconds;
-          if (deltaBytes > 0 && elapsedMs > 0) {
-            _currentSpeedKBps = (deltaBytes / (elapsedMs / 1000.0)) / 1000.0;
-          } else {
-            _currentSpeedKBps = 0.0;
-          }
+        if (_hasSyncedOnce && elapsedMs != null && elapsedMs > 0) {
+          _currentSpeedKBps = deltaBytes > 0
+              ? (deltaBytes / (elapsedMs / 1000.0)) / 1000.0
+              : 0.0;
         } else {
           _currentSpeedKBps = 0.0;
         }
         _lastUsedBytes = _usedBytes;
-        _lastSuccessfulSyncAt = now;
+        _sinceLastSuccessfulSync?.stop();
+        _sinceLastSuccessfulSync = Stopwatch()..start();
 
         if (data['cap_exhausted'] == true) {
           await _doDisconnect('Data cap reached');
           return;
         }
 
+        if (epoch != _sessionEpoch || _isDisconnecting) return;
         _consecutiveFailures = 0;
         _offlineSeconds = 0;
         _hasSyncedOnce = true;
         notifyListeners();
       } else {
-        _markSyncFailure();
+        _markSyncFailure(epoch);
       }
     } catch (e) {
-      if (!_isDisconnecting) {
+      if (epoch == _sessionEpoch && !_isDisconnecting) {
         debugPrint('Hivemind sync error: $e');
-        _markSyncFailure();
+        _markSyncFailure(epoch);
       }
     } finally {
-      _syncInProgress = false;
+      if (_syncEpochInProgress == epoch) {
+        _syncEpochInProgress = null;
+      }
     }
   }
 
-  void _markSyncFailure() {
+  void _markSyncFailure(int epoch) {
+    if (epoch != _sessionEpoch || _isDisconnecting) return;
     _consecutiveFailures++;
     if (_consecutiveFailures >= _maxConsecutiveFailures) {
       notifyListeners();
@@ -332,10 +345,10 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _reconcileElapsedTime() {
-    final syncedAt = _lastSuccessfulSyncAt;
-    if (!_hasSyncedOnce || syncedAt == null) return;
+    final clock = _sinceLastSuccessfulSync;
+    if (!_hasSyncedOnce || clock == null) return;
 
-    final elapsed = DateTime.now().difference(syncedAt).inSeconds;
+    final elapsed = clock.elapsed.inSeconds;
     _remainingSeconds =
         (_remainingAtLastSync - elapsed).clamp(0, 1 << 31).toInt();
   }
@@ -378,6 +391,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     vpnConnection.removeListener(_onVpnConnectionChanged);
     _timer?.cancel();
+    _sinceLastSuccessfulSync?.stop();
     super.dispose();
   }
 }
