@@ -33,14 +33,12 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   static const FlutterSecureStorage _supportStorage = FlutterSecureStorage();
 
   static const int _maxConsecutiveFailures = 3;
-  static const int _maxOfflineSeconds = 120;
-  int _offlineSeconds = 0;
-
   static const int _pollIntervalSeconds = 5;
   static const int _backgroundPollIntervalSeconds = 30;
 
+  final Stopwatch _monotonicClock = Stopwatch()..start();
+  Duration? _lastSuccessfulSyncElapsed;
   int _lastUsedBytes = 0;
-  DateTime? _lastSuccessfulSyncAt;
   double _currentSpeedKBps = 0.0;
 
   SessionTimer({required this.vpnConnection}) {
@@ -142,9 +140,8 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     _remainingSeconds = 0;
     _remainingAtLastSync = 0;
     _hasSyncedOnce = false;
-    _lastSuccessfulSyncAt = null;
+    _lastSuccessfulSyncElapsed = null;
     _consecutiveFailures = 0;
-    _offlineSeconds = 0;
     NotificationService.reset();
     notifyListeners();
   }
@@ -154,14 +151,16 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     _remainingAtLastSync = 0;
     _usedBytes = 0;
     _lastUsedBytes = 0;
-    _lastSuccessfulSyncAt = null;
+    _lastSuccessfulSyncElapsed = null;
     _currentSpeedKBps = 0.0;
     _tickCount = 0;
     _hasSyncedOnce = false;
     _consecutiveFailures = 0;
-    _offlineSeconds = 0;
     _isDisconnecting = false;
     _appBackgrounded = false;
+    _monotonicClock
+      ..reset()
+      ..start();
     NotificationService.reset();
 
     _supportStateEpoch++;
@@ -179,16 +178,10 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   void _tick(Timer t) {
     if (_isDisconnecting) return;
 
-    if (_hasSyncedOnce && _consecutiveFailures < _maxConsecutiveFailures) {
+    // Local countdown uses a monotonic clock. Wall-clock changes, timezone
+    // changes and automatic time correction cannot extend or shorten a session.
+    if (_hasSyncedOnce) {
       _reconcileElapsedTime();
-    }
-
-    if (_consecutiveFailures >= _maxConsecutiveFailures) {
-      _offlineSeconds++;
-      if (_offlineSeconds >= _maxOfflineSeconds) {
-        unawaited(_doDisconnect('Server unreachable'));
-        return;
-      }
     }
 
     if (_hasSyncedOnce && _remainingSeconds <= 0) {
@@ -226,7 +219,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     _remainingSeconds = 0;
     _remainingAtLastSync = 0;
     _hasSyncedOnce = false;
-    _lastSuccessfulSyncAt = null;
+    _lastSuccessfulSyncElapsed = null;
     NotificationService.reset();
     notifyListeners();
 
@@ -286,13 +279,15 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
         _remainingSeconds = _remainingAtLastSync;
         _usedBytes = _readNonNegativeInt(data['used_bytes'], _usedBytes);
 
-        final now = DateTime.now();
-        final previousSyncAt = _lastSuccessfulSyncAt;
+        final nowElapsed = _monotonicClock.elapsed;
+        final previousSyncElapsed = _lastSuccessfulSyncElapsed;
         final deltaBytes = _usedBytes - _lastUsedBytes;
-        if (_hasSyncedOnce && previousSyncAt != null) {
-          final elapsedMs = now.difference(previousSyncAt).inMilliseconds;
+        if (_hasSyncedOnce && previousSyncElapsed != null) {
+          final elapsedMs =
+              (nowElapsed - previousSyncElapsed).inMilliseconds;
           if (deltaBytes > 0 && elapsedMs > 0) {
-            _currentSpeedKBps = (deltaBytes / (elapsedMs / 1000.0)) / 1000.0;
+            _currentSpeedKBps =
+                (deltaBytes / (elapsedMs / 1000.0)) / 1000.0;
           } else {
             _currentSpeedKBps = 0.0;
           }
@@ -300,7 +295,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
           _currentSpeedKBps = 0.0;
         }
         _lastUsedBytes = _usedBytes;
-        _lastSuccessfulSyncAt = now;
+        _lastSuccessfulSyncElapsed = nowElapsed;
 
         if (data['cap_exhausted'] == true) {
           await _doDisconnect('Data cap reached');
@@ -308,7 +303,6 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
         }
 
         _consecutiveFailures = 0;
-        _offlineSeconds = 0;
         _hasSyncedOnce = true;
         notifyListeners();
       } else {
@@ -326,16 +320,19 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
 
   void _markSyncFailure() {
     _consecutiveFailures++;
+    // A control-plane timeout is not tunnel death. Keep counting down from the
+    // last authenticated server response and retry; only an explicit inactive
+    // response, data-cap response, local expiry, or VPN failure tears down.
     if (_consecutiveFailures >= _maxConsecutiveFailures) {
       notifyListeners();
     }
   }
 
   void _reconcileElapsedTime() {
-    final syncedAt = _lastSuccessfulSyncAt;
+    final syncedAt = _lastSuccessfulSyncElapsed;
     if (!_hasSyncedOnce || syncedAt == null) return;
 
-    final elapsed = DateTime.now().difference(syncedAt).inSeconds;
+    final elapsed = (_monotonicClock.elapsed - syncedAt).inSeconds;
     _remainingSeconds =
         (_remainingAtLastSync - elapsed).clamp(0, 1 << 31).toInt();
   }
@@ -352,7 +349,10 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
 
     if (state != AppLifecycleState.resumed || _isDisconnecting) return;
     _appBackgrounded = false;
-    if (vpnConnection.status != VpnStatus.connected) return;
+    if (vpnConnection.status != VpnStatus.connected &&
+        vpnConnection.status != VpnStatus.connecting) {
+      return;
+    }
 
     _reconcileElapsedTime();
     if (!isRunning) {
