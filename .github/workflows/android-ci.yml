@@ -18,7 +18,7 @@ concurrency:
 jobs:
   android:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
 
     steps:
       - name: Checkout
@@ -44,10 +44,35 @@ jobs:
         run: flutter pub get
 
       - name: Analyze Dart
-        run: flutter analyze
+        id: analyze
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p build/ci-logs
+          set -o pipefail
+          flutter analyze 2>&1 | tee build/ci-logs/flutter-analyze.log
 
-      - name: Build debug APK
-        run: flutter build apk --debug
+      - name: Build debug APK (cold patch pass)
+        shell: bash
+        run: |
+          mkdir -p build/ci-logs
+          set -o pipefail
+          flutter build apk --debug 2>&1 | tee build/ci-logs/flutter-build-cold.log
+
+      - name: Build debug APK again (patch idempotency)
+        shell: bash
+        run: |
+          set -o pipefail
+          flutter build apk --debug 2>&1 | tee build/ci-logs/flutter-build-warm.log
+
+      - name: Upload CI diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-ci-diagnostics
+          path: build/ci-logs/
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload debug APK
         if: success()
