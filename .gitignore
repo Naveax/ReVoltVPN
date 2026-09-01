@@ -71,10 +71,7 @@ local_packages/*/.dart_tool/
 **/android/.cxx/
 **/android/app/build/
 **/android/captures/
-**/android/gradlew
-**/android/gradlew.bat
 **/android/local.properties
-**/android/**/gradle-wrapper.jar
 **/android/**/GeneratedPluginRegistrant.java
 **/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
 **/android/app/crashlytics-build.properties
