@@ -27,7 +27,10 @@ class HivemindService {
     return http.get(uri, headers: {'User-Agent': _ua}).timeout(timeout);
   }
 
-  static void cancel() => _currentCallId++;
+  static void cancel() {
+    _currentCallId++;
+    _expectedNonce = null;
+  }
 
   static void setExpectedNonce(String nonce) {
     _expectedNonce = nonce;
@@ -37,13 +40,19 @@ class HivemindService {
     void Function(int attempt, int total)? onAttempt,
     bool skipAdBypass = false,
   }) async {
-    final deviceId = await CryptoService.getDeviceId();
+    // Capture the generation before the first await. Otherwise a disconnect
+    // that lands while secure storage is resolving the device ID can be lost
+    // and the cancelled call can resume network work with a fresh generation.
     final callId = ++_currentCallId;
+    final deviceId = await CryptoService.getDeviceId();
+    _throwIfCancelled(callId);
+
     final nonce = _newNonce();
     _expectedNonce = nonce;
 
     if (!skipAdBypass) {
       await _runConfiguredBypass(deviceId, nonce);
+      _throwIfCancelled(callId);
     }
 
     const maxAttempts = 5;

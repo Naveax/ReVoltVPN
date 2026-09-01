@@ -28,4 +28,33 @@ void main() {
       contains("throw TimeoutException('Socket read timed out', timeout);"),
     );
   });
+
+  test('Hivemind captures cancellation generation before first async lookup', () {
+    final source = File('lib/logic/hivemind_service.dart').readAsStringSync();
+    final callIdIndex = source.indexOf('final callId = ++_currentCallId;');
+    final deviceIdIndex =
+        source.indexOf('final deviceId = await CryptoService.getDeviceId();');
+
+    expect(callIdIndex, greaterThanOrEqualTo(0));
+    expect(deviceIdIndex, greaterThan(callIdIndex));
+    expect(
+      source.substring(deviceIdIndex),
+      contains('_throwIfCancelled(callId);'),
+    );
+    expect(
+      source,
+      contains('_currentCallId++;\n    _expectedNonce = null;'),
+    );
+  });
+
+  test('notification text is cached only after native update succeeds', () {
+    final source =
+        File('lib/logic/notification_service.dart').readAsStringSync();
+    final invokeIndex =
+        source.indexOf("await _channel.invokeMethod<void>('updateNotificationText'");
+    final cacheIndex = source.indexOf('_lastText = text;');
+
+    expect(invokeIndex, greaterThanOrEqualTo(0));
+    expect(cacheIndex, greaterThan(invokeIndex));
+  });
 }
