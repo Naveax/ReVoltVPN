@@ -1,25 +1,23 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-/// Background-survival controls.
-///
-/// Android stops background services of apps that are not exempt from Doze and
-/// App Standby, and it tears down the whole process group when a task is swiped
-/// away. Those are OS behaviours, not app bugs, and the OS provides exactly two
-/// sanctioned ways around them: a battery-optimisation exemption, and the
-/// system's own Always-on VPN. Both need one user tap; neither can be forced.
+/// Android background/runtime controls used by the VPN UI.
 abstract final class PowerSettings {
   PowerSettings._();
 
-  static const MethodChannel _channel = MethodChannel(
+  static const MethodChannel _powerChannel = MethodChannel(
     'com.revoltvpn.app/power',
   );
+  static const MethodChannel _vlessChannel = MethodChannel('flutter_vless');
 
-  /// Whether the OS has exempted this app from Doze / App Standby.
+  /// Whether the user has exempted ReVolt from Doze/App Standby.
+  ///
+  /// This is optional extra resilience. The foreground VpnService is still the
+  /// primary mechanism that keeps an active tunnel alive.
   static Future<bool> isBatteryOptimisationDisabled() async {
     if (kIsWeb) return true;
     try {
-      return await _channel.invokeMethod<bool>(
+      return await _powerChannel.invokeMethod<bool>(
             'isIgnoringBatteryOptimizations',
           ) ??
           false;
@@ -28,12 +26,11 @@ abstract final class PowerSettings {
     }
   }
 
-  /// Shows the system exemption dialog. Returns false only when no system UI
-  /// could be opened at all — a user declining still returns true.
+  /// Opens Android's battery-optimisation exemption UI.
   static Future<bool> requestDisableBatteryOptimisation() async {
     if (kIsWeb) return true;
     try {
-      return await _channel.invokeMethod<bool>(
+      return await _powerChannel.invokeMethod<bool>(
             'requestIgnoreBatteryOptimizations',
           ) ??
           false;
@@ -42,34 +39,36 @@ abstract final class PowerSettings {
     }
   }
 
-  /// Opens the OS VPN settings screen, where Always-on VPN is configured.
-  static Future<bool> openVpnSettings() async {
-    if (kIsWeb) return false;
-    try {
-      return await _channel.invokeMethod<bool>('openVpnSettings') ?? false;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// Whether the VPN runtime is genuinely alive.
-  ///
-  /// The Xray service runs in a separate process, so nothing it stores in
-  /// statics is visible to us. This asks the OS instead: is our service process
-  /// running, and (for TUN) is there an active VPN transport?
+  /// Returns both the OS-level VPN shape and the service-process health probe.
+  /// A process plus a VPN key is not sufficient: Xray, the authenticated SOCKS
+  /// outbound, tun2socks and the TUN FD handoff must all be working.
   static Future<VpnRuntimeState> runtimeState() async {
-    if (kIsWeb) return const VpnRuntimeState(processAlive: false, vpnTransport: false);
+    if (kIsWeb) return const VpnRuntimeState.empty();
+
+    Map<String, dynamic>? osState;
+    Map<String, dynamic>? health;
     try {
-      final result = await _channel.invokeMapMethod<String, dynamic>(
+      osState = await _powerChannel.invokeMapMethod<String, dynamic>(
         'isVpnRuntimeAlive',
       );
-      return VpnRuntimeState(
-        processAlive: result?['processAlive'] == true,
-        vpnTransport: result?['vpnTransport'] == true,
+    } catch (_) {}
+    try {
+      health = await _vlessChannel.invokeMapMethod<String, dynamic>(
+        'getRuntimeHealth',
       );
-    } catch (_) {
-      return const VpnRuntimeState(processAlive: false, vpnTransport: false);
-    }
+    } catch (_) {}
+
+    return VpnRuntimeState(
+      processAlive: osState?['processAlive'] == true,
+      vpnTransport: osState?['vpnTransport'] == true,
+      healthy: health?['healthy'] == true,
+      stale: health?['stale'] != false,
+      proxyOnly: health?['proxyOnly'] == true,
+      xrayAlive: health?['xrayAlive'] == true,
+      tun2socksAlive: health?['tun2socksAlive'] == true,
+      fdReady: health?['fdReady'] == true,
+      outboundReady: health?['outboundReady'] == true,
+    );
   }
 }
 
@@ -77,14 +76,43 @@ abstract final class PowerSettings {
 class VpnRuntimeState {
   final bool processAlive;
   final bool vpnTransport;
+  final bool healthy;
+  final bool stale;
+  final bool proxyOnly;
+  final bool xrayAlive;
+  final bool tun2socksAlive;
+  final bool fdReady;
+  final bool outboundReady;
 
   const VpnRuntimeState({
     required this.processAlive,
     required this.vpnTransport,
+    required this.healthy,
+    required this.stale,
+    required this.proxyOnly,
+    required this.xrayAlive,
+    required this.tun2socksAlive,
+    required this.fdReady,
+    required this.outboundReady,
   });
 
-  /// TUN needs both a live service and a real VPN interface. Proxy mode has no
-  /// VPN interface at all, so the service process is the whole signal.
-  bool aliveFor({required bool tunMode}) =>
-      processAlive && (!tunMode || vpnTransport);
+  const VpnRuntimeState.empty()
+      : processAlive = false,
+        vpnTransport = false,
+        healthy = false,
+        stale = true,
+        proxyOnly = false,
+        xrayAlive = false,
+        tun2socksAlive = false,
+        fdReady = false,
+        outboundReady = false;
+
+  bool aliveFor({required bool tunMode}) {
+    final modeMatches = tunMode ? !proxyOnly : proxyOnly;
+    return processAlive &&
+        !stale &&
+        healthy &&
+        modeMatches &&
+        (!tunMode || vpnTransport);
+  }
 }
