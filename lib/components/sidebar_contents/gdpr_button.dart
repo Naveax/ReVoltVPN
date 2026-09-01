@@ -76,9 +76,12 @@ class GdprButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return IconButton(
-      icon: const Icon(Icons.admin_panel_settings_outlined,
-          color: AppColors.textWhite, size: 28),
+    return const IconButton(
+      icon: Icon(
+        Icons.admin_panel_settings_outlined,
+        color: AppColors.textWhite,
+        size: 28,
+      ),
       onPressed: showConsentForm,
       tooltip: 'Ad consent & privacy choices',
       splashRadius: 24,

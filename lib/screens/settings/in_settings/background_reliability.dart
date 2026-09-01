@@ -95,10 +95,10 @@ class _BackgroundReliabilityTileState extends State<BackgroundReliabilityTile>
               const SizedBox(height: 12),
               const Text(
                 'TUN mode is kept fail-closed while its native route recovers. '
-                'SOCKS5 mode has no Android VPN interface, so Android VPN '
-                'Always-on/lockdown settings do not apply to it. ReVolt does '
-                'not advertise reboot restoration because per-session state '
-                'cannot be reconstructed safely after a reboot.',
+                'SOCKS5 mode has no Android VPN interface and runs as an '
+                'authenticated local proxy while the ReVolt runtime is active. '
+                'ReVolt does not advertise reboot restoration because per-session '
+                'state cannot be reconstructed safely after a reboot.',
                 style: TextStyle(color: AppColors.textMuted, fontSize: 12),
               ),
             ],

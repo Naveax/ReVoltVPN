@@ -54,17 +54,13 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, powerChannel)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    // Doze and App Standby stop background services of apps that
-                    // are not exempt. A VPN has to be exempt to survive the screen
-                    // going off, so surface the real state rather than guessing.
+                    // Surface the real Doze/App Standby exemption state. The
+                    // foreground VPN service remains the primary runtime path;
+                    // exemption is extra resilience on aggressive OEM builds.
                     "isIgnoringBatteryOptimizations" ->
                         result.success(isIgnoringBatteryOptimizations())
                     "requestIgnoreBatteryOptimizations" ->
                         result.success(requestIgnoreBatteryOptimizations())
-                    // Android's own Always-on VPN is the only thing that keeps a
-                    // tunnel up across swipe-from-recents and reboot. It cannot be
-                    // toggled programmatically, so deep-link the user to it.
-                    "openVpnSettings" -> result.success(openVpnSettings())
                     // Is our VPN runtime actually alive? The service lives in
                     // :RunSoLibXrayDaemon, a separate process, so its statics are
                     // NOT visible here -- this is the only honest check.
@@ -153,19 +149,6 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /** Deep-links to the OS VPN settings, where Always-on VPN lives. */
-    private fun openVpnSettings(): Boolean {
-        return try {
-            startActivity(
-                Intent(Settings.ACTION_VPN_SETTINGS)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            )
-            true
-        } catch (_: Exception) {
-            false
-        }
-    }
-
     /**
      * Whether the VPN runtime is genuinely alive.
      *
@@ -245,13 +228,13 @@ class MainActivity : FlutterActivity() {
         // Public lock-screen preview: keep the VPN status visible but hide the
         // session countdown/speed so usage metadata never reaches the lock screen.
         val publicVersion = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setSmallIcon(R.drawable.notification_status_icon)
+            .setSmallIcon(R.drawable.notification_icon)
             .setContentTitle("Revolt VPN")
             .setContentText("VPN is active")
             .build()
 
         val builder = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setSmallIcon(R.drawable.notification_status_icon)
+            .setSmallIcon(R.drawable.notification_icon)
             .setContentTitle(title)
             .setContentText(text)
             .addAction(0, actionLabel, stopPendingIntent)

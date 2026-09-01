@@ -182,7 +182,8 @@ class _LightningPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final toScreen = (Offset p) => Offset(p.dx * size.width, p.dy * size.height);
+    Offset toScreen(Offset p) => Offset(p.dx * size.width, p.dy * size.height);
+
     final scaledMain = bolt.mainPath.map(toScreen).toList();
     final scaledBranches = bolt.branches
         .map((b) => b.map(toScreen).toList())

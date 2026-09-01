@@ -191,7 +191,7 @@ class Updater {
     }
 
     try {
-      final result = await MethodChannel('com.revoltvpn.app/installer')
+      final result = await const MethodChannel('com.revoltvpn.app/installer')
           .invokeMethod<String>('getInstallerPackage');
       _cachedSource = (result == 'com.android.vending')
           ? InstallSource.playStore
