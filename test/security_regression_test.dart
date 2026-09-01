@@ -132,12 +132,25 @@ void main() {
     );
   });
 
-  test('hivemind validates session fields before constructing a VLESS URI', () {
+  test('hivemind validates and pins session fields before constructing VLESS', () {
     final source = File('lib/logic/hivemind_service.dart').readAsStringSync();
 
     expect(source, contains('_uuidPattern'));
     expect(source, contains("_requiredString(json, 'reality_pbk', maxLength: 128)"));
     expect(source, contains('_validatedHost('));
+    expect(
+      source,
+      contains("final pinnedHost = _validatedHost(AppConfig.serverIp, 'serverIp');"),
+    );
+    expect(source, contains('advertisedHost.trim() != pinnedHost'));
+    expect(
+      source,
+      contains('Session VLESS host does not match compiled server pin'),
+    );
+    expect(
+      source,
+      isNot(contains("_stringOr(json['vless_ip'], AppConfig.serverIp)")),
+    );
     expect(source, contains('return Uri('));
     expect(source, contains('queryParameters: <String, String>{'));
     expect(source, isNot(contains("return 'vless://\$uuid@\$host:\$port'")));
@@ -172,12 +185,21 @@ void main() {
       isNot(contains('attempt = 0\n                        Thread.sleep(3000)')),
     );
 
-    // Local builds may already have the previous patch applied in pub-cache.
-    // Keep explicit migration anchors so that state is upgraded rather than
-    // rejected or left on the old hot-loop behavior.
     expect(hygiene, contains('previousTunCrash'));
     expect(hygiene, contains('previousTunStartFailure'));
     expect(hygiene, contains('previousXrayRecovery'));
+  });
+
+  test('data disclosure only persists an explicit acknowledged action', () {
+    final source =
+        File('lib/components/data_disclosure_dialog.dart').readAsStringSync();
+
+    expect(source, contains('final accepted = await showDialog<bool>('));
+    expect(source, contains('if (accepted != true) return;'));
+    expect(source, contains('final saved = await prefs.setBool(_key, true);'));
+    expect(source, contains('if (!saved)'));
+    expect(source, contains('Navigator.of(context).pop(true)'));
+    expect(source, isNot(contains('prefs.setBool(_key, true);\n          Navigator')));
   });
 
   test('unsupported server picker is not wired into app state', () {

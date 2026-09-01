@@ -146,7 +146,8 @@ class _HivemindSessionConfig {
     r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
     caseSensitive: false,
   );
-  static final RegExp _shortIdPattern = RegExp(r'^[0-9a-f]{0,16}$', caseSensitive: false);
+  static final RegExp _shortIdPattern =
+      RegExp(r'^[0-9a-f]{0,16}$', caseSensitive: false);
 
   final String uuid;
   final String host;
@@ -174,10 +175,21 @@ class _HivemindSessionConfig {
       throw const FormatException('Invalid VLESS UUID');
     }
 
-    final host = _validatedHost(
-      _stringOr(json['vless_ip'], AppConfig.serverIp),
-      'vless_ip',
-    );
+    // The API may rotate credentials and Reality parameters, but it must never
+    // choose the tunnel destination. Keep that trust anchor compiled into the
+    // app so an API/domain compromise can cause denial of service, not redirect
+    // VPN traffic to an attacker-controlled server.
+    final pinnedHost = _validatedHost(AppConfig.serverIp, 'serverIp');
+    final advertisedHost = json['vless_ip'];
+    if (advertisedHost != null) {
+      if (advertisedHost is! String || advertisedHost.trim() != pinnedHost) {
+        throw const FormatException(
+          'Session VLESS host does not match compiled server pin',
+        );
+      }
+    }
+    final host = pinnedHost;
+
     final port = _portOr(json['vless_port'], 443);
     final sni = _validatedHost(
       _requiredString(json, 'reality_sni', maxLength: 253),
@@ -191,7 +203,8 @@ class _HivemindSessionConfig {
 
     final fingerprint =
         _boundedString(json['reality_fp'], AppConfig.realityFp, 32, 'reality_fp');
-    final path = _boundedString(json['xhttp_path'], AppConfig.vlessPath, 2048, 'xhttp_path');
+    final path =
+        _boundedString(json['xhttp_path'], AppConfig.vlessPath, 2048, 'xhttp_path');
     if (!path.startsWith('/')) {
       throw const FormatException('Invalid XHTTP path');
     }
