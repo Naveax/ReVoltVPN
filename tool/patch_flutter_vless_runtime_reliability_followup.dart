@@ -57,13 +57,43 @@ String replaceOnce(
   return text.replaceFirst(oldValue, newValue);
 }
 
-void main() {
-  final root = packageRoot();
-  final service = File(
-    '${root.path}/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt',
-  );
-  if (!service.existsSync()) fail('XrayVPNService.kt is missing');
+void patchPlugin(File plugin) {
+  final before = plugin.readAsStringSync();
+  var text = before;
 
+  // Context.RECEIVER_NOT_EXPORTED exists only on newer Android. ContextCompat
+  // provides the same non-exported guarantee on legacy releases, where the old
+  // registerReceiver(receiver, filter) path otherwise accepts spoofed status
+  // broadcasts from unrelated apps.
+  const oldReceiver = r'''        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            activity?.registerReceiver(xrayReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            activity?.registerReceiver(xrayReceiver, filter)
+        }
+''';
+  const hardenedReceiver = r'''        activity?.let { currentActivity ->
+            androidx.core.content.ContextCompat.registerReceiver(
+                currentActivity,
+                xrayReceiver,
+                filter,
+                androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+        }
+''';
+  text = replaceOnce(
+    text,
+    oldReceiver,
+    hardenedReceiver,
+    'non-exported status receiver on all supported Android versions',
+  );
+
+  if (before != text) {
+    plugin.writeAsStringSync(text);
+    stdout.writeln('[runtime followup patch] legacy status receiver hardened');
+  }
+}
+
+void patchService(File service) {
   final before = service.readAsStringSync();
   var text = before;
 
@@ -156,10 +186,22 @@ void main() {
     text = replaceOnce(text, marker, replacement, 'stop cleanly on VpnService revoke');
   }
 
-  if (before == text) {
-    stdout.writeln('[runtime followup patch] already current: ${service.path}');
-    return;
+  if (before != text) {
+    service.writeAsStringSync(text);
+    stdout.writeln('[runtime followup patch] TUN revoke and route hardening ready');
   }
-  service.writeAsStringSync(text);
-  stdout.writeln('[runtime followup patch] TUN revoke and route hardening ready');
+}
+
+void main() {
+  final root = packageRoot();
+  final kotlin =
+      '${root.path}/android/src/main/kotlin/com/github/tfox/flutter_vless';
+  final plugin = File('$kotlin/FlutterVlessPlugin.kt');
+  final service = File('$kotlin/xray/service/XrayVPNService.kt');
+  if (!plugin.existsSync()) fail('FlutterVlessPlugin.kt is missing');
+  if (!service.existsSync()) fail('XrayVPNService.kt is missing');
+
+  patchPlugin(plugin);
+  patchService(service);
+  stdout.writeln('[runtime followup patch] runtime followup hardening ready');
 }
