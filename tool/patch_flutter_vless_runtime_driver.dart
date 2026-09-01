@@ -74,21 +74,38 @@ void runPatch(String path) {
 
 void ensureRuntimeAnchorCompatibility(File service) {
   var text = service.readAsStringSync();
-  const current = '''    private fun runTun2socks(config: XrayConfig) {\n        tunFdReady = false\n''';
-  if (text.contains(current)) return;
-
   const functionStart = '    private fun runTun2socks(config: XrayConfig) {\n';
+  const fdReset = '        tunFdReady = false\n';
+  const securePrelude = '''        val secure = secureSocksCredentials(config)
+            ?: throw IllegalStateException("Authenticated ReVolt SOCKS5 inbound missing")
+        config.LOCAL_SOCKS5_PORT = secure.port
+
+''';
+
   if (!text.contains(functionStart)) {
     fail('tun2socks function is missing from pinned runtime');
   }
 
-  text = text.replaceFirst(
-    functionStart,
-    '${functionStart}        tunFdReady = false\n',
-  );
+  final oldExpected = functionStart + securePrelude;
+  final finalExpected = functionStart + fdReset + securePrelude;
+  if (text.contains(oldExpected) || text.contains(finalExpected)) return;
+
+  if (!text.contains(securePrelude)) {
+    fail('secure SOCKS credential prelude is missing from pinned runtime');
+  }
+
+  // The secure-SOCKS patch historically inserted its credential lookup next to
+  // command construction, while the reliability patch deliberately anchors it
+  // at function entry. Normalize that intermediate shape once. This preserves
+  // behavior while making cold, resumed and warm-cache builds deterministic.
+  text = text.replaceFirst(securePrelude, '');
+  final currentStart = text.contains(functionStart + fdReset)
+      ? functionStart + fdReset
+      : functionStart;
+  text = text.replaceFirst(currentStart, currentStart + securePrelude);
   service.writeAsStringSync(text);
   stdout.writeln(
-    '[runtime patch driver] prepared tun2socks FD-readiness anchor',
+    '[runtime patch driver] normalized secure SOCKS reliability anchor',
   );
 }
 
@@ -173,12 +190,7 @@ void main() {
   runPatch('tool/patch_flutter_vless_secure_socks_v2.dart');
   runPatch('tool/patch_flutter_vless_secure_socks_scope_fix.dart');
 
-  // The secure patch deliberately inserts its credential lookup near the
-  // command construction, not directly under the function declaration. The
-  // reliability patch originally assumed the latter. Prepare the final marker
-  // before running it so both pristine and cached 1.1.5 sources are accepted.
   ensureRuntimeAnchorCompatibility(service);
-
   runPatch('tool/patch_flutter_vless_runtime_reliability.dart');
   runPatch('tool/patch_flutter_vless_runtime_reliability_followup.dart');
 
