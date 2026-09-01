@@ -73,6 +73,33 @@ void main() {
     expect(source, contains('not proof of packet flow'));
   });
 
+  test('configured AdMob bypass contract remains intact', () {
+    final source = File('lib/logic/hivemind_service.dart').readAsStringSync();
+
+    expect(source, contains('await _runConfiguredBypass(deviceId, nonce);'));
+    expect(
+      source,
+      contains('/admob/callback?signature=test&key_id=test&custom_data='),
+    );
+    expect(
+      source,
+      contains('Validation bypass behavior is intentionally best-effort'),
+    );
+  });
+
+  test('local SOCKS diagnostics cannot fall back to unauthenticated legacy mode', () {
+    final source = File('lib/logic/local_socks_tester.dart').readAsStringSync();
+
+    expect(source, contains('required int port'));
+    expect(source, contains('required String username'));
+    expect(source, contains('required String password'));
+    expect(source, contains('const <int>[0x05, 0x01, 0x02]'));
+    expect(source, isNot(contains('const <int>[0x05, 0x01, 0x00]')));
+    expect(source, isNot(contains('int port = 10807')));
+    expect(source, isNot(contains('paladinvpn.duckdns.org')));
+    expect(source, contains("String targetHost = 'example.com'"));
+  });
+
   test('hivemind rejects missing nonce and stale session responses', () {
     final source = File('lib/logic/hivemind_service.dart').readAsStringSync();
 
@@ -85,6 +112,17 @@ void main() {
         '        _throwIfCancelled(callId);',
       ),
     );
+  });
+
+  test('hivemind validates session fields before constructing a VLESS URI', () {
+    final source = File('lib/logic/hivemind_service.dart').readAsStringSync();
+
+    expect(source, contains('_uuidPattern'));
+    expect(source, contains("_requiredString(json, 'reality_pbk', maxLength: 128)"));
+    expect(source, contains('_validatedHost('));
+    expect(source, contains('return Uri('));
+    expect(source, contains('queryParameters: <String, String>{'));
+    expect(source, isNot(contains("return 'vless://\$uuid@\$host:\$port'")));
   });
 
   test('VPN connect work cannot outlive its generation', () {

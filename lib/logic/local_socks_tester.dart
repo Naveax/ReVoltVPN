@@ -20,13 +20,13 @@ abstract final class LocalSocksTester {
 
   /// Fast local readiness probe used while starting the VPN.
   ///
-  /// This stops after SOCKS5 authentication. Startup must not depend on an
-  /// unrelated external host being reachable.
+  /// This stops after authenticated SOCKS5 negotiation. Startup must not depend
+  /// on an unrelated external host being reachable.
   static Future<LocalSocksTestResult> testListener({
     String host = '127.0.0.1',
-    int port = 10807,
-    String? username,
-    String? password,
+    required int port,
+    required String username,
+    required String password,
   }) async {
     final stopwatch = Stopwatch()..start();
     Socket? socket;
@@ -86,15 +86,14 @@ abstract final class LocalSocksTester {
     }
   }
 
-  /// Full user-facing test: authenticated local SOCKS handshake plus outbound
-  /// CONNECT. Credentials are optional so the helper remains usable for legacy
-  /// no-auth diagnostic builds.
+  /// Full user-facing test: authenticated local SOCKS handshake plus an
+  /// outbound TCP CONNECT through the active ReVolt route.
   static Future<LocalSocksTestResult> test({
     String host = '127.0.0.1',
-    int port = 10807,
-    String? username,
-    String? password,
-    String targetHost = 'paladinvpn.duckdns.org',
+    required int port,
+    required String username,
+    required String password,
+    String targetHost = 'example.com',
     int targetPort = 443,
   }) async {
     final stopwatch = Stopwatch()..start();
@@ -102,6 +101,14 @@ abstract final class LocalSocksTester {
     _SocketReader? reader;
 
     try {
+      if (targetPort <= 0 || targetPort > 65535) {
+        return const LocalSocksTestResult(
+          ok: false,
+          latencyMs: null,
+          message: 'SOCKS5 test target is invalid.',
+        );
+      }
+
       socket = await Socket.connect(
         host,
         port,
@@ -189,23 +196,10 @@ abstract final class LocalSocksTester {
   static Future<bool> _authenticate(
     _SocketReader reader,
     Socket socket, {
-    required String? username,
-    required String? password,
+    required String username,
+    required String password,
     Duration timeout = const Duration(seconds: 4),
   }) async {
-    final passwordAuth = username != null && password != null;
-    if ((username == null) != (password == null)) return false;
-
-    socket.add(passwordAuth
-        ? const <int>[0x05, 0x01, 0x02]
-        : const <int>[0x05, 0x01, 0x00]);
-    await socket.flush();
-
-    final greeting = await reader.readExactly(2, timeout: timeout);
-    if (greeting[0] != 0x05) return false;
-    if (!passwordAuth) return greeting[1] == 0x00;
-    if (greeting[1] != 0x02) return false;
-
     final userBytes = utf8.encode(username);
     final passBytes = utf8.encode(password);
     if (userBytes.isEmpty ||
@@ -214,6 +208,15 @@ abstract final class LocalSocksTester {
         passBytes.length > 255) {
       return false;
     }
+
+    // ReVolt never accepts unauthenticated local SOCKS. Advertising only RFC
+    // 1929 username/password auth makes a future credential-plumbing regression
+    // fail closed instead of silently falling back to method 0x00.
+    socket.add(const <int>[0x05, 0x01, 0x02]);
+    await socket.flush();
+
+    final greeting = await reader.readExactly(2, timeout: timeout);
+    if (greeting[0] != 0x05 || greeting[1] != 0x02) return false;
 
     socket.add(<int>[
       0x01,
@@ -229,7 +232,9 @@ abstract final class LocalSocksTester {
   }
 
   static Future<void> _consumeAddress(
-      _SocketReader reader, int addressType) async {
+    _SocketReader reader,
+    int addressType,
+  ) async {
     if (addressType == 0x01) {
       await reader.readExactly(4 + 2);
       return;
@@ -240,6 +245,9 @@ abstract final class LocalSocksTester {
     }
     if (addressType == 0x03) {
       final length = (await reader.readExactly(1)).first;
+      if (length == 0) {
+        throw const FormatException('Invalid SOCKS5 domain length');
+      }
       await reader.readExactly(length + 2);
       return;
     }

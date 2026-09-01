@@ -142,6 +142,12 @@ class HivemindService {
 }
 
 class _HivemindSessionConfig {
+  static final RegExp _uuidPattern = RegExp(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+    caseSensitive: false,
+  );
+  static final RegExp _shortIdPattern = RegExp(r'^[0-9a-f]{0,16}$', caseSensitive: false);
+
   final String uuid;
   final String host;
   final int port;
@@ -163,43 +169,113 @@ class _HivemindSessionConfig {
   });
 
   factory _HivemindSessionConfig.fromJson(Map<String, dynamic> json) {
-    final uuid = _requiredString(json, 'vless_uuid');
-    final host = _stringOr(json['vless_ip'], AppConfig.serverIp);
+    final uuid = _requiredString(json, 'vless_uuid', maxLength: 64);
+    if (!_uuidPattern.hasMatch(uuid)) {
+      throw const FormatException('Invalid VLESS UUID');
+    }
+
+    final host = _validatedHost(
+      _stringOr(json['vless_ip'], AppConfig.serverIp),
+      'vless_ip',
+    );
     final port = _portOr(json['vless_port'], 443);
-    final sni = _requiredString(json, 'reality_sni');
+    final sni = _validatedHost(
+      _requiredString(json, 'reality_sni', maxLength: 253),
+      'reality_sni',
+    );
+    final publicKey = _requiredString(json, 'reality_pbk', maxLength: 128);
+    final shortId = _stringOr(json['reality_sid'], '').trim();
+    if (!_shortIdPattern.hasMatch(shortId)) {
+      throw const FormatException('Invalid Reality short ID');
+    }
+
+    final fingerprint =
+        _boundedString(json['reality_fp'], AppConfig.realityFp, 32, 'reality_fp');
+    final path = _boundedString(json['xhttp_path'], AppConfig.vlessPath, 2048, 'xhttp_path');
+    if (!path.startsWith('/')) {
+      throw const FormatException('Invalid XHTTP path');
+    }
 
     return _HivemindSessionConfig(
       uuid: uuid,
       host: host,
       port: port,
-      publicKey: _stringOr(json['reality_pbk'], ''),
-      shortId: _stringOr(json['reality_sid'], ''),
+      publicKey: publicKey,
+      shortId: shortId,
       sni: sni,
-      fingerprint: _stringOr(json['reality_fp'], AppConfig.realityFp),
-      path: _stringOr(json['xhttp_path'], AppConfig.vlessPath),
+      fingerprint: fingerprint,
+      path: path,
     );
   }
 
   String toVlessUrl() {
-    return 'vless://$uuid@$host:$port'
-        '?security=${AppConfig.vlessSecurity}'
-        '&type=${AppConfig.vlessType}'
-        '&path=$path'
-        '&pbk=${Uri.encodeComponent(publicKey)}'
-        '&sni=${Uri.encodeComponent(sni)}'
-        '&sid=${Uri.encodeComponent(shortId)}'
-        '&fp=${Uri.encodeComponent(fingerprint)}'
-        '#Revolt VPN';
+    return Uri(
+      scheme: 'vless',
+      userInfo: uuid,
+      host: host,
+      port: port,
+      queryParameters: <String, String>{
+        'security': AppConfig.vlessSecurity,
+        'type': AppConfig.vlessType,
+        'path': path,
+        'pbk': publicKey,
+        'sni': sni,
+        'sid': shortId,
+        'fp': fingerprint,
+      },
+      fragment: 'Revolt VPN',
+    ).toString();
   }
 
-  static String _requiredString(Map<String, dynamic> json, String key) {
+  static String _requiredString(
+    Map<String, dynamic> json,
+    String key, {
+    int maxLength = 4096,
+  }) {
     final value = json[key];
-    if (value is String && value.trim().isNotEmpty) return value.trim();
-    throw FormatException('Missing required session field: $key');
+    if (value is! String) {
+      throw FormatException('Missing required session field: $key');
+    }
+    final trimmed = value.trim();
+    if (trimmed.isEmpty || trimmed.length > maxLength) {
+      throw FormatException('Invalid session field: $key');
+    }
+    return trimmed;
   }
 
   static String _stringOr(Object? value, String fallback) {
-    return value is String && value.isNotEmpty ? value : fallback;
+    return value is String && value.trim().isNotEmpty ? value.trim() : fallback;
+  }
+
+  static String _boundedString(
+    Object? value,
+    String fallback,
+    int maxLength,
+    String field,
+  ) {
+    final result = _stringOr(value, fallback);
+    if (result.isEmpty || result.length > maxLength) {
+      throw FormatException('Invalid session field: $field');
+    }
+    return result;
+  }
+
+  static String _validatedHost(String input, String field) {
+    final value = input.trim();
+    if (value.isEmpty ||
+        value.length > 253 ||
+        value.contains(RegExp(r'[\s/@?#]'))) {
+      throw FormatException('Invalid session host: $field');
+    }
+    try {
+      final probe = Uri(scheme: 'https', host: value);
+      if (probe.host.isEmpty) {
+        throw FormatException('Invalid session host: $field');
+      }
+    } on FormatException {
+      throw FormatException('Invalid session host: $field');
+    }
+    return value;
   }
 
   static int _portOr(Object? value, int fallback) {
