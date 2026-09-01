@@ -29,8 +29,19 @@ class HivemindService {
 
   static void cancel() => _currentCallId++;
 
+  static String createNonce() {
+    final random = Random.secure();
+    final high = random.nextInt(0x7FFFFFFF);
+    final low = random.nextInt(0x7FFFFFFF);
+    return '$high-$low-${DateTime.now().microsecondsSinceEpoch}';
+  }
+
   static void setExpectedNonce(String nonce) {
-    _expectedNonce = nonce;
+    final normalized = nonce.trim();
+    if (normalized.isEmpty) {
+      throw ArgumentError.value(nonce, 'nonce', 'Nonce must not be empty.');
+    }
+    _expectedNonce = normalized;
   }
 
   static Future<String> fetchConfigDirectly({
@@ -39,10 +50,14 @@ class HivemindService {
   }) async {
     final deviceId = await CryptoService.getDeviceId();
     final callId = ++_currentCallId;
-    final nonce = _newNonce();
-    _expectedNonce = nonce;
 
-    if (!skipAdBypass) {
+    // A rewarded-ad attempt owns its nonce. Reuse that exact nonce for the
+    // callback/status/config chain instead of silently replacing it here.
+    final nonce = _expectedNonce ?? createNonce();
+
+    // Test callbacks are a development aid only. A release build must never
+    // attempt the server's validation bypass path.
+    if (!skipAdBypass && kDebugMode) {
       await _runConfiguredBypass(deviceId, nonce);
     }
 
@@ -53,8 +68,13 @@ class HivemindService {
 
       try {
         final session = await _fetchActiveSession(deviceId, nonce);
+        _throwIfCancelled(callId);
         if (session != null) {
-          _expectedNonce = null;
+          // Never let a late response from an older attempt erase the nonce
+          // belonging to a newer rewarded-ad/connect attempt.
+          if (_expectedNonce == nonce) {
+            _expectedNonce = null;
+          }
           return session.toVlessUrl();
         }
       } catch (e) {
@@ -83,13 +103,6 @@ class HivemindService {
     }
   }
 
-  static String _newNonce() {
-    final random = Random.secure();
-    final high = random.nextInt(0x7FFFFFFF);
-    final low = random.nextInt(0x7FFFFFFF);
-    return '$high-$low-${DateTime.now().microsecondsSinceEpoch}';
-  }
-
   static Future<void> _runConfiguredBypass(String deviceId, String nonce) async {
     try {
       final customData = jsonEncode({'device_id': deviceId, 'nonce': nonce});
@@ -98,7 +111,7 @@ class HivemindService {
       );
       await directGet(callback, timeout: const Duration(seconds: 8));
     } catch (_) {
-      // Validation bypass behavior is intentionally best-effort in this build.
+      // Debug-only validation bypass is intentionally best-effort.
     }
   }
 
@@ -115,10 +128,10 @@ class HivemindService {
     final decoded = jsonDecode(response.body);
     if (decoded is! Map<String, dynamic>) return null;
 
+    // Session binding is fail-closed: a missing nonce is not equivalent to a
+    // matching nonce.
     final serverNonce = decoded['nonce'];
-    if (_expectedNonce != null &&
-        serverNonce is String &&
-        serverNonce != nonce) {
+    if (serverNonce is! String || serverNonce != nonce) {
       return null;
     }
 
@@ -163,13 +176,16 @@ class _HivemindSessionConfig {
 
   factory _HivemindSessionConfig.fromJson(Map<String, dynamic> json) {
     final uuid = _requiredString(json, 'vless_uuid');
-    final host = _stringOr(json['vless_ip'], AppConfig.serverIp);
+    final advertisedHost = _stringOr(json['vless_ip'], AppConfig.serverIp);
+    if (advertisedHost != AppConfig.serverIp) {
+      throw const FormatException('Session attempted to override pinned VLESS host.');
+    }
     final port = _portOr(json['vless_port'], 443);
     final sni = _requiredString(json, 'reality_sni');
 
     return _HivemindSessionConfig(
       uuid: uuid,
-      host: host,
+      host: AppConfig.serverIp,
       port: port,
       publicKey: _stringOr(json['reality_pbk'], ''),
       shortId: _stringOr(json['reality_sid'], ''),
