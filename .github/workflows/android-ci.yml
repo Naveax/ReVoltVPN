@@ -45,9 +45,9 @@ jobs:
           test "$(sha256sum android/gradle/wrapper/gradle-wrapper.jar | awk '{print $1}')" = \
             '7d3a4ac4de1c32b59bc6a4eb8ecb8e612ccd0cf1ae1e99f66902da64df296172'
           test "$(git hash-object android/gradle/verification-metadata.xml)" = \
-            '28ad5385ad7d6f3e61ca700d49a413da443cd2ec'
+            '590f03de94d38d83873a42d7c3d535f187b74069'
           test "$(sha256sum android/gradle/verification-metadata.xml | awk '{print $1}')" = \
-            '23a17ea6543d7fb5e9f2520470e9992aa4baa445d40c8500b14aec5cd0ea98dd'
+            '5ada5cb52c3ed7d2dc07976771bbe41257bf2d4d13d54f9d661d2237543127ce'
 
           grep -qx \
             'distributionSha256Sum=efe9a3d147d948d7528a9887fa35abcf24ca1a43ad06439996490f77569b02d1' \
@@ -61,6 +61,10 @@ jobs:
           grep -q 'ab137ba5a8e32c9b066bf9126a1c76dd5614b724ba5c0b02549772b5e9f4cf1f' \
             android/gradle/verification-metadata.xml
           grep -q 'b401fd25901e582a524aa5343c4b39e28bc56e24961c1069bf2b4bbfcee46b93' \
+            android/gradle/verification-metadata.xml
+          grep -q '5ce2f1c4262b99174047f3d413816c57ceef5fb00a520264cf5ed564576bf250' \
+            android/gradle/verification-metadata.xml
+          grep -q '43f1683656c6fcd2f24070bd781948427af61a67eb31a9a92fc0ffab9fc0953b' \
             android/gradle/verification-metadata.xml
 
           ! git check-ignore -q android/gradlew
@@ -89,7 +93,7 @@ jobs:
         run: git diff --exit-code -- pubspec.lock
 
       - name: Analyze
-        run: flutter analyze --no-fatal-infos
+        run: flutter analyze
 
       - name: Test
         run: flutter test
