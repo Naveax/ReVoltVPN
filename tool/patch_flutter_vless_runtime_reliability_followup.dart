@@ -97,6 +97,28 @@ void patchService(File service) {
   final before = service.readAsStringSync();
   var text = before;
 
+  text = replaceOnce(
+    text,
+    r'''        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start foreground", e)
+        }
+
+        if (command == AppConfigs.V2RAY_SERVICE_COMMANDS.START_SERVICE) {
+''',
+    r'''        } catch (e: Exception) {
+            // Without a foreground service Android is free to terminate the
+            // runtime immediately. Continuing here can expose a false CONNECTED
+            // state, so startup fails closed instead.
+            Log.e(TAG, "Failed to start foreground; refusing VPN startup", e)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        if (command == AppConfigs.V2RAY_SERVICE_COMMANDS.START_SERVICE) {
+''',
+    'fail closed after foreground-service startup failure',
+  );
+
   // The VPN app UID is already excluded with addDisallowedApplication(packageName),
   // which is what lets Xray reach the server without routing into its own TUN.
   // Leaving the server IP out of the global route therefore only gives every
@@ -161,6 +183,25 @@ void patchService(File service) {
                     fdReady && outboundReady
 ''',
     'include actual TUN descriptor in runtime health',
+  );
+
+  text = replaceOnce(
+    text,
+    r'''                    if (XrayCoreManager.startCore(this, config)) {
+                        Log.w(TAG, "Xray core process restarted; awaiting end-to-end health")
+                        return@Thread
+                    }
+''',
+    r'''                    if (XrayCoreManager.startCore(this, config)) {
+                        // startCore marks the child CONNECTED after process startup.
+                        // Keep UI/state in recovery until the independent SOCKS/TUN
+                        // health monitor proves packets can actually flow again.
+                        AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_CONNECTING
+                        Log.w(TAG, "Xray core process restarted; awaiting end-to-end health")
+                        return@Thread
+                    }
+''',
+    'keep recovered Xray gated on end-to-end health',
   );
 
   if (!text.contains('override fun onRevoke()')) {
