@@ -265,8 +265,15 @@ class _SocketReader {
     int count, {
     Duration timeout = const Duration(seconds: 4),
   }) async {
+    final elapsed = Stopwatch()..start();
     while (_buffer.length < count) {
-      final hasNext = await _iterator.moveNext().timeout(timeout);
+      final remainingMicros = timeout.inMicroseconds - elapsed.elapsedMicroseconds;
+      if (remainingMicros <= 0) {
+        throw TimeoutException('Socket read timed out', timeout);
+      }
+      final hasNext = await _iterator.moveNext().timeout(
+            Duration(microseconds: remainingMicros),
+          );
       if (!hasNext) {
         throw const SocketException('Socket closed early');
       }

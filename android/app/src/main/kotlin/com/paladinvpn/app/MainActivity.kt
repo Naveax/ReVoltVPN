@@ -155,8 +155,9 @@ class MainActivity : FlutterActivity() {
     private fun isVpnServiceProcessAlive(): Boolean {
         return try {
             val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val expectedProcessName = "$packageName$VPN_PROCESS_SUFFIX"
             am.runningAppProcesses
-                ?.any { it.processName.endsWith(VPN_PROCESS_SUFFIX) } == true
+                ?.any { it.processName == expectedProcessName } == true
         } catch (_: Exception) {
             false
         }
