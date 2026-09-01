@@ -233,6 +233,107 @@ void patchService(File file) {
   final before = file.readAsStringSync();
   var text = before;
 
+  // A developer may already have the previous ReVolt patch applied in pub-cache.
+  // Normalize those old hot-loop recovery blocks to the current backoff form
+  // before the secure-SOCKS stage validates its anchors.
+  const previousTunCrash = r'''                    if (isRunning && tun2socksProcess === process && currentConfig === config) {
+                        Log.e(TAG, "tun2socks exited unexpectedly, recycling without dropping TUN")
+                        Thread.sleep(350)
+                        if (isRunning && currentConfig === config) runTun2socks(config)
+                    }
+''';
+  const backoffTunCrash = r'''                    if (isRunning && tun2socksProcess === process && currentConfig === config) {
+                        Log.e(TAG, "tun2socks exited unexpectedly; keeping TUN fail-closed")
+                        tun2socksProcess = null
+                        scheduleTun2socksRecovery(config, "process exited")
+                    }
+''';
+  if (text.contains(previousTunCrash)) {
+    text = text.replaceFirst(previousTunCrash, backoffTunCrash);
+  }
+
+  const previousTunStartFailure = r'''        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start tun2socks; retrying with TUN held", e)
+            if (isRunning && currentConfig === config) {
+                Thread {
+                    try {
+                        Thread.sleep(600)
+                        if (isRunning && currentConfig === config) runTun2socks(config)
+                    } catch (_: InterruptedException) {}
+                }.start()
+            }
+        }
+''';
+  const backoffTunStartFailure = r'''        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start tun2socks; keeping TUN fail-closed", e)
+            scheduleTun2socksRecovery(config, "start failure")
+        }
+''';
+  if (text.contains(previousTunStartFailure)) {
+    text = text.replaceFirst(previousTunStartFailure, backoffTunStartFailure);
+  }
+
+  const previousXrayRecovery = r'''    fun handleXrayCoreExit(config: XrayConfig) {
+        if (!isRunning || currentConfig !== config || recoveringXray) return
+        recoveringXray = true
+
+        Thread {
+            var attempt = 0
+            try {
+                while (isRunning && currentConfig === config) {
+                    attempt++
+                    Thread.sleep(400L * attempt.coerceAtMost(5))
+                    if (!isRunning || currentConfig !== config) break
+
+                    Log.w(TAG, "Recovering Xray core attempt $attempt")
+                    if (XrayCoreManager.startCore(this, config)) {
+                        Log.w(TAG, "Xray core recovered without dropping TUN")
+                        return@Thread
+                    }
+
+                    if (attempt >= 3) {
+                        attempt = 0
+                        Thread.sleep(3000)
+                    }
+                }
+            } catch (_: InterruptedException) {
+            } finally {
+                recoveringXray = false
+            }
+        }.start()
+    }
+''';
+  const backoffXrayRecovery = r'''    fun handleXrayCoreExit(config: XrayConfig) {
+        if (!isRunning || currentConfig !== config || recoveringXray) return
+        recoveringXray = true
+
+        Thread {
+            var attempt = 0
+            try {
+                while (isRunning && currentConfig === config) {
+                    attempt++
+                    val shift = (attempt - 1).coerceIn(0, 6)
+                    val delayMs = (500L * (1L shl shift)).coerceAtMost(30_000L)
+                    Log.w(TAG, "Recovering Xray core attempt $attempt in ${delayMs}ms")
+                    Thread.sleep(delayMs)
+                    if (!isRunning || currentConfig !== config) break
+
+                    if (XrayCoreManager.startCore(this, config)) {
+                        Log.w(TAG, "Xray core recovered without dropping TUN")
+                        return@Thread
+                    }
+                }
+            } catch (_: InterruptedException) {
+            } finally {
+                recoveringXray = false
+            }
+        }.start()
+    }
+''';
+  if (text.contains(previousXrayRecovery)) {
+    text = text.replaceFirst(previousXrayRecovery, backoffXrayRecovery);
+  }
+
   text = text.replaceAll('"vpn_service_channel"', '"REVOLT_VPN_SERVICE"');
   text = text.replaceAll('"XRAY_SERVICE_CHANNEL"', '"REVOLT_VPN_SERVICE"');
 

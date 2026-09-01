@@ -67,6 +67,7 @@ void main() {
     expect(hygiene, contains('android.permission.READ_EXTERNAL_STORAGE'));
     expect(hygiene, contains('reader.forEachLine { _ -> }'));
     expect(hygiene, contains('Failed to configure VPN DNS'));
+    expect(hygiene, contains('deleteEphemeralConfigOnFailure'));
   });
 
   test('native app bridge keeps runtime adoption on private heartbeat only', () {
@@ -151,6 +152,32 @@ void main() {
     expect(source, contains('_connectEpoch++;\n    _suppressNativeConnect = true;'));
     expect(source, contains('if (_suppressNativeConnect || _userDisconnecting) return;'));
     expect(source, isNot(contains('bool _cancelled = false;')));
+  });
+
+  test('native recovery is fail-closed without hot process restart loops', () {
+    final source = File('tool/patch_flutter_vless_secure_socks_v2.dart')
+        .readAsStringSync();
+    final hygiene = File('tool/patch_flutter_vless_runtime_hygiene.dart')
+        .readAsStringSync();
+
+    expect(source, contains('scheduleTun2socksRecovery'));
+    expect(source, contains('tun2socksRecoveryAttempt'));
+    expect(source, contains('coerceAtMost(30_000L)'));
+    expect(source, contains('recoveringTun2socks = false'));
+    expect(source, contains('tun2socksRecoveryAttempt = 0'));
+    expect(source, isNot(contains('Thread.sleep(350)')));
+    expect(source, isNot(contains('Thread.sleep(600)')));
+    expect(
+      source,
+      isNot(contains('attempt = 0\n                        Thread.sleep(3000)')),
+    );
+
+    // Local builds may already have the previous patch applied in pub-cache.
+    // Keep explicit migration anchors so that state is upgraded rather than
+    // rejected or left on the old hot-loop behavior.
+    expect(hygiene, contains('previousTunCrash'));
+    expect(hygiene, contains('previousTunStartFailure'));
+    expect(hygiene, contains('previousXrayRecovery'));
   });
 
   test('unsupported server picker is not wired into app state', () {

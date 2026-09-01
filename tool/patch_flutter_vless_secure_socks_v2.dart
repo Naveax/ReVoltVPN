@@ -213,8 +213,21 @@ void patchService(File file) {
       '    private var isRunning = false\n',
       '    @Volatile private var isRunning = false\n'
           '    @Volatile private var recoveringXray = false\n'
+          '    @Volatile private var recoveringTun2socks = false\n'
+          '    private var tun2socksRecoveryAttempt = 0\n'
           '    private var currentConfig: XrayConfig? = null\n',
       'service recovery fields',
+    );
+  } else if (!text.contains('private var recoveringTun2socks = false')) {
+    text = replaceOnce(
+      text,
+      '    @Volatile private var recoveringXray = false\n'
+          '    private var currentConfig: XrayConfig? = null\n',
+      '    @Volatile private var recoveringXray = false\n'
+          '    @Volatile private var recoveringTun2socks = false\n'
+          '    private var tun2socksRecoveryAttempt = 0\n'
+          '    private var currentConfig: XrayConfig? = null\n',
+      'tun2socks recovery fields',
     );
   }
 
@@ -301,6 +314,44 @@ void patchService(File file) {
     );
   }
 
+  if (!text.contains('private fun scheduleTun2socksRecovery(')) {
+    const runComment = r'''    /**
+     * Starts the tun2socks process and initiates the FD transfer.
+     */
+    private fun runTun2socks(config: XrayConfig) {
+''';
+    const recoveryHelper = r'''    private fun scheduleTun2socksRecovery(config: XrayConfig, reason: String) {
+        if (!isRunning || currentConfig !== config || recoveringTun2socks) return
+        recoveringTun2socks = true
+        val attempt = ++tun2socksRecoveryAttempt
+        val shift = (attempt - 1).coerceIn(0, 6)
+        val delayMs = (500L * (1L shl shift)).coerceAtMost(30_000L)
+        Log.w(TAG, "Scheduling tun2socks recovery attempt $attempt in ${delayMs}ms: $reason")
+
+        Thread {
+            try {
+                Thread.sleep(delayMs)
+            } catch (_: InterruptedException) {
+                recoveringTun2socks = false
+                return@Thread
+            }
+
+            recoveringTun2socks = false
+            if (isRunning && currentConfig === config) {
+                runTun2socks(config)
+            }
+        }.start()
+    }
+
+''';
+    text = replaceOnce(
+      text,
+      runComment,
+      '$recoveryHelper$runComment',
+      'tun2socks recovery scheduler',
+    );
+  }
+
   if (!text.contains('Authenticated ReVolt SOCKS5 inbound missing')) {
     const commandComment = r'''        // Command to start tun2socks. 
         // Note: We pass -sock-path to tell it where to listen for the FD.
@@ -360,9 +411,9 @@ void patchService(File file) {
                     }
 ''';
     const newRestart = r'''                    if (isRunning && tun2socksProcess === process && currentConfig === config) {
-                        Log.e(TAG, "tun2socks exited unexpectedly, recycling without dropping TUN")
-                        Thread.sleep(350)
-                        if (isRunning && currentConfig === config) runTun2socks(config)
+                        Log.e(TAG, "tun2socks exited unexpectedly; keeping TUN fail-closed")
+                        tun2socksProcess = null
+                        scheduleTun2socksRecovery(config, "process exited")
                     }
 ''';
     text = replaceOnce(
@@ -385,15 +436,8 @@ void patchService(File file) {
         }
 ''';
   const newStartFailure = r'''        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start tun2socks; retrying with TUN held", e)
-            if (isRunning && currentConfig === config) {
-                Thread {
-                    try {
-                        Thread.sleep(600)
-                        if (isRunning && currentConfig === config) runTun2socks(config)
-                    } catch (_: InterruptedException) {}
-                }.start()
-            }
+            Log.e(TAG, "Failed to start tun2socks; keeping TUN fail-closed", e)
+            scheduleTun2socksRecovery(config, "start failure")
         }
 ''';
   text = replaceOnce(
@@ -481,18 +525,15 @@ void patchService(File file) {
             try {
                 while (isRunning && currentConfig === config) {
                     attempt++
-                    Thread.sleep(400L * attempt.coerceAtMost(5))
+                    val shift = (attempt - 1).coerceIn(0, 6)
+                    val delayMs = (500L * (1L shl shift)).coerceAtMost(30_000L)
+                    Log.w(TAG, "Recovering Xray core attempt $attempt in ${delayMs}ms")
+                    Thread.sleep(delayMs)
                     if (!isRunning || currentConfig !== config) break
 
-                    Log.w(TAG, "Recovering Xray core attempt $attempt")
                     if (XrayCoreManager.startCore(this, config)) {
                         Log.w(TAG, "Xray core recovered without dropping TUN")
                         return@Thread
-                    }
-
-                    if (attempt >= 3) {
-                        attempt = 0
-                        Thread.sleep(3000)
                     }
                 }
             } catch (_: InterruptedException) {
@@ -511,13 +552,32 @@ void patchService(File file) {
     );
   }
 
-  if (!text.contains('        recoveringXray = false\n        tun2socksProcess?.destroy()')) {
-    text = replaceOnce(
-      text,
-      '        isRunning = false\n        tun2socksProcess?.destroy()\n',
+  if (!text.contains(
+    '        recoveringTun2socks = false\n        tun2socksRecoveryAttempt = 0\n',
+  )) {
+    if (text.contains(
       '        isRunning = false\n        recoveringXray = false\n        tun2socksProcess?.destroy()\n',
-      'cancel recovery on cleanup',
-    );
+    )) {
+      text = text.replaceFirst(
+        '        isRunning = false\n        recoveringXray = false\n        tun2socksProcess?.destroy()\n',
+        '        isRunning = false\n'
+            '        recoveringXray = false\n'
+            '        recoveringTun2socks = false\n'
+            '        tun2socksRecoveryAttempt = 0\n'
+            '        tun2socksProcess?.destroy()\n',
+      );
+    } else {
+      text = replaceOnce(
+        text,
+        '        isRunning = false\n        tun2socksProcess?.destroy()\n',
+        '        isRunning = false\n'
+            '        recoveringXray = false\n'
+            '        recoveringTun2socks = false\n'
+            '        tun2socksRecoveryAttempt = 0\n'
+            '        tun2socksProcess?.destroy()\n',
+        'cancel recovery on cleanup',
+      );
+    }
   }
 
   if (!text.contains('        currentConfig = null\n        XrayCoreManager.stopCore(this)')) {
