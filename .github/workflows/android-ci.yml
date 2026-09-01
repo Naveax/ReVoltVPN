@@ -121,6 +121,14 @@ jobs:
       - name: Warm APK build
         run: flutter build apk --debug
 
+      - name: Release R8 smoke build
+        env:
+          REVOLT_CI_RELEASE_SMOKE: 'true'
+        run: |
+          flutter build apk --release
+          test -f build/app/outputs/flutter-apk/app-release.apk
+          test -f build/app/outputs/mapping/release/mapping.txt
+
       - name: Upload APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

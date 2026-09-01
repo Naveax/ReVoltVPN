@@ -154,6 +154,10 @@ android {
         admobProperties.load(FileInputStream(admobPropertiesFile))
     }
 
+    // Explicit opt-in used only by CI to exercise the real release/R8 graph.
+    // Normal production release signing remains tied to key.properties.
+    val ciReleaseSmoke = System.getenv("REVOLT_CI_RELEASE_SMOKE") == "true"
+
     defaultConfig {
         applicationId = "com.paladinvpn.app"
         minSdk = flutter.minSdkVersion
@@ -174,7 +178,11 @@ android {
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = if (ciReleaseSmoke) {
+                signingConfigs.getByName("debug")
+            } else {
+                signingConfigs.getByName("release")
+            }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
