@@ -117,7 +117,10 @@ void patchCore(File file) {
     'disable unauthenticated HTTP proxy in secure mode',
   );
 
-  if (!text.contains('val process = pb.start()')) {
+  final processIdentityReady =
+      text.contains('val process = pb.start()') ||
+      text.contains('val process = xrayProcess ?: return false');
+  if (!processIdentityReady) {
     text = replaceOnce(
       text,
       '            xrayProcess = pb.start()\n',
