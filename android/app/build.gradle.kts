@@ -24,9 +24,9 @@ val dartExecutable = File(
         "bin/cache/dart-sdk/bin/dart"
     },
 )
-val flutterVlessPatchScript = File(
+val flutterVlessRuntimeHygieneScript = File(
     projectRootDir,
-    "tool/patch_flutter_vless_allowed_apps.dart",
+    "tool/patch_flutter_vless_runtime_hygiene.dart",
 )
 val flutterVlessSecureSocksPatchScript = File(
     projectRootDir,
@@ -37,17 +37,17 @@ val flutterVlessSecurityInvariantsScript = File(
     "tool/patch_flutter_vless_security_invariants.dart",
 )
 
-val patchFlutterVlessAllowedApps = tasks.register<Exec>("patchFlutterVlessAllowedApps") {
+val patchFlutterVlessRuntimeHygiene = tasks.register<Exec>("patchFlutterVlessRuntimeHygiene") {
     group = "build setup"
-    description = "Patch pinned flutter_vless_android 1.1.5 with ReVolt routing/runtime hardening"
+    description = "Remove stale Xray/socket state from pinned flutter_vless_android 1.1.5 before startup"
     workingDir(projectRootDir)
 
     doFirst {
         if (!dartExecutable.isFile) {
             throw GradleException("Flutter Dart executable not found: ${dartExecutable.absolutePath}")
         }
-        if (!flutterVlessPatchScript.isFile) {
-            throw GradleException("flutter_vless patch script missing: ${flutterVlessPatchScript.absolutePath}")
+        if (!flutterVlessRuntimeHygieneScript.isFile) {
+            throw GradleException("runtime hygiene patch script missing: ${flutterVlessRuntimeHygieneScript.absolutePath}")
         }
         if (!File(projectRootDir, ".dart_tool/package_config.json").isFile) {
             throw GradleException("Flutter package metadata missing. Run `flutter pub get` before Android compilation.")
@@ -57,7 +57,7 @@ val patchFlutterVlessAllowedApps = tasks.register<Exec>("patchFlutterVlessAllowe
     commandLine(
         dartExecutable.absolutePath,
         "run",
-        flutterVlessPatchScript.absolutePath,
+        flutterVlessRuntimeHygieneScript.absolutePath,
     )
 }
 
@@ -65,7 +65,7 @@ val patchFlutterVlessSecureSocks = tasks.register<Exec>("patchFlutterVlessSecure
     group = "build setup"
     description = "Add authenticated ephemeral SOCKS5 and fail-closed process recovery to pinned flutter_vless_android 1.1.5"
     workingDir(projectRootDir)
-    dependsOn(patchFlutterVlessAllowedApps)
+    dependsOn(patchFlutterVlessRuntimeHygiene)
 
     doFirst {
         if (!dartExecutable.isFile) {

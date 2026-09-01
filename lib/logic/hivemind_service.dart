@@ -53,6 +53,7 @@ class HivemindService {
 
       try {
         final session = await _fetchActiveSession(deviceId, nonce);
+        _throwIfCancelled(callId);
         if (session != null) {
           _expectedNonce = null;
           return session.toVlessUrl();
@@ -116,8 +117,8 @@ class HivemindService {
     if (decoded is! Map<String, dynamic>) return null;
 
     final serverNonce = decoded['nonce'];
-    if (_expectedNonce != null &&
-        serverNonce is String &&
+    if (_expectedNonce != nonce ||
+        serverNonce is! String ||
         serverNonce != nonce) {
       return null;
     }

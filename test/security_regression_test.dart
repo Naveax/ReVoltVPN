@@ -57,6 +57,20 @@ void main() {
     expect(patch, contains('Android refused to establish VPN interface'));
   });
 
+  test('hivemind rejects missing nonce and stale session responses', () {
+    final source = File('lib/logic/hivemind_service.dart').readAsStringSync();
+
+    expect(source, contains('_expectedNonce != nonce ||'));
+    expect(source, contains('serverNonce is! String ||'));
+    expect(
+      source,
+      contains(
+        'final session = await _fetchActiveSession(deviceId, nonce);\n'
+        '        _throwIfCancelled(callId);',
+      ),
+    );
+  });
+
   test('unsupported server picker is not wired into app state', () {
     final mainSource = File('lib/main.dart').readAsStringSync();
     final statusBar = File('lib/components/status_bar.dart').readAsStringSync();
