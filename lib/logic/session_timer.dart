@@ -119,6 +119,13 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     final hadActiveSession = isRunning || _hasSyncedOnce;
     if (!hadActiveSession || _isDisconnecting) return;
 
+    if (vpnConnection.status == VpnStatus.connecting) {
+      // Do not leave the previous countdown frozen in the foreground
+      // notification while the native TUN/Xray path is recovering.
+      unawaited(NotificationService.updateTimer('Reconnecting…'));
+      return;
+    }
+
     if (vpnConnection.status == VpnStatus.error) {
       _stopForVpnFailure('VPN entered error state');
       return;
