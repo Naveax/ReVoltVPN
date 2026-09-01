@@ -45,6 +45,11 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     vpnConnection.addListener(_onVpnConnectionChanged);
     unawaited(_loadSupportRewardState());
+    // VpnConnection is eager while this provider is lazy. If native runtime
+    // adoption finished before SessionTimer was constructed, no status event
+    // will be replayed for us. Reconcile the current snapshot once after the
+    // constructor so an already-running session immediately resumes syncing.
+    scheduleMicrotask(_onVpnConnectionChanged);
   }
 
   int get remaining => _remainingSeconds;
