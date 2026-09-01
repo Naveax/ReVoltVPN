@@ -21,18 +21,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Add independently verified Guava parent checksum
+      - name: Commit independently verified Guava parent metadata
         shell: bash
         run: |
           set -euo pipefail
 
           FILE='android/gradle/verification-metadata.xml'
-          CI='.github/workflows/android-ci.yml'
           EXPECTED_POM_SHA='55441db27e8869dfefe053059bdf478bdc7e95585642bf391f0023345fd56287'
           POM_URL='https://repo.maven.apache.org/maven2/com/google/guava/guava-parent/33.3.1-jre/guava-parent-33.3.1-jre.pom'
 
           test "$(git hash-object "$FILE")" = 'e48bca7d6225665ef33cc0dc4bf0609be0631996'
-          test "$(git hash-object "$CI")" = '2472447527db58ba5c52ee3b09b89ea5373b2ea0'
 
           ACTUAL_POM_SHA="$(curl --fail --silent --show-error --location "$POM_URL" | sha256sum | awk '{print $1}')"
           test "$ACTUAL_POM_SHA" = "$EXPECTED_POM_SHA"
@@ -43,14 +41,10 @@ jobs:
 
           META_GIT_SHA="$(git hash-object "$FILE")"
           META_SHA256="$(sha256sum "$FILE" | awk '{print $1}')"
+          echo "META_GIT_SHA=$META_GIT_SHA"
+          echo "META_SHA256=$META_SHA256"
 
-          sed -i "s/e48bca7d6225665ef33cc0dc4bf0609be0631996/$META_GIT_SHA/" "$CI"
-          sed -i "s/90f66e5c14f1b20222b593f6beaa66e5d39ab91456a6abec8af57db25e5efad6/$META_SHA256/" "$CI"
-          grep -q "$META_GIT_SHA" "$CI"
-          grep -q "$META_SHA256" "$CI"
-
-          git rm .github/workflows/verification-metadata-guava-fix.yml
-          git add "$FILE" "$CI"
+          git add "$FILE"
           git diff --cached --check
 
           git config user.name 'github-actions[bot]'
