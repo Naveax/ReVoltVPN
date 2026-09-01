@@ -49,11 +49,11 @@ void main() {
     final patch = File('tool/patch_flutter_vless_security_invariants.dart')
         .readAsStringSync();
 
-    expect(patch, contains('builder.addRoute(\\"0.0.0.0\\", 0)'));
-    expect(patch, contains('builder.addRoute(\\"::\\", 0)'));
+    expect(patch, contains('builder.addRoute("0.0.0.0", 0)'));
+    expect(patch, contains('builder.addRoute("::", 0)'));
     expect(patch, contains('ContextCompat.RECEIVER_NOT_EXPORTED'));
     expect(patch, contains('.setPackage(context.packageName)'));
-    expect(patch, contains('android:value=\\"false\\"'));
+    expect(patch, contains('android:value="false"'));
     expect(patch, contains('Android refused to establish VPN interface'));
   });
 
