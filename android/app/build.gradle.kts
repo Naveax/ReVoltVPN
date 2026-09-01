@@ -24,38 +24,22 @@ val dartExecutable = File(
         "bin/cache/dart-sdk/bin/dart"
     },
 )
-val flutterVlessPatchScript = File(
+val flutterVlessRuntimePatchDriver = File(
     projectRootDir,
-    "tool/patch_flutter_vless_allowed_apps.dart",
-)
-val flutterVlessSecureSocksPatchScript = File(
-    projectRootDir,
-    "tool/patch_flutter_vless_secure_socks_v2.dart",
-)
-val flutterVlessSecureSocksScopeFixScript = File(
-    projectRootDir,
-    "tool/patch_flutter_vless_secure_socks_scope_fix.dart",
-)
-val flutterVlessRuntimeReliabilityPatchScript = File(
-    projectRootDir,
-    "tool/patch_flutter_vless_runtime_reliability.dart",
-)
-val flutterVlessRuntimeReliabilityFollowupScript = File(
-    projectRootDir,
-    "tool/patch_flutter_vless_runtime_reliability_followup.dart",
+    "tool/patch_flutter_vless_runtime_driver.dart",
 )
 
-val patchFlutterVlessAllowedApps = tasks.register<Exec>("patchFlutterVlessAllowedApps") {
+val patchFlutterVlessRuntime = tasks.register<Exec>("patchFlutterVlessRuntime") {
     group = "build setup"
-    description = "Patch pinned flutter_vless_android 1.1.5 with ReVolt routing/runtime hardening"
+    description = "Apply the complete pinned flutter_vless_android 1.1.5 ReVolt runtime patch exactly once"
     workingDir(projectRootDir)
 
     doFirst {
         if (!dartExecutable.isFile) {
             throw GradleException("Flutter Dart executable not found: ${dartExecutable.absolutePath}")
         }
-        if (!flutterVlessPatchScript.isFile) {
-            throw GradleException("flutter_vless patch script missing: ${flutterVlessPatchScript.absolutePath}")
+        if (!flutterVlessRuntimePatchDriver.isFile) {
+            throw GradleException("flutter_vless runtime patch driver missing: ${flutterVlessRuntimePatchDriver.absolutePath}")
         }
         if (!File(projectRootDir, ".dart_tool/package_config.json").isFile) {
             throw GradleException("Flutter package metadata missing. Run `flutter pub get` before Android compilation.")
@@ -65,116 +49,16 @@ val patchFlutterVlessAllowedApps = tasks.register<Exec>("patchFlutterVlessAllowe
     commandLine(
         dartExecutable.absolutePath,
         "run",
-        flutterVlessPatchScript.absolutePath,
-    )
-}
-
-val patchFlutterVlessSecureSocks = tasks.register<Exec>("patchFlutterVlessSecureSocks") {
-    group = "build setup"
-    description = "Add authenticated ephemeral SOCKS5 and fail-closed process recovery to pinned flutter_vless_android 1.1.5"
-    workingDir(projectRootDir)
-    dependsOn(patchFlutterVlessAllowedApps)
-
-    doFirst {
-        if (!dartExecutable.isFile) {
-            throw GradleException("Flutter Dart executable not found: ${dartExecutable.absolutePath}")
-        }
-        if (!flutterVlessSecureSocksPatchScript.isFile) {
-            throw GradleException("secure SOCKS patch script missing: ${flutterVlessSecureSocksPatchScript.absolutePath}")
-        }
-        if (!File(projectRootDir, ".dart_tool/package_config.json").isFile) {
-            throw GradleException("Flutter package metadata missing. Run `flutter pub get` before Android compilation.")
-        }
-    }
-
-    commandLine(
-        dartExecutable.absolutePath,
-        "run",
-        flutterVlessSecureSocksPatchScript.absolutePath,
-    )
-}
-
-val patchFlutterVlessSecureSocksScopeFix = tasks.register<Exec>("patchFlutterVlessSecureSocksScopeFix") {
-    group = "build setup"
-    description = "Repair the secure Xray process monitor capture without changing stock 1.1.5 runtime sequencing"
-    workingDir(projectRootDir)
-    dependsOn(patchFlutterVlessSecureSocks)
-
-    doFirst {
-        if (!dartExecutable.isFile) {
-            throw GradleException("Flutter Dart executable not found: ${dartExecutable.absolutePath}")
-        }
-        if (!flutterVlessSecureSocksScopeFixScript.isFile) {
-            throw GradleException("secure SOCKS scope fix script missing: ${flutterVlessSecureSocksScopeFixScript.absolutePath}")
-        }
-        if (!File(projectRootDir, ".dart_tool/package_config.json").isFile) {
-            throw GradleException("Flutter package metadata missing. Run `flutter pub get` before Android compilation.")
-        }
-    }
-
-    commandLine(
-        dartExecutable.absolutePath,
-        "run",
-        flutterVlessSecureSocksScopeFixScript.absolutePath,
-    )
-}
-
-val patchFlutterVlessRuntimeReliability = tasks.register<Exec>("patchFlutterVlessRuntimeReliability") {
-    group = "build setup"
-    description = "Add end-to-end runtime health, IPv6 fail-closed routing and power-saver hardening"
-    workingDir(projectRootDir)
-    dependsOn(patchFlutterVlessSecureSocksScopeFix)
-
-    doFirst {
-        if (!dartExecutable.isFile) {
-            throw GradleException("Flutter Dart executable not found: ${dartExecutable.absolutePath}")
-        }
-        if (!flutterVlessRuntimeReliabilityPatchScript.isFile) {
-            throw GradleException("runtime reliability patch script missing: ${flutterVlessRuntimeReliabilityPatchScript.absolutePath}")
-        }
-        if (!File(projectRootDir, ".dart_tool/package_config.json").isFile) {
-            throw GradleException("Flutter package metadata missing. Run `flutter pub get` before Android compilation.")
-        }
-    }
-
-    commandLine(
-        dartExecutable.absolutePath,
-        "run",
-        flutterVlessRuntimeReliabilityPatchScript.absolutePath,
-    )
-}
-
-val patchFlutterVlessRuntimeReliabilityFollowup = tasks.register<Exec>("patchFlutterVlessRuntimeReliabilityFollowup") {
-    group = "build setup"
-    description = "Close TUN revoke, null-interface and global server-IP route bypass gaps"
-    workingDir(projectRootDir)
-    dependsOn(patchFlutterVlessRuntimeReliability)
-
-    doFirst {
-        if (!dartExecutable.isFile) {
-            throw GradleException("Flutter Dart executable not found: ${dartExecutable.absolutePath}")
-        }
-        if (!flutterVlessRuntimeReliabilityFollowupScript.isFile) {
-            throw GradleException("runtime reliability followup missing: ${flutterVlessRuntimeReliabilityFollowupScript.absolutePath}")
-        }
-        if (!File(projectRootDir, ".dart_tool/package_config.json").isFile) {
-            throw GradleException("Flutter package metadata missing. Run `flutter pub get` before Android compilation.")
-        }
-    }
-
-    commandLine(
-        dartExecutable.absolutePath,
-        "run",
-        flutterVlessRuntimeReliabilityFollowupScript.absolutePath,
+        flutterVlessRuntimePatchDriver.absolutePath,
     )
 }
 
 // App compilation and the transitive Android plugin compilation must both wait
-// for the pinned runtime patches. Plain `flutter build apk` must behave like CI
-// instead of relying on a hidden manual pre-build step.
+// for the same idempotent runtime driver. This avoids replaying intermediate
+// patch shapes against a warm pub-cache on a second local/CI build.
 tasks.configureEach {
     if (name == "preBuild") {
-        dependsOn(patchFlutterVlessRuntimeReliabilityFollowup)
+        dependsOn(patchFlutterVlessRuntime)
     }
 }
 
@@ -183,7 +67,7 @@ gradle.projectsEvaluated {
         ?.tasks
         ?.matching { it.name == "preBuild" }
         ?.configureEach {
-            dependsOn(patchFlutterVlessRuntimeReliabilityFollowup)
+            dependsOn(patchFlutterVlessRuntime)
         }
 }
 
