@@ -42,6 +42,9 @@ jobs:
           rm -rf "$HOME/.pub-cache/hosted/pub.dev/flutter_vless_android-1.1.5"
           flutter pub get
 
+      - name: Verify dependency lock is committed
+        run: git diff --exit-code -- pubspec.lock
+
       - name: Analyze
         run: flutter analyze --no-fatal-infos
 
