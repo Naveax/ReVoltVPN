@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
+
 import 'package:flutter/foundation.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
@@ -9,7 +9,10 @@ import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/consent_manager.dart';
 
 class AdManager extends ChangeNotifier {
-  static const bool adsEnabled = false;
+  /// Debug builds use the server's explicit test callback. Release builds use
+  /// real rewarded ads and SSV. A release must never silently fall back to the
+  /// test bypass path.
+  static bool get adsEnabled => kReleaseMode;
 
   RewardedAd? _rewardedAd;
 
@@ -21,36 +24,45 @@ class AdManager extends ChangeNotifier {
 
   Completer<bool>? _loadCompleter;
 
-  // Google-provided test ad unit
   static String get _adUnitId => AppConfig.adUnitId;
 
   AdManager() {
-    if (adsEnabled) preloadAd();
+    if (adsEnabled) {
+      unawaited(preloadAd());
+    }
   }
 
   static Future<void>? _sdkInit;
-  static Future<void> ensureSdkInitialized() {
-    if (!adsEnabled) return Future.value();
-    return _sdkInit ??= _initSdk();
+
+  static Future<void> ensureSdkInitialized() async {
+    final existing = _sdkInit;
+    if (existing != null) {
+      await existing;
+      return;
+    }
+
+    final init = _initSdk();
+    _sdkInit = init;
+    try {
+      await init;
+    } catch (_) {
+      if (identical(_sdkInit, init)) _sdkInit = null;
+      rethrow;
+    }
   }
 
   static Future<void> _initSdk() async {
-    try {
-      await ConsentManager.requestConsentIfNeeded()
-          .timeout(const Duration(seconds: 5));
-    } catch (e) {
-      debugPrint('[AdManager] Consent init skipped: $e');
+    final consentResolved = await ConsentManager.requestConsentIfNeeded()
+        .timeout(const Duration(seconds: 15));
+    if (!consentResolved) {
+      throw StateError('Ad consent is unresolved.');
     }
-    try {
-      await MobileAds.instance.initialize().timeout(const Duration(seconds: 5));
-    } catch (e) {
-      debugPrint('[AdManager] MobileAds init skipped: $e');
-    }
+
+    await MobileAds.instance.initialize().timeout(const Duration(seconds: 10));
   }
 
   Future<bool> preloadAd() async {
     if (!adsEnabled) return true;
-    await ensureSdkInitialized();
     if (_isAdLoaded) return true;
     if (_isAdLoading) return _loadCompleter?.future ?? Future.value(false);
 
@@ -58,13 +70,17 @@ class AdManager extends ChangeNotifier {
     _loadCompleter = Completer<bool>();
     notifyListeners();
 
-    if (kIsWeb) {
-      await Future.delayed(const Duration(milliseconds: 500));
-      _isAdLoaded = true;
+    try {
+      await ensureSdkInitialized();
+    } catch (e) {
+      debugPrint('[AdManager] Refusing ad load before consent/SDK init: $e');
       _isAdLoading = false;
+      _isAdLoaded = false;
       notifyListeners();
-      _loadCompleter?.complete(true);
-      return true;
+      if (!(_loadCompleter?.isCompleted ?? true)) {
+        _loadCompleter?.complete(false);
+      }
+      return false;
     }
 
     RewardedAd.load(
@@ -81,7 +97,7 @@ class AdManager extends ChangeNotifier {
           }
         },
         onAdFailedToLoad: (error) {
-          debugPrint('Rewarded ad failed to load: ${error.message}');
+          debugPrint('[AdManager] Rewarded ad failed to load: ${error.message}');
           _isAdLoaded = false;
           _isAdLoading = false;
           notifyListeners();
@@ -95,14 +111,10 @@ class AdManager extends ChangeNotifier {
     return _loadCompleter!.future;
   }
 
-  // ── Show ad (or debug bypass) ─────────────────────────────────────
-
   Future<bool> showAd(String adType) async {
-    // Debug bypass: fire fake AdMob callback so support ads work in dev.
-    // The server's ADMOB_BYPASS must be True for this to succeed.
     if (!adsEnabled && kDebugMode) {
       final deviceId = await CryptoService.getDeviceId();
-      final nonce = '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
+      final nonce = HivemindService.createNonce();
       HivemindService.setExpectedNonce(nonce);
       try {
         final customData = jsonEncode({
@@ -111,11 +123,15 @@ class AdManager extends ChangeNotifier {
           'nonce': nonce,
         });
         final fakeUrl = Uri.parse(
-            '${AppConfig.hivemindApiPublic}/admob/callback'
-            '?signature=test&key_id=test'
-            '&custom_data=${Uri.encodeComponent(customData)}');
-        await HivemindService.directGet(fakeUrl, timeout: const Duration(seconds: 8));
-        return true;
+          '${AppConfig.hivemindApiPublic}/admob/callback'
+          '?signature=test&key_id=test'
+          '&custom_data=${Uri.encodeComponent(customData)}',
+        );
+        final response = await HivemindService.directGet(
+          fakeUrl,
+          timeout: const Duration(seconds: 8),
+        );
+        return response.statusCode >= 200 && response.statusCode < 300;
       } catch (_) {
         return false;
       }
@@ -123,62 +139,50 @@ class AdManager extends ChangeNotifier {
 
     if (!adsEnabled) return false;
 
-    await ensureSdkInitialized();
-
     if (!_isAdLoaded || _rewardedAd == null) {
       final loaded = await preloadAd();
       if (!loaded || _rewardedAd == null) {
-        debugPrint('[AdManager] Cannot show ad, failed to load.');
+        debugPrint('[AdManager] Cannot show ad; load did not complete.');
         return false;
       }
     }
 
     final deviceId = await CryptoService.getDeviceId();
-
-    final nonce = '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
+    final nonce = HivemindService.createNonce();
     HivemindService.setExpectedNonce(nonce);
-    debugPrint('[AdManager] Ad nonce: $nonce');
 
-    final ssvOptions = ServerSideVerificationOptions(
-      customData: jsonEncode({
-        'device_id': deviceId,
-        'ad_type': adType,
-        'nonce': nonce,
-      }),
+    _rewardedAd!.setServerSideOptions(
+      ServerSideVerificationOptions(
+        customData: jsonEncode({
+          'device_id': deviceId,
+          'ad_type': adType,
+          'nonce': nonce,
+        }),
+      ),
     );
 
-    Completer<bool> rewardCompleter = Completer<bool>();
+    final rewardCompleter = Completer<bool>();
 
     _rewardedAd!.fullScreenContentCallback = FullScreenContentCallback(
-      onAdShowedFullScreenContent: (ad) => debugPrint('[AdManager] Ad showing.'),
       onAdDismissedFullScreenContent: (ad) {
-        debugPrint('[AdManager] Ad dismissed.');
         ad.dispose();
         _isAdLoaded = false;
         _rewardedAd = null;
-        preloadAd();
-        if (!rewardCompleter.isCompleted) {
-          rewardCompleter.complete(false);
-        }
+        unawaited(preloadAd());
+        if (!rewardCompleter.isCompleted) rewardCompleter.complete(false);
       },
       onAdFailedToShowFullScreenContent: (ad, error) {
         debugPrint('[AdManager] Ad failed to show: $error');
         ad.dispose();
         _isAdLoaded = false;
         _rewardedAd = null;
-        if (!rewardCompleter.isCompleted) {
-          rewardCompleter.complete(false);
-        }
+        if (!rewardCompleter.isCompleted) rewardCompleter.complete(false);
       },
     );
 
-    _rewardedAd!.setServerSideOptions(ssvOptions);
     await _rewardedAd!.show(
       onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {
-        debugPrint('[AdManager] Reward earned: ${reward.amount} ${reward.type}');
-        if (!rewardCompleter.isCompleted) {
-          rewardCompleter.complete(true);
-        }
+        if (!rewardCompleter.isCompleted) rewardCompleter.complete(true);
       },
     );
 
