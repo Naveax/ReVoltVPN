@@ -2,9 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 
-// ── lib/screens/settings/in_settings/rain.dart ──────────────────────────────
-// Toggle for the animated rain overlay on the main screen.
-
 final ValueNotifier<bool> rainEnabled = ValueNotifier(true);
 
 Future<void> loadRainPref() async {
@@ -35,7 +32,9 @@ class _RainToggleTileState extends State<RainToggleTile> {
 
   Future<void> _toggle(bool value) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('rain_effect_enabled', value);
+    final saved = await prefs.setBool('rain_effect_enabled', value);
+    if (!saved || !mounted) return;
+
     rainEnabled.value = value;
     setState(() => _on = value);
   }
