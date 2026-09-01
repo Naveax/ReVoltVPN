@@ -109,9 +109,13 @@ class VpnRuntimeState {
 
   bool aliveFor({required bool tunMode}) {
     final modeMatches = tunMode ? !proxyOnly : proxyOnly;
+    final componentsHealthy = xrayAlive &&
+        outboundReady &&
+        (proxyOnly || (tun2socksAlive && fdReady));
     return processAlive &&
         !stale &&
         healthy &&
+        componentsHealthy &&
         modeMatches &&
         (!tunMode || vpnTransport);
   }

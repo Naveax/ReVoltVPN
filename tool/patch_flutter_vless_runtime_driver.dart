@@ -11,7 +11,7 @@ Never fail(String message) {
 
 Directory packageRoot() {
   final configFile = File('.dart_tool/package_config.json');
-  if (!configFile.isFileSync()) {
+  if (!configFile.existsSync()) {
     fail('.dart_tool/package_config.json is missing; run flutter pub get first');
   }
 
@@ -50,14 +50,14 @@ Directory packageRoot() {
 }
 
 bool containsAll(File file, Iterable<String> markers) {
-  if (!file.isFileSync()) return false;
+  if (!file.existsSync()) return false;
   final text = file.readAsStringSync();
   return markers.every(text.contains);
 }
 
 void runPatch(String path) {
   final script = File(path);
-  if (!script.isFileSync()) fail('patch script is missing: $path');
+  if (!script.existsSync()) fail('patch script is missing: $path');
 
   stdout.writeln('[runtime patch driver] running $path');
   final result = Process.runSync(
@@ -105,7 +105,7 @@ void main() {
   final service = File('${kotlin.path}/xray/service/XrayVPNService.kt');
 
   for (final file in <File>[manifest, plugin, config, core, service]) {
-    if (!file.isFileSync()) fail('missing pinned runtime source: ${file.path}');
+    if (!file.existsSync()) fail('missing pinned runtime source: ${file.path}');
   }
 
   final finalState =
@@ -129,7 +129,7 @@ void main() {
         'startRuntimeHealthMonitor(config, false)',
         'val tunInterfaceAlive = proxyOnly ||',
         'override fun onRevoke()',
-        'Failed to enter foreground; refusing to start VPN runtime',
+        'Failed to start foreground; refusing VPN startup',
       ]);
 
   if (finalState) {

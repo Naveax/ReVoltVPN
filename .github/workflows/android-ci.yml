@@ -52,6 +52,12 @@ jobs:
           set -o pipefail
           flutter analyze 2>&1 | tee build/ci-logs/flutter-analyze.log
 
+      - name: Run security/runtime invariants
+        shell: bash
+        run: |
+          set -o pipefail
+          flutter test 2>&1 | tee build/ci-logs/flutter-test.log
+
       - name: Build debug APK (cold patch pass)
         shell: bash
         run: |

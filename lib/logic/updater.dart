@@ -40,7 +40,9 @@ class _ParsedVersion {
     if (rawCore.isEmpty || rawCore.any((p) => int.tryParse(p) == null)) {
       return null;
     }
-    final core = rawCore.map(int.parse).toList(growable: false);
+    // This list must stay growable because short versions such as 3.3 are
+    // normalized to 3.3.0 below.
+    final core = rawCore.map(int.parse).toList();
     while (core.length < 3) {
       core.add(0);
     }

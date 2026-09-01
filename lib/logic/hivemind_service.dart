@@ -53,6 +53,9 @@ class HivemindService {
 
       try {
         final session = await _fetchActiveSession(deviceId, nonce);
+        // Cancellation can happen while the status request is in flight. Never
+        // return a session obtained by an operation the user already cancelled.
+        _throwIfCancelled(callId);
         if (session != null) {
           _expectedNonce = null;
           return session.toVlessUrl();
