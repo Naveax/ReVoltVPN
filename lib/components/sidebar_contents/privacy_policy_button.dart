@@ -6,7 +6,9 @@ class PrivacyPolicyButton extends StatelessWidget {
   const PrivacyPolicyButton({super.key});
 
   static Future<void> launchPrivacyPolicy() async {
-    final Uri url = Uri.parse('https://github.com/esefxdz/ReVoltVPN/blob/main/PRIVACY_POLICY.md');
+    final Uri url = Uri.parse(
+      'https://github.com/esefxdz/ReVoltVPN/blob/main/PRIVACY_POLICY.md',
+    );
     if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
       debugPrint('Could not launch $url');
     }
@@ -14,8 +16,12 @@ class PrivacyPolicyButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return IconButton(
-      icon: const Icon(Icons.privacy_tip_outlined, color: AppColors.textWhite, size: 28),
+    return const IconButton(
+      icon: Icon(
+        Icons.privacy_tip_outlined,
+        color: AppColors.textWhite,
+        size: 28,
+      ),
       onPressed: launchPrivacyPolicy,
       tooltip: 'Privacy Policy',
       splashRadius: 24,
