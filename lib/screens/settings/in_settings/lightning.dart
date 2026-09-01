@@ -2,9 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 
-// ── lib/screens/settings/in_settings/lightning.dart ─────────────────────────
-// Toggle for the lightning strike overlay on the main screen.
-
 final ValueNotifier<bool> lightningEnabled = ValueNotifier(true);
 
 Future<void> loadLightningPref() async {
@@ -35,7 +32,9 @@ class _LightningToggleTileState extends State<LightningToggleTile> {
 
   Future<void> _toggle(bool value) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('lightning_effect_enabled', value);
+    final saved = await prefs.setBool('lightning_effect_enabled', value);
+    if (!saved || !mounted) return;
+
     lightningEnabled.value = value;
     setState(() => _on = value);
   }
