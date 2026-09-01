@@ -45,9 +45,9 @@ jobs:
           test "$(sha256sum android/gradle/wrapper/gradle-wrapper.jar | awk '{print $1}')" = \
             '7d3a4ac4de1c32b59bc6a4eb8ecb8e612ccd0cf1ae1e99f66902da64df296172'
           test "$(git hash-object android/gradle/verification-metadata.xml)" = \
-            '263e0175851281fbfdc2d4e3d6950a791345e096'
+            'e48bca7d6225665ef33cc0dc4bf0609be0631996'
           test "$(sha256sum android/gradle/verification-metadata.xml | awk '{print $1}')" = \
-            '91020d2e804c80efb9956fda1fe39887db5bb3ae34be419e12f6bf4e665d0596'
+            '90f66e5c14f1b20222b593f6beaa66e5d39ab91456a6abec8af57db25e5efad6'
 
           grep -qx \
             'distributionSha256Sum=efe9a3d147d948d7528a9887fa35abcf24ca1a43ad06439996490f77569b02d1' \
