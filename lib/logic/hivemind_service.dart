@@ -117,8 +117,7 @@ class HivemindService {
 
     final serverNonce = decoded['nonce'];
     if (_expectedNonce != null &&
-        serverNonce is String &&
-        serverNonce != nonce) {
+        (serverNonce is! String || serverNonce != nonce)) {
       return null;
     }
 
