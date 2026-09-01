@@ -36,6 +36,10 @@ val flutterVlessSecureSocksScopeFixScript = File(
     projectRootDir,
     "tool/patch_flutter_vless_secure_socks_scope_fix.dart",
 )
+val flutterVlessRuntimeReliabilityPatchScript = File(
+    projectRootDir,
+    "tool/patch_flutter_vless_runtime_reliability.dart",
+)
 
 val patchFlutterVlessAllowedApps = tasks.register<Exec>("patchFlutterVlessAllowedApps") {
     group = "build setup"
@@ -111,12 +115,37 @@ val patchFlutterVlessSecureSocksScopeFix = tasks.register<Exec>("patchFlutterVle
     )
 }
 
+val patchFlutterVlessRuntimeReliability = tasks.register<Exec>("patchFlutterVlessRuntimeReliability") {
+    group = "build setup"
+    description = "Add end-to-end runtime health, IPv6 fail-closed routing and power-saver hardening"
+    workingDir(projectRootDir)
+    dependsOn(patchFlutterVlessSecureSocksScopeFix)
+
+    doFirst {
+        if (!dartExecutable.isFile) {
+            throw GradleException("Flutter Dart executable not found: ${dartExecutable.absolutePath}")
+        }
+        if (!flutterVlessRuntimeReliabilityPatchScript.isFile) {
+            throw GradleException("runtime reliability patch script missing: ${flutterVlessRuntimeReliabilityPatchScript.absolutePath}")
+        }
+        if (!File(projectRootDir, ".dart_tool/package_config.json").isFile) {
+            throw GradleException("Flutter package metadata missing. Run `flutter pub get` before Android compilation.")
+        }
+    }
+
+    commandLine(
+        dartExecutable.absolutePath,
+        "run",
+        flutterVlessRuntimeReliabilityPatchScript.absolutePath,
+    )
+}
+
 // App compilation and the transitive Android plugin compilation must both wait
 // for the pinned runtime patches. Plain `flutter build apk` must behave like CI
 // instead of relying on a hidden manual pre-build step.
 tasks.configureEach {
     if (name == "preBuild") {
-        dependsOn(patchFlutterVlessSecureSocksScopeFix)
+        dependsOn(patchFlutterVlessRuntimeReliability)
     }
 }
 
@@ -125,7 +154,7 @@ gradle.projectsEvaluated {
         ?.tasks
         ?.matching { it.name == "preBuild" }
         ?.configureEach {
-            dependsOn(patchFlutterVlessSecureSocksScopeFix)
+            dependsOn(patchFlutterVlessRuntimeReliability)
         }
 }
 
