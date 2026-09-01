@@ -1,0 +1,88 @@
+name: Verification metadata fix
+
+on:
+  push:
+    branches:
+      - fix/3.3.2-esef-security-cleanup
+    paths:
+      - .github/workflows/verification-metadata-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Add only independently verified missing checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILE='android/gradle/verification-metadata.xml'
+          test "$(git hash-object "$FILE")" = \
+            '263e0175851281fbfdc2d4e3d6950a791345e096'
+          test "$(sha256sum "$FILE" | awk '{print $1}')" = \
+            '91020d2e804c80efb9956fda1fe39887db5bb3ae34be419e12f6bf4e665d0596'
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('android/gradle/verification-metadata.xml')
+          source = path.read_text(encoding='utf-8')
+
+          kotlin_anchor = '''      <component group="org.jetbrains.kotlin" name="kotlin-gradle-plugins-bom" version="2.2.20">'''
+          coroutines_anchor = '''      <component group="org.jetbrains.kotlinx" name="kotlinx-coroutines-bom" version="1.8.1">'''
+
+          kotlin_block = '''      <component group="org.jetbrains.kotlin" name="kotlin-gradle-plugins-bom" version="2.0.21">
+             <artifact name="kotlin-gradle-plugins-bom-2.0.21.module">
+                <sha256 value="f0945487fe51959fdf8b6a1441707a29ed5f1ac31a231c7fdebe2c3ddd22fdf1" origin="Independently verified"/>
+             </artifact>
+             <artifact name="kotlin-gradle-plugins-bom-2.0.21.pom">
+                <sha256 value="675013d4cbeee09c88920ae2ba246f99f28a789b874f634049e012fa3eebf4c8" origin="Independently verified"/>
+             </artifact>
+          </component>
+'''
+          coroutines_block = '''      <component group="org.jetbrains.kotlinx" name="kotlinx-coroutines-bom" version="1.8.0">
+             <artifact name="kotlinx-coroutines-bom-1.8.0.pom">
+                <sha256 value="1239e9dbe1397cd5971342956b2511bc3ace7b641842e4372a088dcfa8b9ad55" origin="Independently verified"/>
+             </artifact>
+          </component>
+'''
+
+          if 'name="kotlin-gradle-plugins-bom" version="2.0.21"' in source:
+              raise SystemExit('Kotlin 2.0.21 BOM entry unexpectedly already exists')
+          if 'name="kotlinx-coroutines-bom" version="1.8.0"' in source:
+              raise SystemExit('Coroutines 1.8.0 BOM entry unexpectedly already exists')
+          if source.count(kotlin_anchor) != 1 or source.count(coroutines_anchor) != 1:
+              raise SystemExit('Expected metadata insertion anchor missing or ambiguous')
+
+          source = source.replace(kotlin_anchor, kotlin_block + kotlin_anchor, 1)
+          source = source.replace(coroutines_anchor, coroutines_block + coroutines_anchor, 1)
+          path.write_text(source, encoding='utf-8')
+          PY
+
+          test "$(git hash-object "$FILE")" = \
+            'e48bca7d6225665ef33cc0dc4bf0609be0631996'
+          test "$(sha256sum "$FILE" | awk '{print $1}')" = \
+            '90f66e5c14f1b20222b593f6beaa66e5d39ab91456a6abec8af57db25e5efad6'
+
+          grep -q 'f0945487fe51959fdf8b6a1441707a29ed5f1ac31a231c7fdebe2c3ddd22fdf1' "$FILE"
+          grep -q '675013d4cbeee09c88920ae2ba246f99f28a789b874f634049e012fa3eebf4c8' "$FILE"
+          grep -q '1239e9dbe1397cd5971342956b2511bc3ace7b641842e4372a088dcfa8b9ad55' "$FILE"
+
+          git rm .github/workflows/verification-metadata-fix.yml
+          git add "$FILE"
+          git diff --cached --check
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'build(android): trust required plugin BOM metadata'
+          git push origin "HEAD:$GITHUB_REF_NAME"
