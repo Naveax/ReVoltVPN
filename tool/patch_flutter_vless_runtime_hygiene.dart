@@ -119,6 +119,112 @@ void patchCore(File file) {
     fail('upstream Xray stdout monitor changed');
   }
 
+  if (!text.contains('private fun deleteEphemeralConfigOnFailure')) {
+    const fields = r'''    private var lastProxyUplink = 0L
+    private var lastProxyDownlink = 0L
+''';
+    const fieldsWithCleanup = r'''    private var lastProxyUplink = 0L
+    private var lastProxyDownlink = 0L
+
+    private fun deleteEphemeralConfigOnFailure(filesDir: File) {
+        try {
+            val config = File(filesDir, "config.json")
+            if (config.exists() && !config.delete()) {
+                Log.w(TAG, "Could not delete failed ephemeral Xray config")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not delete failed ephemeral Xray config", e)
+        }
+    }
+''';
+    if (!text.contains(fields)) fail('Xray state field anchor changed');
+    text = text.replaceFirst(fields, fieldsWithCleanup);
+  }
+
+  const writeFailure = r'''        } catch (e: Exception) {
+            Log.e(TAG, "Failed to write config file", e)
+            return false
+        }
+''';
+  const writeFailureClean = r'''        } catch (e: Exception) {
+            Log.e(TAG, "Failed to write config file", e)
+            deleteEphemeralConfigOnFailure(configFilesDir)
+            return false
+        }
+''';
+  if (text.contains(writeFailure)) {
+    text = text.replaceFirst(writeFailure, writeFailureClean);
+  }
+
+  const missingExecutable = r'''        if (!xrayExecutable.exists()) {
+            Log.e(TAG, "Xray executable not found at ${xrayExecutable.absolutePath}")
+            // Fallback or error
+            return false
+        }
+''';
+  const missingExecutableClean = r'''        if (!xrayExecutable.exists()) {
+            Log.e(TAG, "Xray executable not found at ${xrayExecutable.absolutePath}")
+            deleteEphemeralConfigOnFailure(configFilesDir)
+            return false
+        }
+''';
+  if (text.contains(missingExecutable)) {
+    text = text.replaceFirst(missingExecutable, missingExecutableClean);
+  }
+
+  const copyAssets = '        Utilities.copyAssets(context)\n';
+  const copyAssetsSafe = r'''        try {
+            Utilities.copyAssets(context)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to prepare Xray assets", e)
+            deleteEphemeralConfigOnFailure(configFilesDir)
+            return false
+        }
+''';
+  if (text.contains(copyAssets)) {
+    text = text.replaceFirst(copyAssets, copyAssetsSafe);
+  } else if (!text.contains('Failed to prepare Xray assets')) {
+    fail('Xray asset preparation anchor changed');
+  }
+
+  const startupDead = r'''            if (xrayProcess?.isAlive != true) {
+                val output = xrayProcess?.inputStream?.bufferedReader()?.readText().orEmpty()
+                Log.e(TAG, "Xray process exited during startup. Output: $output")
+                xrayProcess = null
+                AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
+                return false
+            }
+''';
+  const startupDeadClean = r'''            if (xrayProcess?.isAlive != true) {
+                val output = xrayProcess?.inputStream?.bufferedReader()?.readText().orEmpty()
+                Log.e(TAG, "Xray process exited during startup. Output: $output")
+                xrayProcess = null
+                AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
+                deleteEphemeralConfigOnFailure(configFilesDir)
+                return false
+            }
+''';
+  if (text.contains(startupDead)) {
+    text = text.replaceFirst(startupDead, startupDeadClean);
+  } else if (!text.contains('deleteEphemeralConfigOnFailure(configFilesDir)\n                return false')) {
+    fail('Xray startup failure anchor changed');
+  }
+
+  const startCatch = r'''        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start Xray process", e)
+            return false
+        }
+''';
+  const startCatchClean = r'''        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start Xray process", e)
+            deleteEphemeralConfigOnFailure(configFilesDir)
+            return false
+        }
+''';
+  if (text.contains(startCatch)) {
+    text = text.replaceFirst(startCatch, startCatchClean);
+  }
+
   writeIfChanged(file, before, text);
 }
 
@@ -140,6 +246,29 @@ void patchService(File file) {
     text = text.replaceFirst(noisyTun, silentTun);
   } else if (!text.contains(silentTun)) {
     fail('upstream tun2socks stdout monitor changed');
+  }
+
+  const permissiveDns = r'''            // Add DNS servers
+            try {
+                builder.addDnsServer("8.8.8.8")
+                builder.addDnsServer("1.1.1.1")
+            } catch (e: Exception) {
+                // ignore
+            }
+''';
+  const failClosedDns = r'''            // DNS is part of the full-tunnel boundary. Never continue with
+            // an undefined resolver path if Android rejects the VPN DNS config.
+            try {
+                builder.addDnsServer("8.8.8.8")
+                builder.addDnsServer("1.1.1.1")
+            } catch (e: Exception) {
+                throw IllegalStateException("Failed to configure VPN DNS", e)
+            }
+''';
+  if (text.contains(permissiveDns)) {
+    text = text.replaceFirst(permissiveDns, failClosedDns);
+  } else if (!text.contains('Failed to configure VPN DNS')) {
+    fail('upstream VPN DNS block changed');
   }
 
   writeIfChanged(file, before, text);

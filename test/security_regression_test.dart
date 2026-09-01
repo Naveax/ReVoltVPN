@@ -66,6 +66,7 @@ void main() {
     expect(hygiene, contains('android.permission.CHANGE_NETWORK_STATE'));
     expect(hygiene, contains('android.permission.READ_EXTERNAL_STORAGE'));
     expect(hygiene, contains('reader.forEachLine { _ -> }'));
+    expect(hygiene, contains('Failed to configure VPN DNS'));
   });
 
   test('native app bridge keeps runtime adoption on private heartbeat only', () {

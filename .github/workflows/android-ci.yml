@@ -68,6 +68,8 @@ jobs:
           grep -q '"vpn_service_channel"' "$SERVICE"
           grep -q 'Log.d(TAG, "xray: $line")' "$CORE"
           grep -q 'Log.d(TAG, "tun2socks: $line")' "$SERVICE"
+          ! grep -q 'Failed to configure VPN DNS' "$SERVICE"
+          ! grep -q 'deleteEphemeralConfigOnFailure' "$CORE"
           grep -q 'fun getV2rayTraffic' "$CORE"
           grep -q 'for (pkg in config.BLOCKED_APPS)' "$SERVICE"
 
@@ -94,6 +96,9 @@ jobs:
           grep -q 'builder.addRoute("::", 0)' "$SERVICE"
           grep -q 'Android refused to establish VPN interface' "$SERVICE"
           grep -q 'Per-app VPN bypass is disabled in ReVolt' "$SERVICE"
+          grep -q 'Failed to configure VPN DNS' "$SERVICE"
+          grep -q 'deleteEphemeralConfigOnFailure' "$CORE"
+          grep -q 'Could not delete failed ephemeral Xray config' "$CORE"
           ! grep -q 'for (pkg in config.BLOCKED_APPS)' "$SERVICE"
           ! grep -q 'val traffic = getV2rayTraffic(context)' "$CORE"
           ! grep -q 'fun getV2rayTraffic' "$CORE"
