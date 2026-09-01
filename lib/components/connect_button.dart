@@ -92,7 +92,7 @@ class _ConnectButtonState extends State<ConnectButton>
     setState(() => _busy = true);
     try {
       final adWatched = await ad.showAd('main');
-      if (!adWatched) return;
+      if (!adWatched && AdManager.adsEnabled) return;
 
       final ok = await vpn.connect();
       if (ok) {
