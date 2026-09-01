@@ -31,10 +31,15 @@ abstract final class ConnectionSettings {
     _initialized = true;
   }
 
-  static Future<void> setMode(ConnectionMode mode) async {
+  static Future<bool> setMode(ConnectionMode mode) async {
+    if (_initialized && _mode == mode) return true;
+
+    final prefs = await SharedPreferences.getInstance();
+    final saved = await prefs.setString(_modeKey, mode.name);
+    if (!saved) return false;
+
     _mode = mode;
     _initialized = true;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_modeKey, mode.name);
+    return true;
   }
 }
