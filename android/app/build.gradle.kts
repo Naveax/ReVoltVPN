@@ -40,6 +40,10 @@ val flutterVlessRuntimeReliabilityPatchScript = File(
     projectRootDir,
     "tool/patch_flutter_vless_runtime_reliability.dart",
 )
+val flutterVlessRuntimeReliabilityFollowupScript = File(
+    projectRootDir,
+    "tool/patch_flutter_vless_runtime_reliability_followup.dart",
+)
 
 val patchFlutterVlessAllowedApps = tasks.register<Exec>("patchFlutterVlessAllowedApps") {
     group = "build setup"
@@ -140,12 +144,37 @@ val patchFlutterVlessRuntimeReliability = tasks.register<Exec>("patchFlutterVles
     )
 }
 
+val patchFlutterVlessRuntimeReliabilityFollowup = tasks.register<Exec>("patchFlutterVlessRuntimeReliabilityFollowup") {
+    group = "build setup"
+    description = "Close TUN revoke, null-interface and global server-IP route bypass gaps"
+    workingDir(projectRootDir)
+    dependsOn(patchFlutterVlessRuntimeReliability)
+
+    doFirst {
+        if (!dartExecutable.isFile) {
+            throw GradleException("Flutter Dart executable not found: ${dartExecutable.absolutePath}")
+        }
+        if (!flutterVlessRuntimeReliabilityFollowupScript.isFile) {
+            throw GradleException("runtime reliability followup missing: ${flutterVlessRuntimeReliabilityFollowupScript.absolutePath}")
+        }
+        if (!File(projectRootDir, ".dart_tool/package_config.json").isFile) {
+            throw GradleException("Flutter package metadata missing. Run `flutter pub get` before Android compilation.")
+        }
+    }
+
+    commandLine(
+        dartExecutable.absolutePath,
+        "run",
+        flutterVlessRuntimeReliabilityFollowupScript.absolutePath,
+    )
+}
+
 // App compilation and the transitive Android plugin compilation must both wait
 // for the pinned runtime patches. Plain `flutter build apk` must behave like CI
 // instead of relying on a hidden manual pre-build step.
 tasks.configureEach {
     if (name == "preBuild") {
-        dependsOn(patchFlutterVlessRuntimeReliability)
+        dependsOn(patchFlutterVlessRuntimeReliabilityFollowup)
     }
 }
 
@@ -154,7 +183,7 @@ gradle.projectsEvaluated {
         ?.tasks
         ?.matching { it.name == "preBuild" }
         ?.configureEach {
-            dependsOn(patchFlutterVlessRuntimeReliability)
+            dependsOn(patchFlutterVlessRuntimeReliabilityFollowup)
         }
 }
 
