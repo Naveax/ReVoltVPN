@@ -1,0 +1,55 @@
+name: Verification metadata JUnit fix
+
+on:
+  push:
+    branches:
+      - fix/3.3.2-esef-security-cleanup
+    paths:
+      - .github/workflows/verification-metadata-junit-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Commit independently verified JUnit module metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILE='android/gradle/verification-metadata.xml'
+          SHA_592='ab137ba5a8e32c9b066bf9126a1c76dd5614b724ba5c0b02549772b5e9f4cf1f'
+          SHA_593='b401fd25901e582a524aa5343c4b39e28bc56e24961c1069bf2b4bbfcee46b93'
+
+          test "$(git hash-object "$FILE")" = 'b3df8ec58d74b8d06402cdaec924bedf11069fb1'
+
+          python3 -c 'from pathlib import Path; import re; p=Path("android/gradle/verification-metadata.xml"); s=p.read_text(encoding="utf-8"); items=[("5.9.2","ab137ba5a8e32c9b066bf9126a1c76dd5614b724ba5c0b02549772b5e9f4cf1f"),("5.9.3","b401fd25901e582a524aa5343c4b39e28bc56e24961c1069bf2b4bbfcee46b93")];
+for version,digest in items:
+ pattern=rf"(<component group=\"org\.junit\" name=\"junit-bom\" version=\"{re.escape(version)}\">)(.*?)(      </component>)"; matches=list(re.finditer(pattern,s,re.S)); assert len(matches)==1, f"JUnit {version} component missing or ambiguous: {len(matches)}"; m=matches[0]; block=m.group(0); artifact=f"junit-bom-{version}.module"; assert artifact not in block, f"{artifact} already exists"; addition=f"         <artifact name=\"{artifact}\">\n            <sha256 value=\"{digest}\" origin=\"Independently verified\"/>\n         </artifact>\n"; s=s[:m.start(3)]+addition+s[m.start(3):];
+p.write_text(s,encoding="utf-8")'
+
+          python3 -c 'import xml.etree.ElementTree as ET; ET.parse("android/gradle/verification-metadata.xml")'
+          grep -q "$SHA_592" "$FILE"
+          grep -q "$SHA_593" "$FILE"
+
+          META_GIT_SHA="$(git hash-object "$FILE")"
+          META_SHA256="$(sha256sum "$FILE" | awk '{print $1}')"
+          echo "META_GIT_SHA=$META_GIT_SHA"
+          echo "META_SHA256=$META_SHA256"
+
+          git add "$FILE"
+          git diff --cached --check
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'build(android): trust JUnit module verification metadata'
+          git push origin "HEAD:$GITHUB_REF_NAME"
