@@ -37,6 +37,9 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Provision CI app config
+        run: cp lib/logic/app_config.example.dart lib/logic/app_config.dart
+
       - name: Resolve dependencies
         run: flutter pub get
 
