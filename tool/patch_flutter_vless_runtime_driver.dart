@@ -86,8 +86,8 @@ void ensureRuntimeAnchorCompatibility(File service) {
     fail('tun2socks function is missing from pinned runtime');
   }
 
-  final oldExpected = functionStart + securePrelude;
-  final finalExpected = functionStart + fdReset + securePrelude;
+  const oldExpected = functionStart + securePrelude;
+  const finalExpected = functionStart + fdReset + securePrelude;
   if (text.contains(oldExpected) || text.contains(finalExpected)) return;
 
   if (!text.contains(securePrelude)) {
