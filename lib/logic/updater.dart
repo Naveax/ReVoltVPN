@@ -1,15 +1,14 @@
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:url_launcher/url_launcher.dart';
-import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
-
-enum UpdateStatus { upToDate, updateAvailable, checkFailed }
+import 'package:revoltvpn/logic/app_config.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 enum InstallSource { playStore, sideload }
 
@@ -40,10 +39,12 @@ class _ParsedVersion {
     if (rawCore.isEmpty || rawCore.any((p) => int.tryParse(p) == null)) {
       return null;
     }
-    final core = rawCore.map(int.parse).toList(growable: false);
+
+    final core = rawCore.map(int.parse).toList();
     while (core.length < 3) {
       core.add(0);
     }
+
     final pre = prePart.isEmpty
         ? const <String>[]
         : prePart.split('.').where((e) => e.isNotEmpty).toList(growable: false);
@@ -93,10 +94,7 @@ class PlayStoreUpdater {
 
   static Future<bool> open() async {
     final uri = _trustedHttpsUri(_url, const {'play.google.com'});
-    if (uri == null) {
-      debugPrint('[Updater] Refusing invalid Play Store URL.');
-      return false;
-    }
+    if (uri == null) return false;
     try {
       return await launchUrl(uri, mode: LaunchMode.externalApplication);
     } catch (e) {
@@ -121,38 +119,24 @@ class GitHubUpdater {
       final response = await http
           .get(apiUri, headers: {'Accept': 'application/vnd.github+json'})
           .timeout(const Duration(seconds: 8));
-
-      if (response.statusCode != 200) {
-        debugPrint('[Updater] GitHub API returned ${response.statusCode}');
-        return null;
-      }
+      if (response.statusCode != 200) return null;
 
       final decoded = jsonDecode(response.body);
-      if (decoded is! Map<String, dynamic>) {
-        debugPrint('[Updater] Invalid GitHub release payload.');
-        return null;
-      }
+      if (decoded is! Map<String, dynamic>) return null;
 
       final htmlUrl = decoded['html_url'];
-      if (htmlUrl is String &&
-          _trustedHttpsUri(htmlUrl, const {'github.com'}) != null) {
-        _cachedDownloadUrl = htmlUrl;
-      } else {
-        _cachedDownloadUrl = null;
-      }
+      _cachedDownloadUrl = htmlUrl is String &&
+              _trustedHttpsUri(htmlUrl, const {'github.com'}) != null
+          ? htmlUrl
+          : null;
 
       final rawTag = decoded['tag_name'];
       if (rawTag is! String || rawTag.isEmpty || rawTag.length > 64) {
-        debugPrint('[Updater] Invalid release tag.');
         return null;
       }
 
       final normalized = rawTag.startsWith('v') ? rawTag.substring(1) : rawTag;
-      if (_ParsedVersion.tryParse(normalized) == null) {
-        debugPrint('[Updater] Release tag is not a supported version: $rawTag');
-        return null;
-      }
-      return normalized;
+      return _ParsedVersion.tryParse(normalized) == null ? null : normalized;
     } catch (e) {
       debugPrint('[Updater] GitHub API error: $e');
       return null;
@@ -162,11 +146,7 @@ class GitHubUpdater {
   static Future<bool> open() async {
     final raw = _cachedDownloadUrl ?? AppConfig.githubReleasesUrl;
     final uri = _trustedHttpsUri(raw, const {'github.com'});
-    if (uri == null) {
-      debugPrint('[Updater] Refusing untrusted GitHub update URL.');
-      return false;
-    }
-
+    if (uri == null) return false;
     try {
       return await launchUrl(uri, mode: LaunchMode.externalApplication);
     } catch (e) {
@@ -179,36 +159,32 @@ class GitHubUpdater {
 class Updater {
   Updater._();
 
+  static const MethodChannel _installerChannel =
+      MethodChannel('com.revoltvpn.app/installer');
   static InstallSource? _cachedSource;
 
   static Future<InstallSource> get installSource async {
     if (_cachedSource != null) return _cachedSource!;
     if (kIsWeb || !Platform.isAndroid) {
-      _cachedSource = InstallSource.sideload;
-      return _cachedSource!;
+      return _cachedSource = InstallSource.sideload;
     }
 
     try {
-      final result = await MethodChannel('com.revoltvpn.app/installer')
-          .invokeMethod<String>('getInstallerPackage');
-      _cachedSource = (result == 'com.android.vending')
+      final result =
+          await _installerChannel.invokeMethod<String>('getInstallerPackage');
+      return _cachedSource = result == 'com.android.vending'
           ? InstallSource.playStore
           : InstallSource.sideload;
     } catch (e) {
       debugPrint('[Updater] Installer check failed: $e');
-      _cachedSource = InstallSource.sideload;
+      return _cachedSource = InstallSource.sideload;
     }
-
-    return _cachedSource!;
   }
 
   static int _compareVersions(String a, String b) {
     final left = _ParsedVersion.tryParse(a);
     final right = _ParsedVersion.tryParse(b);
-    if (left == null || right == null) {
-      // Invalid local metadata should not invent an ordering.
-      return 0;
-    }
+    if (left == null || right == null) return 0;
     return left.compareTo(right);
   }
 
@@ -218,11 +194,9 @@ class Updater {
   }
 
   static Future<void> check(BuildContext context) {
-    final navigator = Navigator.of(context, rootNavigator: true);
-    final messenger = ScaffoldMessenger.of(context);
     return checkWithHandles(
-      navigator: navigator,
-      messenger: messenger,
+      navigator: Navigator.of(context, rootNavigator: true),
+      messenger: ScaffoldMessenger.of(context),
     );
   }
 
@@ -230,14 +204,46 @@ class Updater {
     required NavigatorState navigator,
     required ScaffoldMessengerState messenger,
   }) async {
+    final source = await installSource;
+    if (source == InstallSource.playStore) {
+      if (!navigator.mounted) return;
+      await showDialog<void>(
+        context: navigator.context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppColors.bgCard,
+          title: const Text(
+            'Updates are managed by Play Store',
+            style: TextStyle(color: AppColors.textWhite),
+          ),
+          content: const Text(
+            'Open Play Store to check whether an update is available for this install.',
+            style: TextStyle(color: AppColors.slate70),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                PlayStoreUpdater.open();
+              },
+              child: const Text(
+                'Open Play Store',
+                style: TextStyle(color: AppColors.accent),
+              ),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
     final info = await PackageInfo.fromPlatform();
     final localVersion = info.version;
     if (localVersion.isEmpty || _ParsedVersion.tryParse(localVersion) == null) {
-      _showSnackBar(
-        messenger,
-        'Could not determine app version',
-        isError: true,
-      );
+      _showSnackBar(messenger, 'Could not determine app version', isError: true);
       return;
     }
 
@@ -252,12 +258,8 @@ class Updater {
       return;
     }
 
-    final source = await installSource;
-    final storeName =
-        source == InstallSource.playStore ? 'Play Store' : 'GitHub';
     if (!navigator.mounted) return;
-
-    showDialog(
+    await showDialog<void>(
       context: navigator.context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.bgCard,
@@ -266,7 +268,7 @@ class Updater {
           style: TextStyle(color: AppColors.textWhite),
         ),
         content: Text(
-          '${_versionLabel(latestVersion, false)} is available on $storeName.\n'
+          '${_versionLabel(latestVersion, false)} is available on GitHub.\n'
           'You have ${_versionLabel(localVersion, true)}.',
           style: const TextStyle(color: AppColors.slate70),
         ),
@@ -281,13 +283,11 @@ class Updater {
           TextButton(
             onPressed: () {
               Navigator.pop(ctx);
-              source == InstallSource.playStore
-                  ? PlayStoreUpdater.open()
-                  : GitHubUpdater.open();
+              GitHubUpdater.open();
             },
-            child: Text(
-              'Open $storeName',
-              style: const TextStyle(color: AppColors.accent),
+            child: const Text(
+              'Open GitHub',
+              style: TextStyle(color: AppColors.accent),
             ),
           ),
         ],
