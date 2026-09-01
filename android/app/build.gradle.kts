@@ -32,9 +32,9 @@ val flutterVlessSecureSocksPatchScript = File(
     projectRootDir,
     "tool/patch_flutter_vless_secure_socks_v2.dart",
 )
-val flutterVlessSecureSocksScopeFixScript = File(
+val flutterVlessSecurityInvariantsScript = File(
     projectRootDir,
-    "tool/patch_flutter_vless_secure_socks_scope_fix.dart",
+    "tool/patch_flutter_vless_security_invariants.dart",
 )
 
 val patchFlutterVlessAllowedApps = tasks.register<Exec>("patchFlutterVlessAllowedApps") {
@@ -86,9 +86,9 @@ val patchFlutterVlessSecureSocks = tasks.register<Exec>("patchFlutterVlessSecure
     )
 }
 
-val patchFlutterVlessSecureSocksScopeFix = tasks.register<Exec>("patchFlutterVlessSecureSocksScopeFix") {
+val patchFlutterVlessSecurityInvariants = tasks.register<Exec>("patchFlutterVlessSecurityInvariants") {
     group = "build setup"
-    description = "Repair the secure Xray process monitor capture without changing stock 1.1.5 runtime sequencing"
+    description = "Enforce ReVolt privacy, IPC and full-tunnel invariants on pinned flutter_vless_android 1.1.5"
     workingDir(projectRootDir)
     dependsOn(patchFlutterVlessSecureSocks)
 
@@ -96,8 +96,8 @@ val patchFlutterVlessSecureSocksScopeFix = tasks.register<Exec>("patchFlutterVle
         if (!dartExecutable.isFile) {
             throw GradleException("Flutter Dart executable not found: ${dartExecutable.absolutePath}")
         }
-        if (!flutterVlessSecureSocksScopeFixScript.isFile) {
-            throw GradleException("secure SOCKS scope fix script missing: ${flutterVlessSecureSocksScopeFixScript.absolutePath}")
+        if (!flutterVlessSecurityInvariantsScript.isFile) {
+            throw GradleException("security invariant patch script missing: ${flutterVlessSecurityInvariantsScript.absolutePath}")
         }
         if (!File(projectRootDir, ".dart_tool/package_config.json").isFile) {
             throw GradleException("Flutter package metadata missing. Run `flutter pub get` before Android compilation.")
@@ -107,16 +107,14 @@ val patchFlutterVlessSecureSocksScopeFix = tasks.register<Exec>("patchFlutterVle
     commandLine(
         dartExecutable.absolutePath,
         "run",
-        flutterVlessSecureSocksScopeFixScript.absolutePath,
+        flutterVlessSecurityInvariantsScript.absolutePath,
     )
 }
 
-// App compilation and the transitive Android plugin compilation must both wait
-// for the pinned runtime patches. Plain `flutter build apk` must behave like CI
-// instead of relying on a hidden manual pre-build step.
+// Both the app and transitive Android plugin compile against the patched source.
 tasks.configureEach {
     if (name == "preBuild") {
-        dependsOn(patchFlutterVlessSecureSocksScopeFix)
+        dependsOn(patchFlutterVlessSecurityInvariants)
     }
 }
 
@@ -125,7 +123,7 @@ gradle.projectsEvaluated {
         ?.tasks
         ?.matching { it.name == "preBuild" }
         ?.configureEach {
-            dependsOn(patchFlutterVlessSecureSocksScopeFix)
+            dependsOn(patchFlutterVlessSecurityInvariants)
         }
 }
 
