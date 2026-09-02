@@ -33,3 +33,7 @@ flutter:
     - assets/background.png
     - assets/brand.png
     - assets/finland_flag_256.png
+
+dependency_overrides:
+  flutter_vless_android:
+    path: local_packages/flutter_vless_android-1.1.5

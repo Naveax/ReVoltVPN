@@ -1,0 +1,4 @@
+Upstream: https://github.com/XIIIFOX/flutter_vless
+Tag: v1.1.5
+Android package: flutter_vless_android 1.1.5
+ReVolt hardening is pre-applied to this vendored package.
