@@ -33,7 +33,9 @@ class HivemindService {
     Duration timeout = const Duration(seconds: 5),
   }) async {
     final client = http.Client();
-    final request = http.Request('GET', uri)..headers['User-Agent'] = _ua;
+    final request = http.Request('GET', uri)
+      ..headers['User-Agent'] = _ua
+      ..followRedirects = false;
 
     Future<http.Response> read() async {
       final streamed = await client.send(request);

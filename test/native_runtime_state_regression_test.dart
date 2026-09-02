@@ -10,6 +10,7 @@ void main() {
     final core = File('$root/xray/core/XrayCoreManager.kt').readAsStringSync();
     final timer = File('lib/logic/session_timer.dart').readAsStringSync();
     final vpn = File('lib/logic/vpn_connection.dart').readAsStringSync();
+    final hivemind = File('lib/logic/hivemind_service.dart').readAsStringSync();
     final main = File('lib/main.dart').readAsStringSync();
     final mainActivity = File(
       'android/app/src/main/kotlin/com/paladinvpn/app/MainActivity.kt',
@@ -37,6 +38,20 @@ void main() {
     );
     expect(plugin, isNot(contains('"getServerDelay" ->')));
     expect(plugin, isNot(contains('"getConnectedServerDelay" ->')));
+
+    // The native service itself must also reject tokenless/stale STOP commands,
+    // even if a future internal caller accidentally bypasses the Flutter bridge.
+    expect(
+      service,
+      contains('val requestedToken = intent.getStringExtra("RUNTIME_TOKEN").orEmpty()'),
+    );
+    expect(service, contains('requestedToken.isEmpty() ||'));
+    expect(service, contains('requestedToken != activeToken'));
+    expect(service, contains('stopAll(requestedToken)'));
+
+    // Control-plane requests must not follow redirects to another host and leak
+    // the device/session nonce outside the compiled API origin.
+    expect(hivemind, contains('..followRedirects = false;'));
 
     // Pending permission results cannot survive a permanent Activity/engine
     // detach and later complete against a dead Flutter lifecycle.

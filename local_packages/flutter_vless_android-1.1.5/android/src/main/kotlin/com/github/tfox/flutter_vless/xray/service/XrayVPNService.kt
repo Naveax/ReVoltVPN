@@ -74,13 +74,15 @@ class XrayVPNService : VpnService() {
         }
 
         if (command == AppConfigs.V2RAY_SERVICE_COMMANDS.STOP_SERVICE) {
-            val requestedToken = intent.getStringExtra("RUNTIME_TOKEN")
+            val requestedToken = intent.getStringExtra("RUNTIME_TOKEN").orEmpty()
             val activeToken = currentConfig?.RUNTIME_TOKEN.orEmpty()
-            if (!requestedToken.isNullOrEmpty() && activeToken.isNotEmpty() && requestedToken != activeToken) {
-                Log.w(TAG, "Ignoring stale STOP_SERVICE for a different runtime generation")
+            if (requestedToken.isEmpty() ||
+                (activeToken.isNotEmpty() && requestedToken != activeToken)
+            ) {
+                Log.w(TAG, "Ignoring STOP_SERVICE without matching runtime generation")
                 return START_NOT_STICKY
             }
-            stopAll(activeToken.ifEmpty { requestedToken.orEmpty() })
+            stopAll(requestedToken)
             return START_NOT_STICKY
         }
 
