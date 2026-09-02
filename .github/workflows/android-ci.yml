@@ -34,14 +34,12 @@ jobs:
           test -f android/gradlew.bat
           test -f android/gradle/wrapper/gradle-wrapper.jar
           test -s android/gradle/verification-metadata.xml
-
           test "$(git hash-object android/gradlew)" = '0f14772e0e50ffe504fa3be1a869e6281b09ccd1'
           test "$(git hash-object android/gradlew.bat)" = '8de1053a1f921b9ac5910187e2f99fdaa774f81a'
           test "$(git hash-object android/gradle/wrapper/gradle-wrapper.jar)" = '1b33c55baabb587c669f562ae36f953de2481846'
           test "$(sha256sum android/gradle/wrapper/gradle-wrapper.jar | awk '{print $1}')" = '7d3a4ac4de1c32b59bc6a4eb8ecb8e612ccd0cf1ae1e99f66902da64df296172'
           test "$(git hash-object android/gradle/verification-metadata.xml)" = '590f03de94d38d83873a42d7c3d535f187b74069'
           test "$(sha256sum android/gradle/verification-metadata.xml | awk '{print $1}')" = '5ada5cb52c3ed7d2dc07976771bbe41257bf2d4d13d54f9d661d2237543127ce'
-
           grep -qx 'distributionSha256Sum=efe9a3d147d948d7528a9887fa35abcf24ca1a43ad06439996490f77569b02d1' android/gradle/wrapper/gradle-wrapper.properties
           grep -q '<verify-metadata>true</verify-metadata>' android/gradle/verification-metadata.xml
           grep -q '<verify-signatures>false</verify-signatures>' android/gradle/verification-metadata.xml
@@ -72,7 +70,6 @@ jobs:
           PLUGIN="$PKG/android/src/main/kotlin/com/github/tfox/flutter_vless/FlutterVlessPlugin.kt"
           CORE="$PKG/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/core/XrayCoreManager.kt"
           SERVICE="$PKG/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt"
-
           test -f "$PKG/UPSTREAM"
           grep -q 'Tag: v1.1.5' "$PKG/UPSTREAM"
           grep -q 'path: local_packages/flutter_vless_android-1.1.5' pubspec.yaml
