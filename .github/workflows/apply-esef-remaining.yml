@@ -6,6 +6,7 @@ on:
       - fix/3.3.2-esef-security-cleanup
     paths:
       - tool/apply_esef_remaining.py
+      - tool/fix_esef_tests.py
       - .github/workflows/apply-esef-remaining.yml
 
 permissions:
@@ -33,7 +34,10 @@ jobs:
         run: cp lib/logic/app_config.example.dart lib/logic/app_config.dart
 
       - name: Apply guarded hardening patch
-        run: python3 tool/apply_esef_remaining.py
+        run: |
+          python3 tool/fix_esef_tests.py
+          python3 tool/apply_esef_remaining.py
+          rm tool/fix_esef_tests.py
 
       - name: Resolve dependencies
         run: flutter pub get
@@ -50,6 +54,7 @@ jobs:
           test ! -e .github/workflows/vendor-flutter-vless.yml
           test ! -e .github/workflows/apply-esef-remaining.yml
           test ! -e tool/apply_esef_remaining.py
+          test ! -e tool/fix_esef_tests.py
           ! grep -q 'META-INF/\\*\\*' android/app/build.gradle.kts
           ! grep -q 'isVpnServiceProcessAlive' android/app/src/main/kotlin/com/paladinvpn/app/MainActivity.kt
           grep -q '_maxControlResponseBytes = 256 \\* 1024' lib/logic/hivemind_service.dart
