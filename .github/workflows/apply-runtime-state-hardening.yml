@@ -36,6 +36,10 @@ jobs:
         run: |
           python3 -m py_compile tool/apply_runtime_state_hardening.py
           python3 tool/apply_runtime_state_hardening.py
+          TEST_FILE='test/native_runtime_state_regression_test.dart'
+          grep -Fq "    final root = 'local_packages/flutter_vless_android-1.1.5/android/src/main/kotlin/com/github/tfox/flutter_vless';" "$TEST_FILE"
+          sed -i "s|^    final root = |    const root = |" "$TEST_FILE"
+          grep -Fq "    const root = 'local_packages/flutter_vless_android-1.1.5/android/src/main/kotlin/com/github/tfox/flutter_vless';" "$TEST_FILE"
 
       - name: Resolve dependencies
         run: flutter pub get
