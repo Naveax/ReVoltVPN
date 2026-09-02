@@ -13,6 +13,7 @@ class HivemindService {
 
   static const _ua = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
+  static const int _maxControlResponseBytes = 256 * 1024;
   static const _pollBackoff = <Duration>[
     Duration(seconds: 1),
     Duration(seconds: 2),
@@ -25,6 +26,52 @@ class HivemindService {
     Duration timeout = const Duration(seconds: 5),
   }) {
     return http.get(uri, headers: {'User-Agent': _ua}).timeout(timeout);
+  }
+
+  static Future<http.Response> controlGet(
+    Uri uri, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    final client = http.Client();
+    final request = http.Request('GET', uri)..headers['User-Agent'] = _ua;
+
+    Future<http.Response> read() async {
+      final streamed = await client.send(request);
+      final declaredLength = streamed.contentLength;
+      if (declaredLength != null && declaredLength > _maxControlResponseBytes) {
+        throw const FormatException('Control response is too large.');
+      }
+
+      final bytes = <int>[];
+      await for (final chunk in streamed.stream) {
+        if (bytes.length + chunk.length > _maxControlResponseBytes) {
+          throw const FormatException('Control response is too large.');
+        }
+        bytes.addAll(chunk);
+      }
+
+      return http.Response.bytes(
+        bytes,
+        streamed.statusCode,
+        headers: streamed.headers,
+        isRedirect: streamed.isRedirect,
+        persistentConnection: streamed.persistentConnection,
+        reasonPhrase: streamed.reasonPhrase,
+        request: request,
+      );
+    }
+
+    try {
+      return await read().timeout(
+        timeout,
+        onTimeout: () {
+          client.close();
+          throw TimeoutException('Control request timed out.', timeout);
+        },
+      );
+    } finally {
+      client.close();
+    }
   }
 
   static void cancel() {
@@ -83,7 +130,7 @@ class HivemindService {
 
   static Future<bool> checkHealth() async {
     try {
-      final response = await directGet(
+      final response = await controlGet(
         _publicUrl('/health'),
         timeout: const Duration(seconds: 3),
       );
@@ -119,7 +166,7 @@ class HivemindService {
     final statusUri = _publicUrl('/session/status').replace(
       queryParameters: {'device_id': deviceId},
     );
-    final response = await directGet(statusUri);
+    final response = await controlGet(statusUri);
     if (response.statusCode != 200) return null;
 
     final decoded = jsonDecode(response.body);
@@ -188,7 +235,7 @@ class _HivemindSessionConfig {
     // choose the tunnel destination. Keep that trust anchor compiled into the
     // app so an API/domain compromise can cause denial of service, not redirect
     // VPN traffic to an attacker-controlled server.
-    final pinnedHost = _validatedHost(AppConfig.serverIp, 'serverIp');
+    final pinnedHost = _validatedPublicIp(AppConfig.serverIp, 'serverIp');
     final advertisedHost = json['vless_ip'];
     if (advertisedHost != null) {
       if (advertisedHost is! String || advertisedHost.trim() != pinnedHost) {
@@ -199,7 +246,12 @@ class _HivemindSessionConfig {
     }
     final host = pinnedHost;
 
-    final port = _portOr(json['vless_port'], 443);
+    final advertisedPort = json['vless_port'];
+    if (advertisedPort != null &&
+        (advertisedPort is! num || advertisedPort.toInt() != 443)) {
+      throw const FormatException('Session VLESS port does not match compiled pin');
+    }
+    const port = 443;
     final sni = _validatedHost(
       _requiredString(json, 'reality_sni', maxLength: 253),
       'reality_sni',
@@ -300,11 +352,48 @@ class _HivemindSessionConfig {
     return value;
   }
 
-  static int _portOr(Object? value, int fallback) {
-    final parsed = value is num ? value.toInt() : fallback;
-    if (parsed <= 0 || parsed > 65535) {
-      throw const FormatException('Invalid VLESS port');
+  static String _validatedPublicIp(String input, String field) {
+    final value = input.trim().toLowerCase();
+    if (_isPublicIpv4(value) || _isPublicIpv6(value)) return value;
+    throw FormatException('Invalid public IP pin: $field');
+  }
+
+  static bool _isPublicIpv4(String value) {
+    final parts = value.split('.');
+    if (parts.length != 4) return false;
+    final octets = <int>[];
+    for (final part in parts) {
+      if (part.isEmpty || (part.length > 1 && part.startsWith('0'))) return false;
+      final parsed = int.tryParse(part);
+      if (parsed == null || parsed < 0 || parsed > 255) return false;
+      octets.add(parsed);
     }
-    return parsed;
+    final a = octets[0];
+    final b = octets[1];
+    if (a == 0 || a == 10 || a == 127 || a >= 224) return false;
+    if (a == 100 && b >= 64 && b <= 127) return false;
+    if (a == 169 && b == 254) return false;
+    if (a == 172 && b >= 16 && b <= 31) return false;
+    if (a == 192 && b == 168) return false;
+    if (a == 192 && b == 0 && octets[2] == 2) return false;
+    if (a == 198 && b == 51 && octets[2] == 100) return false;
+    if (a == 203 && b == 0 && octets[2] == 113) return false;
+    return true;
+  }
+
+  static bool _isPublicIpv6(String value) {
+    if (!value.contains(':') || value.contains('.')) return false;
+    try {
+      final parsed = Uri.parse('https://[$value]/');
+      if (parsed.host.isEmpty || !parsed.host.contains(':')) return false;
+    } on FormatException {
+      return false;
+    }
+    if (value == '::' || value == '::1') return false;
+    if (value.startsWith('fc') || value.startsWith('fd')) return false;
+    if (value.startsWith('fe8') || value.startsWith('fe9') || value.startsWith('fea') || value.startsWith('feb')) return false;
+    if (value.startsWith('ff')) return false;
+    if (value.startsWith('2001:db8:') || value == '2001:db8::') return false;
+    return true;
   }
 }

@@ -252,7 +252,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
 
       final base = Uri.parse('${AppConfig.hivemindApiPublic}/session/status');
       final url = base.replace(queryParameters: {'device_id': deviceId});
-      final response = await HivemindService.directGet(url);
+      final response = await HivemindService.controlGet(url);
       if (epoch != _sessionEpoch || _isDisconnecting) return;
 
       if (response.statusCode == 200) {

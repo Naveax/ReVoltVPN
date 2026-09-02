@@ -3,7 +3,6 @@ package com.paladinvpn.app
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.ActivityManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -145,45 +144,11 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /**
-     * Notification-only process liveness guard.
-     *
-     * Runtime adoption is driven by the private flutter_vless status heartbeat;
-     * this check only prevents this activity process from posting notification
-     * updates after the foreground-service process has disappeared.
-     */
-    private fun isVpnServiceProcessAlive(): Boolean {
-        return try {
-            val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            val expectedProcessName = "$packageName$VPN_PROCESS_SUFFIX"
-            am.runningAppProcesses
-                ?.any { it.processName == expectedProcessName } == true
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    /** Removes a notification left behind by a runtime that is no longer alive. */
-    private fun cancelVpnNotification() {
-        try {
-            NotificationManagerCompat.from(this).cancel(NOTIFICATION_ID)
-        } catch (_: Exception) {
-        }
-    }
-
     private fun updateVpnNotification(title: String, text: String, actionLabel: String) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
                 PackageManager.PERMISSION_GRANTED
         ) {
-            return
-        }
-
-        // The foreground notification (id 1) is owned by XrayVPNService via
-        // startForeground. Posting to it from this process while the service is
-        // gone leaves a frozen countdown nothing will ever update again.
-        if (!isVpnServiceProcessAlive()) {
-            cancelVpnNotification()
             return
         }
 
@@ -434,7 +399,6 @@ class MainActivity : FlutterActivity() {
 
     companion object {
         private const val NOTIFICATION_ID = 1
-        private const val VPN_PROCESS_SUFFIX = ":RunSoLibXrayDaemon"
         private const val NOTIFICATION_CHANNEL_ID = "REVOLT_VPN_SERVICE"
     }
 }

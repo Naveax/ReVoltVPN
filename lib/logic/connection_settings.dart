@@ -25,7 +25,10 @@ abstract final class ConnectionSettings {
         : ConnectionMode.tun;
 
     if (storedMode != _mode.name) {
-      await prefs.setString(_modeKey, _mode.name);
+      final migrated = await prefs.setString(_modeKey, _mode.name);
+      if (!migrated) {
+        throw StateError('Could not persist migrated connection mode.');
+      }
     }
 
     _initialized = true;

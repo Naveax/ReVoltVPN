@@ -18,10 +18,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    packaging {
-        resources.excludes.add("META-INF/**")
-    }
-
     val keystorePropertiesFile = rootProject.file("key.properties")
     val keystoreProperties = Properties()
     if (keystorePropertiesFile.exists()) {

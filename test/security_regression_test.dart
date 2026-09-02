@@ -81,7 +81,7 @@ void main() {
     expect(source, isNot(contains('ACTION_VPN_SETTINGS')));
     expect(source, isNot(contains('FROM_DISCONNECT_BTN')));
     expect(source, isNot(contains('isVpnRuntimeAlive')));
-    expect(source, contains('isVpnServiceProcessAlive'));
+    expect(source, isNot(contains('isVpnServiceProcessAlive')));
     expect(source, contains('REVOLT_VPN_SERVICE'));
 
     expect(vpnSource, contains('if (_connectEpoch == 0) _adoptedRunningRuntime = true;'));
@@ -116,6 +116,7 @@ void main() {
     expect(source, isNot(contains('int port = 10807')));
     expect(source, isNot(contains('paladinvpn.duckdns.org')));
     expect(source, contains("String targetHost = 'example.com'"));
+    expect(source, contains('const totalTimeout = Duration(seconds: 8);'));
   });
 
   test('hivemind rejects missing nonce and stale session responses', () {
@@ -136,11 +137,15 @@ void main() {
     final source = File('lib/logic/hivemind_service.dart').readAsStringSync();
 
     expect(source, contains('_uuidPattern'));
+    expect(source, contains('_maxControlResponseBytes = 256 * 1024'));
+    expect(source, contains('controlGet('));
+    expect(source, contains('_validatedPublicIp(AppConfig.serverIp'));
+    expect(source, contains('const port = 443;'));
     expect(source, contains("_requiredString(json, 'reality_pbk', maxLength: 128)"));
     expect(source, contains('_validatedHost('));
     expect(
       source,
-      contains("final pinnedHost = _validatedHost(AppConfig.serverIp, 'serverIp');"),
+      contains("final pinnedHost = _validatedPublicIp(AppConfig.serverIp, 'serverIp');"),
     );
     expect(source, contains('advertisedHost.trim() != pinnedHost'));
     expect(

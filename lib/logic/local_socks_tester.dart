@@ -96,9 +96,16 @@ abstract final class LocalSocksTester {
     String targetHost = 'example.com',
     int targetPort = 443,
   }) async {
+    const totalTimeout = Duration(seconds: 8);
     final stopwatch = Stopwatch()..start();
     Socket? socket;
     _SocketReader? reader;
+
+    Duration remaining() {
+      final micros = totalTimeout.inMicroseconds - stopwatch.elapsedMicroseconds;
+      if (micros <= 0) throw TimeoutException('SOCKS5 test timed out.', totalTimeout);
+      return Duration(microseconds: micros);
+    }
 
     try {
       if (targetPort <= 0 || targetPort > 65535) {
@@ -112,7 +119,7 @@ abstract final class LocalSocksTester {
       socket = await Socket.connect(
         host,
         port,
-        timeout: const Duration(seconds: 3),
+        timeout: remaining(),
       );
       socket.setOption(SocketOption.tcpNoDelay, true);
       reader = _SocketReader(socket);
@@ -122,6 +129,7 @@ abstract final class LocalSocksTester {
         socket,
         username: username,
         password: password,
+        timeout: remaining(),
       );
       if (!authenticated) {
         return const LocalSocksTestResult(
@@ -152,7 +160,7 @@ abstract final class LocalSocksTester {
       ]);
       await socket.flush();
 
-      final replyHead = await reader.readExactly(4);
+      final replyHead = await reader.readExactly(4, timeout: remaining());
       if (replyHead[0] != 0x05 || replyHead[1] != 0x00) {
         return const LocalSocksTestResult(
           ok: false,
@@ -162,7 +170,7 @@ abstract final class LocalSocksTester {
         );
       }
 
-      await _consumeAddress(reader, replyHead[3]);
+      await _consumeAddress(reader, replyHead[3], timeout: remaining());
       stopwatch.stop();
       return LocalSocksTestResult(
         ok: true,
@@ -233,22 +241,23 @@ abstract final class LocalSocksTester {
 
   static Future<void> _consumeAddress(
     _SocketReader reader,
-    int addressType,
-  ) async {
+    int addressType, {
+    required Duration timeout,
+  }) async {
     if (addressType == 0x01) {
-      await reader.readExactly(4 + 2);
+      await reader.readExactly(4 + 2, timeout: timeout);
       return;
     }
     if (addressType == 0x04) {
-      await reader.readExactly(16 + 2);
+      await reader.readExactly(16 + 2, timeout: timeout);
       return;
     }
     if (addressType == 0x03) {
-      final length = (await reader.readExactly(1)).first;
+      final length = (await reader.readExactly(1, timeout: timeout)).first;
       if (length == 0) {
         throw const FormatException('Invalid SOCKS5 domain length');
       }
-      await reader.readExactly(length + 2);
+      await reader.readExactly(length + 2, timeout: timeout);
       return;
     }
     throw const FormatException('Unsupported SOCKS5 address type');

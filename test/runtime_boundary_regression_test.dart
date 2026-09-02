@@ -3,17 +3,15 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('notification liveness matches only the ReVolt VPN process', () {
+  test('notification updates do not trust ActivityManager process visibility', () {
     final source = File(
       'android/app/src/main/kotlin/com/paladinvpn/app/MainActivity.kt',
     ).readAsStringSync();
 
-    expect(
-      source,
-      contains(r'val expectedProcessName = "$packageName$VPN_PROCESS_SUFFIX"'),
-    );
-    expect(source, contains('it.processName == expectedProcessName'));
-    expect(source, isNot(contains('endsWith(VPN_PROCESS_SUFFIX)')));
+    expect(source, isNot(contains('ActivityManager')));
+    expect(source, isNot(contains('isVpnServiceProcessAlive')));
+    expect(source, isNot(contains('VPN_PROCESS_SUFFIX')));
+    expect(source, contains('NotificationManagerCompat.from(this).notify'));
   });
 
   test('SOCKS reads use one total deadline instead of per-chunk timeout', () {
