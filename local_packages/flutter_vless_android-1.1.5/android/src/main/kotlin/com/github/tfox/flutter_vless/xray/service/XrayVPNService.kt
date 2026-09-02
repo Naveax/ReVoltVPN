@@ -41,7 +41,6 @@ class XrayVPNService : VpnService() {
 
     private val deadlineHandler = Handler(Looper.getMainLooper())
     private var sessionDeadlineElapsed: Long? = null
-    private var sessionDeadlineEpochMs: Long? = null
     private var sessionDeadlineToken: String? = null
     private val sessionDeadlineRunnable = Runnable { enforceSessionDeadline() }
 
@@ -400,7 +399,6 @@ class XrayVPNService : VpnService() {
         } else {
             deadlineHandler.removeCallbacks(sessionDeadlineRunnable)
             sessionDeadlineElapsed = null
-            sessionDeadlineEpochMs = null
             sessionDeadlineToken = null
         }
         recoveringXray = false
@@ -442,7 +440,6 @@ class XrayVPNService : VpnService() {
 
         sessionDeadlineToken = config.RUNTIME_TOKEN
         sessionDeadlineElapsed = SystemClock.elapsedRealtime() + delayMs
-        sessionDeadlineEpochMs = epochDeadline
 
         if (!persistDeadline(config.RUNTIME_TOKEN, epochDeadline) ||
             !scheduleSessionExpiryAlarm(config.RUNTIME_TOKEN, epochDeadline)
@@ -460,7 +457,6 @@ class XrayVPNService : VpnService() {
     private fun clearSessionDeadline() {
         deadlineHandler.removeCallbacks(sessionDeadlineRunnable)
         sessionDeadlineElapsed = null
-        sessionDeadlineEpochMs = null
         sessionDeadlineToken = null
         clearPersistedDeadline()
         cancelSessionExpiryAlarm()
@@ -537,6 +533,7 @@ class XrayVPNService : VpnService() {
         val storedDeadline = stored.second
         if (alarmToken.isEmpty() || storedToken.isEmpty() || alarmToken != storedToken) {
             Log.w(TAG, "Ignoring stale session-expiry alarm")
+            if (currentConfig == null) stopSelf()
             return
         }
 
@@ -546,7 +543,12 @@ class XrayVPNService : VpnService() {
                 Log.e(TAG, "Failed to re-arm early session-expiry alarm")
                 val activeToken = currentConfig?.RUNTIME_TOKEN.orEmpty()
                 if (activeToken == storedToken) stopAll(storedToken) else stopSelf()
+                return
             }
+            // An alarm can wake a fresh service process after clock changes.
+            // If there is no live runtime in this process, do not leave a
+            // background service instance hanging around just to hold a timer.
+            if (currentConfig == null) stopSelf()
             return
         }
 

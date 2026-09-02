@@ -11,7 +11,12 @@ void main() {
     final timer = File('lib/logic/session_timer.dart').readAsStringSync();
     final vpn = File('lib/logic/vpn_connection.dart').readAsStringSync();
     final main = File('lib/main.dart').readAsStringSync();
+    final mainActivity = File(
+      'android/app/src/main/kotlin/com/paladinvpn/app/MainActivity.kt',
+    ).readAsStringSync();
     final support = File('lib/components/support_button.dart').readAsStringSync();
+    final connectionSettings =
+        File('lib/logic/connection_settings.dart').readAsStringSync();
 
     expect(config, contains('var RUNTIME_TOKEN: String = ""'));
     expect(plugin, contains('expectedRuntimeToken'));
@@ -32,6 +37,8 @@ void main() {
     expect(service, contains('PREF_RUNTIME_TOKEN'));
     expect(service, contains('markRuntimeReady(this, config)'));
     expect(service, contains('Per-session VLESS/SOCKS credentials remain memory-only'));
+    expect(service, contains('if (currentConfig == null) stopSelf()'));
+    expect(service, isNot(contains('sessionDeadlineEpochMs')));
     expect(service, isNot(contains('active_session.bin')));
     expect(service, isNot(contains('ObjectOutputStream')));
 
@@ -40,9 +47,24 @@ void main() {
     expect(timer, contains('setNativeSessionDeadline(_remainingAtLastSync)'));
     expect(timer, contains('Future.microtask(_onVpnConnectionChanged)'));
     expect(timer, contains('Connected with a stopped clock - resuming.'));
+    expect(timer, contains('Completer<void>? _syncCompletion'));
+    expect(timer, contains('await active.future;'));
     expect(main, contains('ChangeNotifierProxyProvider<VpnConnection, SessionTimer>('));
     expect(main, contains('lazy: false'));
     expect(support, contains('await timer.syncNow();'));
     expect(vpn, contains("MethodChannel('flutter_vless')"));
+
+    // UI notification refreshes must never mint an unscoped STOP action.
+    // Reuse the token-scoped PendingIntent owned by the live native service.
+    expect(mainActivity, contains('manager.activeNotifications'));
+    expect(mainActivity, contains('serviceStopAction'));
+    expect(mainActivity, isNot(contains('V2RAY_SERVICE_COMMANDS.STOP_SERVICE')));
+    expect(mainActivity, isNot(contains('XrayVPNService::class.java')));
+
+    expect(
+      connectionSettings,
+      contains('storedMode == ConnectionMode.proxy.name'),
+    );
+    expect(connectionSettings, isNot(contains("storedMode == 'ass'")));
   });
 }

@@ -24,6 +24,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   int _consecutiveFailures = 0;
   bool _isDisconnecting = false;
   int? _syncEpochInProgress;
+  Completer<void>? _syncCompletion;
   int _sessionEpoch = 0;
 
   bool _supportRewardClaimed = false;
@@ -197,8 +198,22 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Force a control-plane refresh after an event that changes the session
-  /// server-side, such as a successful support reward.
-  Future<void> syncNow() => _syncWithHivemind();
+  /// server-side. If a periodic sync is already in flight, wait for it and
+  /// issue a fresh request so the event cannot be hidden behind the busy guard.
+  Future<void> syncNow() async {
+    final requestedEpoch = _sessionEpoch;
+    while (requestedEpoch == _sessionEpoch && !_isDisconnecting) {
+      final active = _syncEpochInProgress == requestedEpoch
+          ? _syncCompletion
+          : null;
+      if (active != null) {
+        await active.future;
+        continue;
+      }
+      await _syncWithHivemind();
+      return;
+    }
+  }
 
   Future<void> disconnect({String reason = 'User requested'}) async {
     await _doDisconnect(reason);
@@ -237,6 +252,9 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     if (_isDisconnecting) return;
     final epoch = _sessionEpoch;
     if (_syncEpochInProgress == epoch) return;
+
+    final completion = Completer<void>();
+    _syncCompletion = completion;
     _syncEpochInProgress = epoch;
 
     try {
@@ -324,6 +342,10 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
       if (_syncEpochInProgress == epoch) {
         _syncEpochInProgress = null;
       }
+      if (identical(_syncCompletion, completion)) {
+        _syncCompletion = null;
+      }
+      if (!completion.isCompleted) completion.complete();
     }
   }
 

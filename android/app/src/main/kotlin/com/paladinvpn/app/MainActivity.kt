@@ -20,8 +20,6 @@ import android.os.VibratorManager
 import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import com.github.tfox.flutter_vless.xray.service.XrayVPNService
-import com.github.tfox.flutter_vless.xray.utils.AppConfigs
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -53,9 +51,6 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, powerChannel)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    // Doze and App Standby stop background services of apps that
-                    // are not exempt. Surface the real OS setting rather than
-                    // pretending the app can grant an exemption itself.
                     "isIgnoringBatteryOptimizations" ->
                         result.success(isIgnoringBatteryOptimizations())
                     "requestIgnoreBatteryOptimizations" ->
@@ -106,7 +101,6 @@ class MainActivity : FlutterActivity() {
         super.onDestroy()
     }
 
-    /** True when the OS has exempted us from Doze / App Standby. */
     private fun isIgnoringBatteryOptimizations(): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
         return try {
@@ -117,11 +111,6 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /**
-     * Opens the system exemption prompt. Android shows this as a single dialog;
-     * it cannot be granted silently, so the caller must treat a false return as
-     * "ask again later" rather than a denial.
-     */
     private fun requestIgnoreBatteryOptimizations(): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
         if (isIgnoringBatteryOptimizations()) return true
@@ -134,7 +123,6 @@ class MainActivity : FlutterActivity() {
             )
             true
         } catch (_: Exception) {
-            // Some OEM builds hide the direct intent; fall back to the list.
             try {
                 startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                 true
@@ -165,12 +153,24 @@ class MainActivity : FlutterActivity() {
             Intent.FLAG_ACTIVITY_CLEAR_TOP or
             Intent.FLAG_ACTIVITY_NEW_TASK
 
-        val stopIntent = Intent(this, XrayVPNService::class.java)
-        stopIntent.putExtra("COMMAND", AppConfigs.V2RAY_SERVICE_COMMANDS.STOP_SERVICE)
-        val stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, flags)
+        // The VPN service owns the authoritative Disconnect PendingIntent and
+        // embeds the current runtime-generation token in it. Never recreate an
+        // unscoped STOP intent from the UI process: a stale notification could
+        // otherwise stop a newer tunnel. Reuse the live service action when the
+        // platform exposes it; on older Android versions omit the action rather
+        // than weaken generation scoping.
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val serviceStopAction = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            manager.activeNotifications
+                .firstOrNull { it.id == NOTIFICATION_ID }
+                ?.notification
+                ?.actions
+                ?.firstOrNull()
+                ?.actionIntent
+        } else {
+            null
+        }
 
-        // Public lock-screen preview: keep the VPN status visible but hide the
-        // session countdown/speed so usage metadata never reaches the lock screen.
         val publicVersion = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.notification_status_icon)
             .setContentTitle("Revolt VPN")
@@ -181,7 +181,6 @@ class MainActivity : FlutterActivity() {
             .setSmallIcon(R.drawable.notification_status_icon)
             .setContentTitle(title)
             .setContentText(text)
-            .addAction(0, actionLabel, stopPendingIntent)
             .setColorized(true)
             .setColor(0xFF0D1117.toInt())
             .setOngoing(true)
@@ -192,6 +191,10 @@ class MainActivity : FlutterActivity() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(publicVersion)
+
+        if (serviceStopAction != null) {
+            builder.addAction(0, actionLabel, serviceStopAction)
+        }
 
         if (launchIntent != null) {
             builder.setContentIntent(PendingIntent.getActivity(this, 0, launchIntent, flags))
