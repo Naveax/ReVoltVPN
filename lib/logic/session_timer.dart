@@ -50,14 +50,10 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     vpnConnection.addListener(_onVpnConnectionChanged);
     unawaited(_loadSupportRewardState());
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (vpnConnection.status == VpnStatus.connected &&
-          vpnConnection.adoptedRunningRuntime &&
-          !isRunning &&
-          !_isDisconnecting) {
-        _resumeTicking();
-      }
-    });
+    // VpnConnection is eager and can report an already-running native tunnel
+    // before this provider is created. ChangeNotifier listeners do not replay
+    // old events, so always evaluate the current state once after construction.
+    unawaited(Future.microtask(_onVpnConnectionChanged));
   }
 
   int get remaining => _remainingSeconds;
@@ -113,19 +109,12 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _onVpnConnectionChanged() {
+    // A live tunnel with a stopped clock is always wrong, whether this process
+    // adopted an existing runtime, attached late, or recovered from a blip.
     if (vpnConnection.status == VpnStatus.connected &&
         !isRunning &&
-        vpnConnection.adoptedRunningRuntime &&
         !_isDisconnecting) {
-      _resumeTicking();
-      return;
-    }
-
-    if (vpnConnection.status == VpnStatus.connected &&
-        !isRunning &&
-        !_isDisconnecting &&
-        _hasSyncedOnce) {
-      debugPrint('[Timer] VPN reconnected after blip - resuming.');
+      debugPrint('[Timer] Connected with a stopped clock - resuming.');
       _resumeTicking();
       return;
     }
@@ -206,6 +195,10 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
       NotificationService.updateTimer(formatted);
     }
   }
+
+  /// Force a control-plane refresh after an event that changes the session
+  /// server-side, such as a successful support reward.
+  Future<void> syncNow() => _syncWithHivemind();
 
   Future<void> disconnect({String reason = 'User requested'}) async {
     await _doDisconnect(reason);

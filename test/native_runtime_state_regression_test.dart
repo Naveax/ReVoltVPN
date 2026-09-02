@@ -10,6 +10,8 @@ void main() {
     final core = File('$root/xray/core/XrayCoreManager.kt').readAsStringSync();
     final timer = File('lib/logic/session_timer.dart').readAsStringSync();
     final vpn = File('lib/logic/vpn_connection.dart').readAsStringSync();
+    final main = File('lib/main.dart').readAsStringSync();
+    final support = File('lib/components/support_button.dart').readAsStringSync();
 
     expect(config, contains('var RUNTIME_TOKEN: String = ""'));
     expect(plugin, contains('expectedRuntimeToken'));
@@ -17,13 +19,30 @@ void main() {
     expect(plugin, contains('runtimeReady'));
     expect(plugin, contains('STOP_TIMEOUT'));
     expect(plugin, contains('setSessionDeadline'));
+    expect(plugin, contains('result.error("NO_ACTIVITY"'));
+    expect(plugin, isNot(contains('activity!!')));
+
     expect(service, contains('BOOTSTRAP_SESSION_SECONDS = 120L'));
     expect(service, contains('UPDATE_SESSION_DEADLINE'));
     expect(service, contains('SystemClock.elapsedRealtime()'));
+    expect(service, contains('AlarmManager.RTC_WAKEUP'));
+    expect(service, contains('setExactAndAllowWhileIdle'));
+    expect(service, contains('setAndAllowWhileIdle'));
+    expect(service, contains('PREF_EXPIRES_AT_MS'));
+    expect(service, contains('PREF_RUNTIME_TOKEN'));
     expect(service, contains('markRuntimeReady(this, config)'));
+    expect(service, contains('Per-session VLESS/SOCKS credentials remain memory-only'));
+    expect(service, isNot(contains('active_session.bin')));
+    expect(service, isNot(contains('ObjectOutputStream')));
+
     expect(core, contains('AppConfigs.RUNTIME_READY = false'));
     expect(core, contains('fun markRuntimeReady'));
     expect(timer, contains('setNativeSessionDeadline(_remainingAtLastSync)'));
+    expect(timer, contains('Future.microtask(_onVpnConnectionChanged)'));
+    expect(timer, contains('Connected with a stopped clock - resuming.'));
+    expect(main, contains('ChangeNotifierProxyProvider<VpnConnection, SessionTimer>('));
+    expect(main, contains('lazy: false'));
+    expect(support, contains('await timer.syncNow();'));
     expect(vpn, contains("MethodChannel('flutter_vless')"));
   });
 }

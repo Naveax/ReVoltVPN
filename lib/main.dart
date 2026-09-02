@@ -43,6 +43,7 @@ class ReVoltApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => VpnConnection(), lazy: false),
         ChangeNotifierProxyProvider<VpnConnection, SessionTimer>(
+          lazy: false,
           create: (ctx) =>
               SessionTimer(vpnConnection: ctx.read<VpnConnection>()),
           update: (_, vpn, prev) =>

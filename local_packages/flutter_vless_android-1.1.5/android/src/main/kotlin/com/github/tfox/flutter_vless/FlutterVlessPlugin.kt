@@ -14,6 +14,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.github.tfox.flutter_vless.xray.core.XrayCoreManager
@@ -64,6 +65,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.Activity
     }
 
     companion object {
+        private const val TAG = "FlutterVlessPlugin"
         private const val REQUEST_CODE_VPN_PERMISSION = 24
         private const val REQUEST_CODE_POST_NOTIFICATIONS = 1
     }
@@ -285,16 +287,22 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.Activity
                 }
             }
             "requestPermission" -> {
-                // Requests VPN permission from the OS
+                // The Activity can detach during configuration/lifecycle churn.
+                // Never turn that into a Kotlin NPE on the MethodChannel.
+                val currentActivity = activity
+                if (currentActivity == null) {
+                    result.error("NO_ACTIVITY", "Activity is not attached", null)
+                    return
+                }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    if (ActivityCompat.checkSelfPermission(activity!!, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                        ActivityCompat.requestPermissions(activity!!, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_CODE_POST_NOTIFICATIONS)
+                    if (ActivityCompat.checkSelfPermission(currentActivity, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                        ActivityCompat.requestPermissions(currentActivity, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_CODE_POST_NOTIFICATIONS)
                     }
                 }
-                val request = VpnService.prepare(activity)
+                val request = VpnService.prepare(currentActivity)
                 if (request != null) {
                     pendingResult = result
-                    activity!!.startActivityForResult(request, REQUEST_CODE_VPN_PERMISSION)
+                    currentActivity.startActivityForResult(request, REQUEST_CODE_VPN_PERMISSION)
                 } else {
                     result.success(true)
                 }
@@ -374,14 +382,16 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.Activity
     }
 
     private fun unregisterReceiver() {
-        if (activity != null && xrayReceiver != null) {
+        val currentActivity = activity
+        val receiver = xrayReceiver
+        if (currentActivity != null && receiver != null) {
             try {
-                activity?.unregisterReceiver(xrayReceiver)
+                currentActivity.unregisterReceiver(receiver)
             } catch (e: Exception) {
-                // ignore
+                Log.w(TAG, "Receiver was already detached during lifecycle cleanup", e)
             }
-            xrayReceiver = null
         }
+        xrayReceiver = null
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
