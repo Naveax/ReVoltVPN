@@ -1,0 +1,66 @@
+name: Apply ESEF remaining hardening
+
+on:
+  push:
+    branches:
+      - fix/3.3.2-esef-security-cleanup
+    paths:
+      - tool/apply_esef_remaining.py
+      - .github/workflows/apply-esef-remaining.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: fix/3.3.2-esef-security-cleanup
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: '3.47.2'
+          channel: stable
+          cache: false
+
+      - name: Create CI app config
+        run: cp lib/logic/app_config.example.dart lib/logic/app_config.dart
+
+      - name: Apply guarded hardening patch
+        run: python3 tool/apply_esef_remaining.py
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Analyze patched source
+        run: flutter analyze
+
+      - name: Test patched source
+        run: flutter test
+
+      - name: Verify patch hygiene
+        run: |
+          git diff --check
+          test ! -e .github/workflows/vendor-flutter-vless.yml
+          test ! -e .github/workflows/apply-esef-remaining.yml
+          test ! -e tool/apply_esef_remaining.py
+          ! grep -q 'META-INF/\\*\\*' android/app/build.gradle.kts
+          ! grep -q 'isVpnServiceProcessAlive' android/app/src/main/kotlin/com/paladinvpn/app/MainActivity.kt
+          grep -q '_maxControlResponseBytes = 256 \\* 1024' lib/logic/hivemind_service.dart
+          grep -q '_validatedPublicIp(AppConfig.serverIp' lib/logic/hivemind_service.dart
+          grep -q 'const totalTimeout = Duration(seconds: 8)' lib/logic/local_socks_tester.dart
+
+      - name: Commit patched source
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --quiet && exit 1
+          git commit -m 'hardening: close remaining control-plane gaps'
+          git push origin HEAD:fix/3.3.2-esef-security-cleanup
