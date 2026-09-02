@@ -64,5 +64,8 @@ data class XrayConfig(
     var DOMAIN_STRATEGY: String = "",
     
     /** Routing domain strategy. */
-    var ROUTING_DOMAIN_STRATEGY: String = ""
+    var ROUTING_DOMAIN_STRATEGY: String = "",
+
+    /** Unique generation token used to reject stale native runtime events. */
+    var RUNTIME_TOKEN: String = ""
 ) : Serializable

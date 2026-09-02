@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_vless/flutter_vless.dart';
 import 'package:revoltvpn/logic/connection_settings.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
@@ -17,6 +18,8 @@ enum VpnStatus {
 }
 
 class VpnConnection extends ChangeNotifier {
+  static const MethodChannel _nativeControl = MethodChannel('flutter_vless');
+
   int _connectEpoch = 0;
   bool _suppressNativeConnect = false;
 
@@ -318,7 +321,15 @@ class VpnConnection extends ChangeNotifier {
       if (!_isCurrentConnect(connectEpoch)) return false;
       debugPrint('[VPN] Tunnel start error: $e');
       _suppressNativeConnect = true;
-      await _stopRuntime();
+      try {
+        await _stopRuntime();
+      } catch (stopError) {
+        debugPrint('[VPN] Runtime cleanup failed after start error: $stopError');
+        if (!_isCurrentConnect(connectEpoch)) return false;
+        _errorMessage = 'VPN failed to shut down cleanly.\nPlease restart the app.';
+        _setStatus(VpnStatus.error, 'Shutdown failed');
+        return false;
+      }
       if (!_isCurrentConnect(connectEpoch)) return false;
       _clearRuntimeSnapshot();
       _errorMessage = _activeMode == ConnectionMode.proxy
@@ -383,9 +394,17 @@ class VpnConnection extends ChangeNotifier {
   }
 
   Future<void> _stopRuntime() async {
-    try {
-      await _vless.stopVless().timeout(const Duration(seconds: 5));
-    } catch (_) {}
+    await _vless.stopVless().timeout(const Duration(seconds: 8));
+  }
+
+  Future<void> setNativeSessionDeadline(int remainingSeconds) async {
+    if (kIsWeb) return;
+    if (!_initialized) throw StateError('VPN native service is not initialized');
+    if (remainingSeconds < 0) throw ArgumentError.value(remainingSeconds, 'remainingSeconds');
+    await _nativeControl.invokeMethod<void>(
+      'setSessionDeadline',
+      <String, Object>{'remainingSeconds': remainingSeconds},
+    );
   }
 
   Future<void> disconnect() async {
@@ -396,12 +415,7 @@ class VpnConnection extends ChangeNotifier {
     _userDisconnecting = true;
     HivemindService.cancel();
 
-    if (_status == VpnStatus.disconnected) {
-      _clearRuntimeSnapshot();
-      _userDisconnecting = false;
-      return;
-    }
-
+    // Explicit Disconnect always sends an idempotent native stop command.
     _setStatus(VpnStatus.disconnecting, 'Tearing down…');
 
     if (kIsWeb) {
@@ -412,24 +426,11 @@ class VpnConnection extends ChangeNotifier {
       return;
     }
 
-    bool timedOut = false;
     try {
-      await _vless.stopVless().timeout(
-            const Duration(seconds: 5),
-            onTimeout: () => timedOut = true,
-          );
+      await _vless.stopVless().timeout(const Duration(seconds: 8));
     } catch (e) {
       debugPrint('[VPN] VLESS stop error: $e');
       _errorMessage = 'VPN shutdown error.\nPlease restart the app.';
-      _clearRuntimeSnapshot();
-      _setStatus(VpnStatus.error, 'Shutdown failed');
-      _userDisconnecting = false;
-      return;
-    }
-
-    if (timedOut) {
-      debugPrint('[VPN] stopVless() timed out after 5 s.');
-      _errorMessage = 'VPN did not shut down cleanly.\nPlease restart the app.';
       _clearRuntimeSnapshot();
       _setStatus(VpnStatus.error, 'Shutdown failed');
       _userDisconnecting = false;

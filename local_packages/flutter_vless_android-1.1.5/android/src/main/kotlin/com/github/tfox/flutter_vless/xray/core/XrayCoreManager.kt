@@ -266,6 +266,7 @@ object XrayCoreManager {
      * @return true if started successfully, false otherwise.
      */
     fun startCore(context: Service, config: XrayConfig): Boolean {
+        AppConfigs.RUNTIME_READY = false
         AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_CONNECTING
         AppConfigs.V2RAY_CONFIG = config
 
@@ -336,9 +337,11 @@ object XrayCoreManager {
                 Log.w(TAG, "Could not delete ephemeral Xray config", e)
             }
 
-            AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_CONNECTED
+            AppConfigs.RUNTIME_READY = false
+            AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_CONNECTING
             startTimer(context)
             showNotification(context, config)
+            sendStatusBroadcast(context, config)
             
             val process = xrayProcess ?: return false
             // Monitor process in a separate thread to detect crash
@@ -351,12 +354,16 @@ object XrayCoreManager {
                     val exitCode = process.waitFor()
                     Log.e(TAG, "Xray process exited with code $exitCode")
                     if (xrayProcess === process &&
-                        AppConfigs.V2RAY_STATE == AppConfigs.V2RAY_STATES.V2RAY_CONNECTED
+                        AppConfigs.V2RAY_CONFIG?.RUNTIME_TOKEN == config.RUNTIME_TOKEN &&
+                        (AppConfigs.V2RAY_STATE == AppConfigs.V2RAY_STATES.V2RAY_CONNECTED ||
+                         AppConfigs.V2RAY_STATE == AppConfigs.V2RAY_STATES.V2RAY_CONNECTING)
                     ) {
                         // Hold the Android TUN while the core is recovered. Killing
                         // the VPN service here would allow direct-network fallback.
                         xrayProcess = null
+                        AppConfigs.RUNTIME_READY = false
                         AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_CONNECTING
+                        sendStatusBroadcast(context, config)
                         if (context is XrayVPNService) {
                             context.handleXrayCoreExit(config)
                         } else {
@@ -384,7 +391,7 @@ object XrayCoreManager {
     /**
      * Stops the Xray Core process and cleans up notifications.
      */
-    fun stopCore(context: Service) {
+    fun stopCore(context: Service, confirmationToken: String? = AppConfigs.V2RAY_CONFIG?.RUNTIME_TOKEN) {
         try {
             xrayProcess?.destroy()
             xrayProcess = null
@@ -392,13 +399,28 @@ object XrayCoreManager {
             Log.e(TAG, "Failed to destroy Xray process", e)
         }
 
+        AppConfigs.RUNTIME_READY = false
         AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
         stopTimer()
-        
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.cancel(NOTIFICATION_ID)
-        
-        sendDisconnectedBroadcast(context)
+        sendDisconnectedBroadcast(context, confirmationToken.orEmpty())
+        AppConfigs.V2RAY_CONFIG = null
+    }
+
+    fun markRuntimeConnecting(context: Context, config: XrayConfig) {
+        if (AppConfigs.V2RAY_CONFIG?.RUNTIME_TOKEN != config.RUNTIME_TOKEN) return
+        AppConfigs.RUNTIME_READY = false
+        AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_CONNECTING
+        sendStatusBroadcast(context, config)
+    }
+
+    fun markRuntimeReady(context: Service, config: XrayConfig) {
+        if (AppConfigs.V2RAY_CONFIG?.RUNTIME_TOKEN != config.RUNTIME_TOKEN) return
+        AppConfigs.RUNTIME_READY = true
+        AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_CONNECTED
+        showNotification(context, config)
+        sendStatusBroadcast(context, config)
     }
 
     fun isXrayRunning(): Boolean {
@@ -415,6 +437,8 @@ object XrayCoreManager {
                 seconds++
                 val intent = Intent(AppConfigs.V2RAY_CONNECTION_INFO).setPackage(context.packageName)
                 intent.putExtra("STATE", AppConfigs.V2RAY_STATE)
+                intent.putExtra("RUNTIME_TOKEN", AppConfigs.V2RAY_CONFIG?.RUNTIME_TOKEN.orEmpty())
+                intent.putExtra("RUNTIME_READY", AppConfigs.RUNTIME_READY)
                 intent.putExtra("DURATION", seconds.toString())
                 
                 intent.putExtra("UPLOAD_SPEED", 0L)
@@ -435,9 +459,24 @@ object XrayCoreManager {
         seconds = 0
     }
 
-    private fun sendDisconnectedBroadcast(context: Context) {
+    fun sendStatusBroadcast(context: Context, config: XrayConfig) {
+        val intent = Intent(AppConfigs.V2RAY_CONNECTION_INFO).setPackage(context.packageName)
+        intent.putExtra("STATE", AppConfigs.V2RAY_STATE)
+        intent.putExtra("RUNTIME_TOKEN", config.RUNTIME_TOKEN)
+        intent.putExtra("RUNTIME_READY", AppConfigs.RUNTIME_READY)
+        intent.putExtra("DURATION", seconds.toString())
+        intent.putExtra("UPLOAD_SPEED", 0L)
+        intent.putExtra("DOWNLOAD_SPEED", 0L)
+        intent.putExtra("UPLOAD_TRAFFIC", 0L)
+        intent.putExtra("DOWNLOAD_TRAFFIC", 0L)
+        context.sendBroadcast(intent)
+    }
+
+    private fun sendDisconnectedBroadcast(context: Context, runtimeToken: String) {
         val intent = Intent(AppConfigs.V2RAY_CONNECTION_INFO).setPackage(context.packageName)
         intent.putExtra("STATE", AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED)
+        intent.putExtra("RUNTIME_TOKEN", runtimeToken)
+        intent.putExtra("RUNTIME_READY", false)
         intent.putExtra("DURATION", "0")
         intent.putExtra("UPLOAD_SPEED", 0L)
         intent.putExtra("DOWNLOAD_SPEED", 0L)
@@ -463,13 +502,14 @@ object XrayCoreManager {
 
         val stopIntent = Intent(context, XrayVPNService::class.java)
         stopIntent.putExtra("COMMAND", AppConfigs.V2RAY_SERVICE_COMMANDS.STOP_SERVICE)
+        stopIntent.putExtra("RUNTIME_TOKEN", config.RUNTIME_TOKEN)
         val stopPendingIntent = PendingIntent.getService(context, 0, stopIntent, flags)
         val smallIcon = if (config.APPLICATION_ICON != 0) config.APPLICATION_ICON else android.R.drawable.ic_dialog_info
 
         val builder = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(smallIcon)
             .setContentTitle(config.REMARK)
-            .setContentText("Connected")
+            .setContentText(if (AppConfigs.RUNTIME_READY) "Connected" else "Connecting")
             .addAction(0, config.NOTIFICATION_DISCONNECT_BUTTON_NAME, stopPendingIntent)
             .setContentIntent(contentPendingIntent)
             .setPriority(NotificationCompat.PRIORITY_MIN)

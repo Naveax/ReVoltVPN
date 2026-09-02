@@ -19,7 +19,7 @@ object AppConfigs {
      * Commands sent to the XrayVPNService via Intent.
      */
     enum class V2RAY_SERVICE_COMMANDS : Serializable {
-        START_SERVICE, STOP_SERVICE, RESTART_SERVICE
+        START_SERVICE, STOP_SERVICE, RESTART_SERVICE, UPDATE_SESSION_DEADLINE
     }
 
     /**
@@ -39,6 +39,7 @@ object AppConfigs {
     }
 
     var V2RAY_STATE: V2RAY_STATES = V2RAY_STATES.V2RAY_DISCONNECTED
+    @Volatile var RUNTIME_READY: Boolean = false
     var V2RAY_CONFIG: XrayConfig? = null
     var V2RAY_CONNECTION_MODE: V2RAY_CONNECTION_MODES = V2RAY_CONNECTION_MODES.VPN_TUN
 

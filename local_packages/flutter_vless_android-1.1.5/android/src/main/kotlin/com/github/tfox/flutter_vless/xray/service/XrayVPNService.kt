@@ -6,6 +6,9 @@ import android.net.LocalSocketAddress
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import com.github.tfox.flutter_vless.xray.core.XrayCoreManager
 import com.github.tfox.flutter_vless.xray.dto.XrayConfig
@@ -38,6 +41,11 @@ class XrayVPNService : VpnService() {
     @Volatile private var recoveringTun2socks = false
     private var tun2socksRecoveryAttempt = 0
     private var currentConfig: XrayConfig? = null
+    private var currentProxyOnly = false
+    private val deadlineHandler = Handler(Looper.getMainLooper())
+    private var sessionDeadlineElapsed: Long? = null
+    private var sessionDeadlineToken: String? = null
+    private val sessionDeadlineRunnable = Runnable { enforceSessionDeadline() }
 
     override fun onCreate() {
         super.onCreate()
@@ -58,8 +66,19 @@ class XrayVPNService : VpnService() {
         }
 
         if (command == AppConfigs.V2RAY_SERVICE_COMMANDS.STOP_SERVICE) {
-            stopAll()
+            val requestedToken = intent.getStringExtra("RUNTIME_TOKEN")
+            val activeToken = currentConfig?.RUNTIME_TOKEN.orEmpty()
+            if (!requestedToken.isNullOrEmpty() && activeToken.isNotEmpty() && requestedToken != activeToken) {
+                Log.w(TAG, "Ignoring stale STOP_SERVICE for a different runtime generation")
+                return START_NOT_STICKY
+            }
+            stopAll(activeToken.ifEmpty { requestedToken.orEmpty() })
             return START_NOT_STICKY
+        }
+
+        if (command == AppConfigs.V2RAY_SERVICE_COMMANDS.UPDATE_SESSION_DEADLINE) {
+            updateSessionDeadline(intent)
+            return if (isRunning) START_REDELIVER_INTENT else START_NOT_STICKY
         }
 
         // Create notification channel and start foreground immediately to prevent crash.
@@ -94,9 +113,11 @@ class XrayVPNService : VpnService() {
                 }
                 cleanup()
                 currentConfig = config
-                
+
                 // Check if we should run in Proxy Only mode (no VPN interface)
                 val proxyOnly = intent.getBooleanExtra("PROXY_ONLY", false)
+                currentProxyOnly = proxyOnly
+                armSessionDeadline(config, BOOTSTRAP_SESSION_SECONDS)
                 
                 // Start the Xray Core (SOCKS/HTTP proxy)
                 if (XrayCoreManager.startCore(this, config)) {
@@ -104,9 +125,9 @@ class XrayVPNService : VpnService() {
                         // If not proxy-only, establish the VPN interface and start tun2socks
                         setupVpn(config)
                     } else {
-                        // Proxy Only Mode: Just mark as running
                         isRunning = true
                         Log.d(TAG, "Starting in PROXY_ONLY mode")
+                        XrayCoreManager.markRuntimeReady(this, config)
                     }
                 } else {
                     stopSelf()
@@ -210,6 +231,7 @@ class XrayVPNService : VpnService() {
 
     private fun scheduleTun2socksRecovery(config: XrayConfig, reason: String) {
         if (!isRunning || currentConfig !== config || recoveringTun2socks) return
+        XrayCoreManager.markRuntimeConnecting(this, config)
         recoveringTun2socks = true
         val attempt = ++tun2socksRecoveryAttempt
         val shift = (attempt - 1).coerceIn(0, 6)
@@ -287,7 +309,7 @@ class XrayVPNService : VpnService() {
             }.start()
 
             // Send the TUN file descriptor to tun2socks via socket
-            sendFd(process)
+            sendFd(process, config)
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start tun2socks; keeping TUN fail-closed", e)
@@ -300,7 +322,7 @@ class XrayVPNService : VpnService() {
      * This uses a Unix Domain Socket to pass the FD, which is required because
      * ProcessBuilder cannot inherit FDs on Android.
      */
-    private fun sendFd(process: Process) {
+    private fun sendFd(process: Process, config: XrayConfig) {
         val fd = mInterface?.fileDescriptor ?: return
         val sockFile = File(filesDir, "sock_path").absolutePath
 
@@ -319,6 +341,10 @@ class XrayVPNService : VpnService() {
                     localSocket.setFileDescriptorsForSend(null)
                     localSocket.shutdownOutput()
                     localSocket.close()
+                    if (isRunning && currentConfig === config && tun2socksProcess === process) {
+                        tun2socksRecoveryAttempt = 0
+                        XrayCoreManager.markRuntimeReady(this, config)
+                    }
                     return@Thread
                 } catch (_: Exception) {
                     tries++
@@ -350,6 +376,9 @@ class XrayVPNService : VpnService() {
 
                     if (XrayCoreManager.startCore(this, config)) {
                         Log.w(TAG, "Xray core recovered without dropping TUN")
+                        if (currentProxyOnly || (mInterface != null && tun2socksProcess?.isAlive == true)) {
+                            XrayCoreManager.markRuntimeReady(this, config)
+                        }
                         return@Thread
                     }
                 }
@@ -366,9 +395,12 @@ class XrayVPNService : VpnService() {
      */
     private fun cleanup() {
         isRunning = false
+        clearSessionDeadline()
         recoveringXray = false
         recoveringTun2socks = false
         tun2socksRecoveryAttempt = 0
+        currentProxyOnly = false
+        AppConfigs.RUNTIME_READY = false
         tun2socksProcess?.destroy()
         tun2socksProcess = null
         try {
@@ -380,12 +412,57 @@ class XrayVPNService : VpnService() {
     /**
      * Stops everything: tun2socks, VPN interface, and Xray Core.
      */
-    private fun stopAll() {
+    private fun stopAll(confirmationToken: String = currentConfig?.RUNTIME_TOKEN.orEmpty()) {
         cleanup()
         currentConfig = null
-        XrayCoreManager.stopCore(this)
+        XrayCoreManager.stopCore(this, confirmationToken)
         stopForeground(true)
         stopSelf()
+    }
+
+    private fun armSessionDeadline(config: XrayConfig, remainingSeconds: Long) {
+        val boundedSeconds = remainingSeconds.coerceAtLeast(0L).coerceAtMost(Long.MAX_VALUE / 1000L)
+        val delayMs = boundedSeconds * 1000L
+        sessionDeadlineToken = config.RUNTIME_TOKEN
+        sessionDeadlineElapsed = SystemClock.elapsedRealtime() + delayMs
+        deadlineHandler.removeCallbacks(sessionDeadlineRunnable)
+        if (delayMs == 0L) deadlineHandler.post(sessionDeadlineRunnable)
+        else deadlineHandler.postDelayed(sessionDeadlineRunnable, delayMs)
+    }
+
+    private fun clearSessionDeadline() {
+        deadlineHandler.removeCallbacks(sessionDeadlineRunnable)
+        sessionDeadlineElapsed = null
+        sessionDeadlineToken = null
+    }
+
+    private fun enforceSessionDeadline() {
+        val token = sessionDeadlineToken ?: return
+        val deadline = sessionDeadlineElapsed ?: return
+        val config = currentConfig ?: return
+        if (config.RUNTIME_TOKEN != token) return
+        val remaining = deadline - SystemClock.elapsedRealtime()
+        if (remaining > 0L) {
+            deadlineHandler.postDelayed(sessionDeadlineRunnable, remaining)
+            return
+        }
+        Log.w(TAG, "Native session deadline expired; stopping runtime fail-closed")
+        stopAll(token)
+    }
+
+    private fun updateSessionDeadline(intent: Intent) {
+        val config = currentConfig ?: return
+        val token = intent.getStringExtra("RUNTIME_TOKEN").orEmpty()
+        if (token.isEmpty() || token != config.RUNTIME_TOKEN) {
+            Log.w(TAG, "Ignoring session deadline update for stale runtime generation")
+            return
+        }
+        val remainingSeconds = intent.getLongExtra("REMAINING_SECONDS", -1L)
+        if (remainingSeconds < 0L) {
+            Log.w(TAG, "Ignoring invalid negative session deadline")
+            return
+        }
+        armSessionDeadline(config, remainingSeconds)
     }
 
     override fun onDestroy() {
@@ -442,5 +519,6 @@ class XrayVPNService : VpnService() {
     companion object {
         private const val TAG = "XrayVPNService"
         private const val FOREGROUND_SERVICE_TYPE_SPECIAL_USE = 0x40000000
+        private const val BOOTSTRAP_SESSION_SECONDS = 120L
     }
 }

@@ -307,6 +307,14 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
         }
 
         if (epoch != _sessionEpoch || _isDisconnecting) return;
+        try {
+          await vpnConnection.setNativeSessionDeadline(_remainingAtLastSync);
+        } catch (e) {
+          debugPrint('[Timer] Failed to arm native session deadline: $e');
+          await _doDisconnect('Native session deadline unavailable');
+          return;
+        }
+        if (epoch != _sessionEpoch || _isDisconnecting) return;
         _consecutiveFailures = 0;
         _offlineSeconds = 0;
         _hasSyncedOnce = true;
