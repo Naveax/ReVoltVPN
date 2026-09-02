@@ -61,10 +61,13 @@ class MainActivity : FlutterActivity() {
                         result.success(isIgnoringBatteryOptimizations())
                     "requestIgnoreBatteryOptimizations" ->
                         result.success(requestIgnoreBatteryOptimizations())
-                    // Android's own Always-on VPN is the only thing that keeps a
-                    // tunnel up across swipe-from-recents and reboot. It cannot be
-                    // toggled programmatically, so deep-link the user to it.
-                    "openVpnSettings" -> result.success(openVpnSettings())
+                    "setSessionExpiry" -> {
+                        val expiresAtMs = call.argument<Number>("expiresAtMs")?.toLong() ?: 0L
+                        if (expiresAtMs > 0) {
+                            sendSessionExpiryToDaemon(expiresAtMs)
+                        }
+                        result.success(null)
+                    }
                     // Is our VPN runtime actually alive? The service lives in
                     // :RunSoLibXrayDaemon, a separate process, so its statics are
                     // NOT visible here -- this is the only honest check.
@@ -153,16 +156,14 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /** Deep-links to the OS VPN settings, where Always-on VPN lives. */
-    private fun openVpnSettings(): Boolean {
-        return try {
-            startActivity(
-                Intent(Settings.ACTION_VPN_SETTINGS)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            )
-            true
+    /** Pushes the session-expiry deadline to the VPN service process. */
+    private fun sendSessionExpiryToDaemon(expiresAtMs: Long) {
+        try {
+            val intent = Intent(this, XrayVPNService::class.java)
+            intent.putExtra("SESSION_EXPIRES_AT_MS", expiresAtMs)
+            startService(intent)
         } catch (_: Exception) {
-            false
+            // Daemon not reachable; its persisted expiry still applies.
         }
     }
 

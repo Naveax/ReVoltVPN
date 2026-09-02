@@ -55,14 +55,6 @@ class _BackgroundReliabilityTileState extends State<BackgroundReliabilityTile>
     );
   }
 
-  Future<void> _openVpnSettings() async {
-    final opened = await PowerSettings.openVpnSettings();
-    if (!mounted || opened) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Could not open VPN settings.')),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final exempt = _batteryExempt;
@@ -76,8 +68,8 @@ class _BackgroundReliabilityTileState extends State<BackgroundReliabilityTile>
             style: TextStyle(color: AppColors.textWhite, fontSize: 15),
           ),
           subtitle: Text(
-            'Android stops background apps to save power. These two settings '
-            'are what keep the VPN running when the app is closed.',
+            'Android stops background apps to save power. Disabling battery '
+            'optimisation is what keeps the VPN running when the app is closed.',
             style: TextStyle(color: AppColors.textDim, fontSize: 12),
           ),
         ),
@@ -106,20 +98,6 @@ class _BackgroundReliabilityTileState extends State<BackgroundReliabilityTile>
                   label: const Text('Allow background activity'),
                 ),
               ],
-              const SizedBox(height: 16),
-              const Text(
-                'Always-on VPN keeps the tunnel up even after the app is closed '
-                'or the phone restarts. Turn it on for Revolt VPN in Android\'s '
-                'VPN settings, and enable "Block connections without VPN" if you '
-                'want traffic to stop rather than leak when it drops.',
-                style: TextStyle(color: AppColors.textMuted, fontSize: 12),
-              ),
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: _openVpnSettings,
-                icon: const Icon(Icons.settings),
-                label: const Text('Open VPN settings'),
-              ),
             ],
           ),
         ),

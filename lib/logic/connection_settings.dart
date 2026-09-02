@@ -18,9 +18,9 @@ abstract final class ConnectionSettings {
     final prefs = await SharedPreferences.getInstance();
     final storedMode = prefs.getString(_modeKey);
 
-    // Legacy 'ass' was the pre-V3 SOCKS5 label; map it to proxy. Everything
-    // else (including the old 'auto') is TUN — there is no runtime auto mode.
-    _mode = storedMode == ConnectionMode.proxy.name || storedMode == 'ass'
+    // Any unrecognized value (including the pre-V3 'auto') is TUN. 'proxy' is
+    // the only persisted value that selects the SOCKS5 mode.
+    _mode = storedMode == ConnectionMode.proxy.name
         ? ConnectionMode.proxy
         : ConnectionMode.tun;
 

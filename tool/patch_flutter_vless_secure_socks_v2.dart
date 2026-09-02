@@ -215,24 +215,156 @@ void patchService(File file) {
     );
   }
 
-  const oldNullIntent = r'''        if (intent == null) {
-            stopSelf()
-            return START_NOT_STICKY
-        }
-''';
-  const newNullIntent = r'''        if (intent == null) {
-            if (isRunning && currentConfig != null) return START_REDELIVER_INTENT
-            stopSelf()
-            return START_NOT_STICKY
-        }
-''';
-  text = replaceOnce(
-    text,
-    oldNullIntent,
-    newNullIntent,
-    'null intent lifecycle',
-  );
+  if (!text.contains('private data class PersistedSession(')) {
+    const persistenceHelpers = r'''    private data class PersistedSession(
+        val proxyOnly: Boolean,
+        val config: XrayConfig,
+        val sessionExpiresAtMs: Long,
+    ) : java.io.Serializable
 
+    private var proxyOnlyMode = false
+    private var sessionExpiresAtMs = 0L
+
+    private val expiryHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val expiryRunnable = Runnable {
+        if (sessionExpiresAtMs > 0 && System.currentTimeMillis() >= sessionExpiresAtMs) {
+            Log.w(TAG, "Session expired; tearing down VPN")
+            sessionExpiresAtMs = 0L
+            cancelExpiryAlarm()
+            postSessionExpiredNotification()
+            deletePersistedSession()
+            stopAll()
+        }
+    }
+
+    private fun scheduleExpiryCheck() {
+        expiryHandler.removeCallbacks(expiryRunnable)
+        if (sessionExpiresAtMs > 0) {
+            val delay = (sessionExpiresAtMs - System.currentTimeMillis()).coerceAtLeast(0)
+            expiryHandler.postDelayed(expiryRunnable, delay)
+        }
+        scheduleExpiryAlarm()
+    }
+
+    private fun scheduleExpiryAlarm() {
+        cancelExpiryAlarm()
+        if (sessionExpiresAtMs <= 0) return
+        try {
+            val alarmManager = getSystemService(android.content.Context.ALARM_SERVICE) as android.app.AlarmManager
+            try {
+                alarmManager.setExactAndAllowWhileIdle(
+                    android.app.AlarmManager.RTC_WAKEUP,
+                    sessionExpiresAtMs,
+                    sessionExpiredPendingIntent(),
+                )
+            } catch (e: SecurityException) {
+                alarmManager.setAndAllowWhileIdle(
+                    android.app.AlarmManager.RTC_WAKEUP,
+                    sessionExpiresAtMs,
+                    sessionExpiredPendingIntent(),
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to schedule expiry alarm", e)
+        }
+    }
+
+    private fun cancelExpiryAlarm() {
+        try {
+            val alarmManager = getSystemService(android.content.Context.ALARM_SERVICE) as android.app.AlarmManager
+            alarmManager.cancel(sessionExpiredPendingIntent())
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun sessionExpiredPendingIntent(): android.app.PendingIntent {
+        val intent = Intent(this, XrayVPNService::class.java)
+        intent.putExtra("SESSION_EXPIRED", true)
+        val flags = android.app.PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                android.app.PendingIntent.FLAG_IMMUTABLE
+            } else {
+                0
+            }
+        return android.app.PendingIntent.getService(this, 1001, intent, flags)
+    }
+
+    private fun persistSession() {
+        val config = currentConfig ?: return
+        try {
+            java.io.ObjectOutputStream(
+                java.io.FileOutputStream(File(filesDir, "active_session.bin")),
+            ).use { it.writeObject(PersistedSession(proxyOnlyMode, config, sessionExpiresAtMs)) }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to persist active session", e)
+        }
+    }
+
+    private fun loadPersistedSession(): PersistedSession? {
+        return try {
+            val file = File(filesDir, "active_session.bin")
+            if (!file.exists()) return null
+            java.io.ObjectInputStream(java.io.FileInputStream(file)).use {
+                it.readObject() as? PersistedSession
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to restore persisted session", e)
+            null
+        }
+    }
+
+    private fun deletePersistedSession() {
+        try {
+            File(filesDir, "active_session.bin").delete()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to delete persisted session", e)
+        }
+    }
+
+    private fun postSessionExpiredNotification() {
+        try {
+            createNotificationChannel()
+            val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+            } else {
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            val contentIntent = if (launchIntent != null) {
+                android.app.PendingIntent.getActivity(this, 0, launchIntent, flags)
+            } else {
+                null
+            }
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                android.app.Notification.Builder(this, "vpn_service_channel")
+            } else {
+                @Suppress("DEPRECATION")
+                android.app.Notification.Builder(this)
+            }
+            builder
+                .setContentTitle("Revolt VPN")
+                .setContentText("Session expired. Reconnect to continue.")
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setAutoCancel(true)
+            if (contentIntent != null) {
+                builder.setContentIntent(contentIntent)
+            }
+            val manager = getSystemService(android.app.NotificationManager::class.java)
+            manager?.notify(2, builder.build())
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to post session expired notification", e)
+        }
+    }
+''';
+    text = replaceOnce(
+      text,
+      '    override fun onCreate() {\n        super.onCreate()\n    }\n',
+      '    override fun onCreate() {\n        super.onCreate()\n    }\n\n$persistenceHelpers',
+      'session persistence helpers',
+    );
+  }
+
+  // Snapshot the running config so a START_STICKY restart can re-establish it.
   if (!text.contains('                currentConfig = config\n')) {
     text = replaceOnce(
       text,
@@ -244,10 +376,78 @@ void patchService(File file) {
 
   text = replaceOnce(
     text,
-    '        return START_STICKY\n',
-    '        return START_REDELIVER_INTENT\n',
-    'redeliver START command',
+    '                val proxyOnly = intent.getBooleanExtra("PROXY_ONLY", false)\n',
+    '                val proxyOnly = intent.getBooleanExtra("PROXY_ONLY", false)\n                proxyOnlyMode = proxyOnly\n                persistSession()\n',
+    'persist session snapshot',
   );
+
+  text = replaceOnce(
+    text,
+    '        if (command == AppConfigs.V2RAY_SERVICE_COMMANDS.STOP_SERVICE) {\n            stopAll()\n            return START_NOT_STICKY\n        }\n',
+    '        if (command == AppConfigs.V2RAY_SERVICE_COMMANDS.STOP_SERVICE) {\n            deletePersistedSession()\n            stopAll()\n            return START_NOT_STICKY\n        }\n',
+    'delete session on explicit stop',
+  );
+
+  const oldNullIntent = r'''        if (intent == null) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+''';
+  const newNullIntent = r'''        if (intent == null) {
+            if (isRunning && currentConfig != null) return START_STICKY
+            val persisted = loadPersistedSession()
+            if (persisted != null) {
+                Log.w(TAG, "Re-establishing VPN from persisted session")
+                createNotificationChannel()
+                val notification = createNotification("VPN Service Running")
+                try {
+                    if (Build.VERSION.SDK_INT >= 34) {
+                        startForeground(1, notification, FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                    } else {
+                        startForeground(1, notification)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to start foreground", e)
+                }
+                if (XrayCoreManager.isXrayRunning()) {
+                    Log.w(TAG, "Stopping stale Xray core before restart")
+                    XrayCoreManager.stopCore(this)
+                }
+                cleanup()
+                currentConfig = persisted.config
+                proxyOnlyMode = persisted.proxyOnly
+                sessionExpiresAtMs = persisted.sessionExpiresAtMs
+                if (XrayCoreManager.startCore(this, persisted.config)) {
+                    if (!persisted.proxyOnly) {
+                        setupVpn(persisted.config)
+                    } else {
+                        isRunning = true
+                    }
+                    scheduleExpiryCheck()
+                } else {
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+                return START_STICKY
+            }
+            stopSelf()
+            return START_NOT_STICKY
+        }
+''';
+  text = replaceOnce(
+    text,
+    oldNullIntent,
+    newNullIntent,
+    'null intent lifecycle',
+  );
+
+  text = replaceOnce(
+    text,
+    '        val command = if (Build.VERSION.SDK_INT >= 33) {\n',
+    '        if (intent.getBooleanExtra("SESSION_EXPIRED", false)) {\n            Log.w(TAG, "Session-expiry alarm fired; tearing down VPN")\n            sessionExpiresAtMs = 0L\n            cancelExpiryAlarm()\n            deletePersistedSession()\n            postSessionExpiredNotification()\n            stopAll()\n            return START_NOT_STICKY\n        }\n\n        if (intent.hasExtra("SESSION_EXPIRES_AT_MS")) {\n            sessionExpiresAtMs = intent.getLongExtra("SESSION_EXPIRES_AT_MS", 0L)\n            scheduleExpiryCheck()\n            persistSession()\n            return if (isRunning && currentConfig != null) START_STICKY else START_NOT_STICKY\n        }\n\n        val command = if (Build.VERSION.SDK_INT >= 33) {\n',
+    'session expiry update',
+  );
+
 
   if (!text.contains('private data class SecureSocksCredentials(')) {
     const credentialsHelper = r'''    private data class SecureSocksCredentials(
@@ -508,12 +708,12 @@ void patchService(File file) {
     );
   }
 
-  if (!text.contains('        recoveringXray = false\n        tun2socksProcess?.destroy()')) {
+  if (!text.contains('        cancelExpiryAlarm()\n        tun2socksProcess?.destroy()')) {
     text = replaceOnce(
       text,
       '        isRunning = false\n        tun2socksProcess?.destroy()\n',
-      '        isRunning = false\n        recoveringXray = false\n        tun2socksProcess?.destroy()\n',
-      'cancel recovery on cleanup',
+      '        isRunning = false\n        recoveringXray = false\n        expiryHandler.removeCallbacks(expiryRunnable)\n        cancelExpiryAlarm()\n        tun2socksProcess?.destroy()\n',
+      'cancel recovery and expiry on cleanup',
     );
   }
 

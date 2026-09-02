@@ -5,9 +5,9 @@ import 'package:flutter/services.dart';
 ///
 /// Android stops background services of apps that are not exempt from Doze and
 /// App Standby, and it tears down the whole process group when a task is swiped
-/// away. Those are OS behaviours, not app bugs, and the OS provides exactly two
-/// sanctioned ways around them: a battery-optimisation exemption, and the
-/// system's own Always-on VPN. Both need one user tap; neither can be forced.
+/// away. Those are OS behaviours, not app bugs; the battery-optimisation
+/// exemption is the one sanctioned way an app can ask for around them, and it
+/// still needs one user tap.
 abstract final class PowerSettings {
   PowerSettings._();
 
@@ -42,16 +42,6 @@ abstract final class PowerSettings {
     }
   }
 
-  /// Opens the OS VPN settings screen, where Always-on VPN is configured.
-  static Future<bool> openVpnSettings() async {
-    if (kIsWeb) return false;
-    try {
-      return await _channel.invokeMethod<bool>('openVpnSettings') ?? false;
-    } catch (_) {
-      return false;
-    }
-  }
-
   /// Whether the VPN runtime is genuinely alive.
   ///
   /// The Xray service runs in a separate process, so nothing it stores in
@@ -69,6 +59,19 @@ abstract final class PowerSettings {
       );
     } catch (_) {
       return const VpnRuntimeState(processAlive: false, vpnTransport: false);
+    }
+  }
+
+  /// Pushes the absolute session-expiry timestamp (epoch ms) to the VPN
+  /// service so it can tear the tunnel down even when the UI process is gone.
+  static Future<void> setSessionExpiry(int expiresAtMs) async {
+    if (kIsWeb) return;
+    try {
+      await _channel.invokeMethod<void>('setSessionExpiry', {
+        'expiresAtMs': expiresAtMs,
+      });
+    } catch (_) {
+      // Best-effort. The daemon also keeps its last persisted expiry.
     }
   }
 }

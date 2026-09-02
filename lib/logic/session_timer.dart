@@ -7,11 +7,13 @@ import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/notification_service.dart';
+import 'package:revoltvpn/logic/power_settings.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 
 class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _timer;
   int _tickCount = 0;
+  int _lastPushedExpiryAtMs = 0;
   bool _appBackgrounded = false;
 
   final VpnConnection vpnConnection;
@@ -36,8 +38,12 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   static const int _maxOfflineSeconds = 120;
   int _offlineSeconds = 0;
 
-  static const int _pollIntervalSeconds = 5;
-  static const int _backgroundPollIntervalSeconds = 30;
+  // The countdown ticks locally every second; these only drive the slow
+  // server heartbeat that catches server-side changes (support-ad extension,
+  // 10 GB cap, session-ended). Keeping it slow avoids a chatty /session/status
+  // beacon (see internal/LAUNCH_READINESS.md "cut the beacon rate").
+  static const int _pollIntervalSeconds = 60;
+  static const int _backgroundPollIntervalSeconds = 60;
 
   int _lastUsedBytes = 0;
   DateTime? _lastSuccessfulSyncAt;
@@ -159,6 +165,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     _lastSuccessfulSyncAt = null;
     _currentSpeedKBps = 0.0;
     _tickCount = 0;
+    _lastPushedExpiryAtMs = 0;
     _hasSyncedOnce = false;
     _consecutiveFailures = 0;
     _offlineSeconds = 0;
@@ -212,6 +219,10 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
       NotificationService.updateTimer(formatted);
     }
   }
+
+  /// Force an immediate server sync (e.g. after a support-ad extension so the
+  /// countdown reflects the new expiry without waiting for the next heartbeat).
+  Future<void> syncNow() => _syncWithHivemind();
 
   Future<void> disconnect({String reason = 'User requested'}) async {
     await _doDisconnect(reason);
@@ -286,6 +297,14 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
 
         _remainingAtLastSync = expiresValue.toInt();
         _remainingSeconds = _remainingAtLastSync;
+        // Push the absolute deadline to the VPN service so it can tear the
+        // tunnel down on its own clock, even if this UI process is gone.
+        final expiresAtMs =
+            DateTime.now().millisecondsSinceEpoch + _remainingSeconds * 1000;
+        if ((expiresAtMs - _lastPushedExpiryAtMs).abs() > 5000) {
+          _lastPushedExpiryAtMs = expiresAtMs;
+          unawaited(PowerSettings.setSessionExpiry(expiresAtMs));
+        }
         _usedBytes = _readNonNegativeInt(data['used_bytes'], _usedBytes);
 
         final now = DateTime.now();

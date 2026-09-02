@@ -10,6 +10,9 @@
     <!-- Doze/App Standby stop background services of non-exempt apps. A VPN
          cannot stay up without this; Play allows it for VPN functionality. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+    <!-- OS-level session-expiry alarm. Auto-granted on 31-32; on 33+ the daemon
+         falls back to setAndAllowWhileIdle if exact alarms aren't granted. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
 
     <!-- flutter_vless 1.1.5 declares this legacy permission. ReVolt never needs it. -->
     <uses-permission
