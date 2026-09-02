@@ -1,0 +1,72 @@
+name: Vendor pinned flutter_vless Android
+
+on:
+  push:
+    branches:
+      - fix/3.3.2-esef-security-cleanup
+
+permissions:
+  contents: write
+
+jobs:
+  vendor:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: fix/3.3.2-esef-security-cleanup
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: '3.47.2'
+          channel: stable
+          cache: false
+
+      - name: Vendor and pre-apply ReVolt hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get
+          SRC="$HOME/.pub-cache/hosted/pub.dev/flutter_vless_android-1.1.5"
+          DST="local_packages/flutter_vless_android-1.1.5"
+          test -f "$SRC/pubspec.yaml"
+          rm -rf "$DST"
+          mkdir -p local_packages
+          cp -a "$SRC" "$DST"
+          rm -rf "$DST/example" "$DST/test" "$DST/.dart_tool" "$DST/build"
+          printf '%s\n' \
+            'Upstream: https://github.com/XIIIFOX/flutter_vless' \
+            'Tag: v1.1.5' \
+            'Android package: flutter_vless_android 1.1.5' \
+            'ReVolt hardening is pre-applied to this vendored package.' \
+            > "$DST/UPSTREAM"
+
+          printf '\ndependency_overrides:\n  flutter_vless_android:\n    path: local_packages/flutter_vless_android-1.1.5\n' >> pubspec.yaml
+          flutter pub get
+
+          dart run tool/patch_flutter_vless_runtime_hygiene.dart
+          dart run tool/patch_flutter_vless_secure_socks_v2.dart
+          dart run tool/patch_flutter_vless_security_invariants.dart
+
+          python3 -c 'from pathlib import Path; p=Path("android/app/build.gradle.kts"); s=p.read_text(); a=s.index("val projectRootDir ="); b=s.index("android {"); p.write_text(s[:a]+s[b:])'
+
+          grep -q 'ContextCompat.RECEIVER_NOT_EXPORTED' "$DST/android/src/main/kotlin/com/github/tfox/flutter_vless/FlutterVlessPlugin.kt"
+          grep -q 'fd00:26:26::1' "$DST/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt"
+          grep -q 'Authenticated ReVolt SOCKS5 inbound missing' "$DST/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt"
+          grep -q 'android:value="false"' "$DST/android/src/main/AndroidManifest.xml"
+          ! grep -q 'patchFlutterVless' android/app/build.gradle.kts
+
+      - name: Commit vendored runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add pubspec.yaml pubspec.lock android/app/build.gradle.kts
+          git add -f local_packages/flutter_vless_android-1.1.5
+          git commit -m 'build(android): vendor hardened flutter_vless runtime'
+          git push origin HEAD:fix/3.3.2-esef-security-cleanup
