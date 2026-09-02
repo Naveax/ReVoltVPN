@@ -79,6 +79,7 @@ class _ConnectButtonState extends State<ConnectButton>
     final now = DateTime.now();
     if (now.difference(_lastTap).inMilliseconds < 1000) return;
     _lastTap = now;
+    HapticSettings.selection();
 
     final vpn = context.read<VpnConnection>();
     final timer = context.read<SessionTimer>();

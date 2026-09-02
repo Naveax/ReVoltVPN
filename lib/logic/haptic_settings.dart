@@ -11,7 +11,7 @@ abstract final class HapticSettings {
   static const MethodChannel _channel =
       MethodChannel('com.revoltvpn.app/haptics');
 
-  static bool _enabled = false;
+  static bool _enabled = true;
   static bool _initialized = false;
 
   static bool get enabled => _enabled;
@@ -21,10 +21,10 @@ abstract final class HapticSettings {
 
     try {
       final prefs = await SharedPreferences.getInstance();
-      _enabled = prefs.getBool(_prefKey) ?? false;
+      _enabled = prefs.getBool(_prefKey) ?? true;
     } catch (e) {
       debugPrint('[Haptics] Failed to load preference: $e');
-      _enabled = false;
+      _enabled = true;
     } finally {
       _initialized = true;
     }
@@ -46,11 +46,14 @@ abstract final class HapticSettings {
     }
   }
 
+  /// Lightweight feedback for an accepted UI tap.
+  static void selection() => unawaited(_impact('selection'));
+
   /// Confirmation haptic for a successful connect/disconnect. Best-effort: a
   /// vibration failure must never block or fail the VPN action.
-  static void success() => unawaited(_impact());
+  static void success() => unawaited(_impact('success'));
 
-  static Future<void> _impact() async {
+  static Future<void> _impact(String kind) async {
     if (!_initialized) await initialize();
     if (!_enabled || kIsWeb) return;
 
@@ -58,7 +61,7 @@ abstract final class HapticSettings {
       try {
         final handled = await _channel.invokeMethod<bool>(
               'impact',
-              <String, Object>{'kind': 'success'},
+              <String, Object>{'kind': kind},
             ) ??
             false;
         if (handled) return;
@@ -67,6 +70,10 @@ abstract final class HapticSettings {
       }
     }
 
-    await HapticFeedback.mediumImpact();
+    if (kind == 'selection') {
+      await HapticFeedback.selectionClick();
+    } else {
+      await HapticFeedback.mediumImpact();
+    }
   }
 }
