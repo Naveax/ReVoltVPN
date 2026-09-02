@@ -45,29 +45,40 @@ void main() {
     expect(account['pass'], session.password);
   });
 
-  test('security patch keeps full-tunnel and private IPC invariants', () {
-    final patch = File('tool/patch_flutter_vless_security_invariants.dart')
-        .readAsStringSync();
-    final hygiene = File('tool/patch_flutter_vless_runtime_hygiene.dart')
-        .readAsStringSync();
+  test('vendored native source keeps full-tunnel and private IPC invariants', () {
+    const root =
+        'local_packages/flutter_vless_android-1.1.5/android/src/main';
+    final service = File(
+      '$root/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt',
+    ).readAsStringSync();
+    final core = File(
+      '$root/kotlin/com/github/tfox/flutter_vless/xray/core/XrayCoreManager.kt',
+    ).readAsStringSync();
+    final plugin = File(
+      '$root/kotlin/com/github/tfox/flutter_vless/FlutterVlessPlugin.kt',
+    ).readAsStringSync();
+    final manifest = File('$root/AndroidManifest.xml').readAsStringSync();
 
-    expect(patch, contains('builder.addRoute("0.0.0.0", 0)'));
-    expect(patch, contains('builder.addRoute("::", 0)'));
-    expect(patch, contains('ContextCompat.RECEIVER_NOT_EXPORTED'));
-    expect(patch, contains('.setPackage(context.packageName)'));
-    expect(patch, contains('android:value="false"'));
-    expect(patch, contains('Android refused to establish VPN interface'));
-    expect(patch, contains('Per-app VPN bypass is disabled in ReVolt'));
-    expect(patch, contains('NotificationManager.IMPORTANCE_LOW'));
-    expect(patch, contains("Queries Xray's stats API"));
-    expect(patch, contains('stats helper end anchor missing'));
+    expect(service, contains('builder.addRoute("0.0.0.0", 0)'));
+    expect(service, contains('builder.addRoute("::", 0)'));
+    expect(service, contains('Android refused to establish VPN interface'));
+    expect(service, contains('Per-app VPN bypass is disabled in ReVolt'));
+    expect(service, contains('Failed to configure VPN DNS'));
+    expect(service, contains('reader.forEachLine { _ -> }'));
 
-    expect(hygiene, contains('REVOLT_VPN_SERVICE'));
-    expect(hygiene, contains('android.permission.CHANGE_NETWORK_STATE'));
-    expect(hygiene, contains('android.permission.READ_EXTERNAL_STORAGE'));
-    expect(hygiene, contains('reader.forEachLine { _ -> }'));
-    expect(hygiene, contains('Failed to configure VPN DNS'));
-    expect(hygiene, contains('deleteEphemeralConfigOnFailure'));
+    expect(plugin, contains('ContextCompat.RECEIVER_NOT_EXPORTED'));
+    expect(core, contains('.setPackage(context.packageName)'));
+    expect(core, contains('REVOLT_VPN_SERVICE'));
+    expect(core, contains('NotificationManager.IMPORTANCE_LOW'));
+    expect(core, contains('deleteEphemeralConfigOnFailure'));
+    expect(core, contains('reader.forEachLine { _ -> }'));
+
+    expect(manifest, contains('android:exported="false"'));
+    expect(manifest, contains('android:permission="android.permission.BIND_VPN_SERVICE"'));
+    expect(manifest, contains('android.net.VpnService.SUPPORTS_ALWAYS_ON'));
+    expect(manifest, contains('android:value="false"'));
+    expect(manifest, isNot(contains('android.permission.CHANGE_NETWORK_STATE')));
+    expect(manifest, isNot(contains('android.permission.READ_EXTERNAL_STORAGE')));
   });
 
   test('native app bridge keeps runtime adoption on private heartbeat only', () {
@@ -173,26 +184,29 @@ void main() {
   });
 
   test('native recovery is fail-closed without hot process restart loops', () {
-    final source = File('tool/patch_flutter_vless_secure_socks_v2.dart')
-        .readAsStringSync();
-    final hygiene = File('tool/patch_flutter_vless_runtime_hygiene.dart')
-        .readAsStringSync();
+    const root =
+        'local_packages/flutter_vless_android-1.1.5/android/src/main/kotlin/com/github/tfox/flutter_vless';
+    final service =
+        File('$root/xray/service/XrayVPNService.kt').readAsStringSync();
+    final core = File('$root/xray/core/XrayCoreManager.kt').readAsStringSync();
 
-    expect(source, contains('scheduleTun2socksRecovery'));
-    expect(source, contains('tun2socksRecoveryAttempt'));
-    expect(source, contains('coerceAtMost(30_000L)'));
-    expect(source, contains('recoveringTun2socks = false'));
-    expect(source, contains('tun2socksRecoveryAttempt = 0'));
-    expect(source, isNot(contains('Thread.sleep(350)')));
-    expect(source, isNot(contains('Thread.sleep(600)')));
+    expect(service, contains('scheduleTun2socksRecovery'));
+    expect(service, contains('tun2socksRecoveryAttempt'));
+    expect(service, contains('coerceAtMost(30_000L)'));
+    expect(service, contains('recoveringTun2socks = false'));
+    expect(service, contains('tun2socksRecoveryAttempt = 0'));
+    expect(service, contains('keeping TUN fail-closed'));
+    expect(service, contains('XrayCoreManager.markRuntimeConnecting(this, config)'));
+    expect(service, isNot(contains('Thread.sleep(350)')));
+    expect(service, isNot(contains('Thread.sleep(600)')));
     expect(
-      source,
+      service,
       isNot(contains('attempt = 0\n                        Thread.sleep(3000)')),
     );
 
-    expect(hygiene, contains('previousTunCrash'));
-    expect(hygiene, contains('previousTunStartFailure'));
-    expect(hygiene, contains('previousXrayRecovery'));
+    expect(core, contains('Hold the Android TUN while the core is recovered'));
+    expect(core, contains('context.handleXrayCoreExit(config)'));
+    expect(core, contains('AppConfigs.RUNTIME_READY = false'));
   });
 
   test('data disclosure only persists an explicit acknowledged action', () {
