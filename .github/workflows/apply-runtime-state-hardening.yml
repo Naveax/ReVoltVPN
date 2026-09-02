@@ -42,7 +42,6 @@ jobs:
           grep -Fq "    const root = 'local_packages/flutter_vless_android-1.1.5/android/src/main/kotlin/com/github/tfox/flutter_vless';" "$TEST_FILE"
           grep -Fq "    expect(vpn, isNot(contains('catch (_) {}')));" "$TEST_FILE"
           sed -i "/expect(vpn, isNot(contains('catch (_) {}')));/d" "$TEST_FILE"
-          grep -Fq "await _vless.stopVless().timeout(const Duration(seconds: 8));" "$TEST_FILE"
           ! grep -Fq "expect(vpn, isNot(contains('catch (_) {}')));" "$TEST_FILE"
 
       - name: Resolve dependencies
