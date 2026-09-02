@@ -14,7 +14,7 @@ permissions:
 jobs:
   android:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -102,6 +102,23 @@ jobs:
       - name: Test
         run: flutter test
 
+      - name: Android lint
+        working-directory: android
+        run: ./gradlew :app:lintDebug --no-daemon
+
+      - name: Verify production release config fails closed
+        shell: bash
+        working-directory: android
+        run: |
+          set -euo pipefail
+          set +e
+          output="$(./gradlew :app:verifyReleaseAppConfig --no-daemon 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$status" -ne 0
+          grep -Fq 'REVOLT_APP_CONFIG_SHA256 is required for production release builds' <<<"$output"
+
       - name: Cold APK build
         run: flutter build apk --debug
 
@@ -125,6 +142,8 @@ jobs:
             pubspec.yaml \
             pubspec.lock \
             local_packages/flutter_vless_android-1.1.5 \
+            android/app/build.gradle.kts \
+            android/app/proguard-rules.pro \
             android/gradle/verification-metadata.xml \
             android/gradle/wrapper/gradle-wrapper.properties \
             android/gradle/wrapper/gradle-wrapper.jar \
