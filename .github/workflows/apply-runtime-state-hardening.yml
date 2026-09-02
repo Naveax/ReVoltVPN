@@ -36,7 +36,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base64 --decode tool/apply_runtime_state_hardening.py > /tmp/apply_runtime_state_hardening.py
+          python3 - <<'PY'
+          import base64
+          from pathlib import Path
+
+          src = Path('tool/apply_runtime_state_hardening.py')
+          encoded = ''.join(src.read_text(encoding='ascii').split())
+          decoded = base64.b64decode(encoded, validate=True)
+          Path('/tmp/apply_runtime_state_hardening.py').write_bytes(decoded)
+          PY
           python3 -m py_compile /tmp/apply_runtime_state_hardening.py
           python3 /tmp/apply_runtime_state_hardening.py
 
