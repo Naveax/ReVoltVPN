@@ -15,7 +15,7 @@ jobs:
   apply:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout branch
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -32,21 +32,10 @@ jobs:
       - name: Create CI app config
         run: cp lib/logic/app_config.example.dart lib/logic/app_config.dart
 
-      - name: Decode and apply guarded runtime hardening
-        shell: bash
+      - name: Apply guarded runtime hardening
         run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import base64
-          from pathlib import Path
-
-          src = Path('tool/apply_runtime_state_hardening.py')
-          encoded = ''.join(src.read_text(encoding='ascii').split())
-          decoded = base64.b64decode(encoded, validate=True)
-          Path('/tmp/apply_runtime_state_hardening.py').write_bytes(decoded)
-          PY
-          python3 -m py_compile /tmp/apply_runtime_state_hardening.py
-          python3 /tmp/apply_runtime_state_hardening.py
+          python3 -m py_compile tool/apply_runtime_state_hardening.py
+          python3 tool/apply_runtime_state_hardening.py
 
       - name: Resolve dependencies
         run: flutter pub get
@@ -75,6 +64,8 @@ jobs:
           grep -Fq 'setSessionDeadline' local_packages/flutter_vless_android-1.1.5/android/src/main/kotlin/com/github/tfox/flutter_vless/FlutterVlessPlugin.kt
           grep -Fq 'markRuntimeReady' local_packages/flutter_vless_android-1.1.5/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/core/XrayCoreManager.kt
           grep -Fq 'BOOTSTRAP_SESSION_SECONDS' local_packages/flutter_vless_android-1.1.5/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt
+          grep -Fq 'setNativeSessionDeadline' lib/logic/vpn_connection.dart
+          grep -Fq 'setNativeSessionDeadline(_remainingAtLastSync)' lib/logic/session_timer.dart
           git diff --exit-code HEAD -- lib/logic/ad_manager.dart lib/logic/consent_manager.dart lib/widgets/connect_button.dart
 
       - name: Commit patched source
