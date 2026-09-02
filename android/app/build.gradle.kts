@@ -3,14 +3,14 @@ import java.io.File
 import java.io.FileInputStream
 import java.security.MessageDigest
 
-fun sha256Hex(file: File): String {
-    val digest = MessageDigest.getInstance("SHA-256").digest(file.readBytes())
-    return digest.joinToString("") { "%02x".format(it.toInt() and 0xff) }
-}
-
 plugins {
     id("com.android.application")
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+fun sha256Hex(file: File): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(file.readBytes())
+    return digest.joinToString("") { "%02x".format(it.toInt() and 0xff) }
 }
 
 android {
