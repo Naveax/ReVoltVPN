@@ -32,8 +32,13 @@ jobs:
       - name: Create CI app config
         run: cp lib/logic/app_config.example.dart lib/logic/app_config.dart
 
-      - name: Apply guarded runtime hardening
-        run: python3 tool/apply_runtime_state_hardening.py
+      - name: Decode and apply guarded runtime hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode tool/apply_runtime_state_hardening.py > /tmp/apply_runtime_state_hardening.py
+          python3 -m py_compile /tmp/apply_runtime_state_hardening.py
+          python3 /tmp/apply_runtime_state_hardening.py
 
       - name: Resolve dependencies
         run: flutter pub get
