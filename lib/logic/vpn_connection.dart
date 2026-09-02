@@ -22,6 +22,7 @@ class VpnConnection extends ChangeNotifier {
 
   int _connectEpoch = 0;
   bool _suppressNativeConnect = false;
+  bool _disposed = false;
 
   VpnStatus _status = VpnStatus.disconnected;
   VpnStatus get status => _status;
@@ -49,6 +50,7 @@ class VpnConnection extends ChangeNotifier {
   SecureSocksSession? get activeSocksSession => _lastSecureSocks;
 
   bool get canTestActiveLocalSocks =>
+      !_disposed &&
       _status == VpnStatus.connected &&
       _activeMode == ConnectionMode.proxy &&
       _lastSecureSocks != null;
@@ -98,9 +100,10 @@ class VpnConnection extends ChangeNotifier {
   }
 
   Future<void> _startEngine() async {
-    if (kIsWeb) return;
+    if (kIsWeb || _disposed) return;
 
     await ConnectionSettings.initialize();
+    if (_disposed) return;
     _activeMode = ConnectionSettings.mode;
 
     _vless = FlutterVless(
@@ -119,13 +122,16 @@ class VpnConnection extends ChangeNotifier {
         notificationIconResourceType: 'drawable',
         notificationIconResourceName: 'notification_status_icon',
       );
+      if (_disposed) return;
       _initialized = true;
     } catch (e) {
       debugPrint('[VPN] VLESS init error (expected on emulator): $e');
     }
+    if (_disposed) return;
 
     _networkSubscription = NetworkMonitor.changes.listen(
       (snapshot) {
+        if (_disposed) return;
         // ConnectivityManager is informational only. Restarting from every
         // callback caused the old VPN-created-network reconnect loop.
         _networkTransport = snapshot.transport;
@@ -143,7 +149,9 @@ class VpnConnection extends ChangeNotifier {
 
     try {
       final coreVersion = await _vless.getCoreVersion();
-      debugPrint('[VPN] Xray core version: $coreVersion');
+      if (!_disposed) {
+        debugPrint('[VPN] Xray core version: $coreVersion');
+      }
     } catch (_) {}
   }
 
@@ -157,16 +165,13 @@ class VpnConnection extends ChangeNotifier {
   }
 
   bool _isCurrentConnect(int epoch) =>
-      epoch == _connectEpoch && !_userDisconnecting;
+      !_disposed && epoch == _connectEpoch && !_userDisconnecting;
 
   void _mapStatus(VlessStatus status) {
+    if (_disposed) return;
     switch (status.connectionState) {
       case VlessConnectionState.connected:
         if (_suppressNativeConnect || _userDisconnecting) return;
-        // Before the app starts its own connect flow the epoch is zero. A
-        // native CONNECTED heartbeat at that point is proof that this UI has
-        // attached to an already-running ReVolt runtime, without relying on
-        // ActivityManager or an unrelated system VPN transport.
         if (_connectEpoch == 0) _adoptedRunningRuntime = true;
         _setStatus(VpnStatus.connected, _connectedLabel);
         break;
@@ -196,7 +201,8 @@ class VpnConnection extends ChangeNotifier {
   }
 
   Future<bool> connect({bool skipAdBypass = false}) async {
-    if (_userDisconnecting ||
+    if (_disposed ||
+        _userDisconnecting ||
         _status == VpnStatus.connected ||
         _status == VpnStatus.connecting ||
         _status == VpnStatus.disconnecting) {
@@ -218,8 +224,6 @@ class VpnConnection extends ChangeNotifier {
       return false;
     }
 
-    // TUN needs the Android VPN permission; SOCKS5 proxy mode runs a local
-    // authenticated proxy without a VpnService, so no VPN permission is needed.
     if (!kIsWeb && _activeMode == ConnectionMode.tun) {
       final ok = await _vless.requestPermission();
       if (!_isCurrentConnect(connectEpoch)) return false;
@@ -378,9 +382,6 @@ class VpnConnection extends ChangeNotifier {
   }
 
   Future<bool> _waitForNativeConnected(int connectEpoch) async {
-    // startVless() queues the Android foreground service. Wait for the native
-    // service/core broadcast rather than treating MethodChannel completion as
-    // proof that a TUN interface was established.
     for (var attempt = 0; attempt < 24; attempt++) {
       if (!_isCurrentConnect(connectEpoch)) return false;
       if (_status == VpnStatus.connected) return true;
@@ -399,8 +400,11 @@ class VpnConnection extends ChangeNotifier {
 
   Future<void> setNativeSessionDeadline(int remainingSeconds) async {
     if (kIsWeb) return;
+    if (_disposed) throw StateError('VPN connection has been disposed');
     if (!_initialized) throw StateError('VPN native service is not initialized');
-    if (remainingSeconds < 0) throw ArgumentError.value(remainingSeconds, 'remainingSeconds');
+    if (remainingSeconds < 0) {
+      throw ArgumentError.value(remainingSeconds, 'remainingSeconds');
+    }
     await _nativeControl.invokeMethod<void>(
       'setSessionDeadline',
       <String, Object>{'remainingSeconds': remainingSeconds},
@@ -408,18 +412,18 @@ class VpnConnection extends ChangeNotifier {
   }
 
   Future<void> disconnect() async {
-    if (_status == VpnStatus.disconnecting) return;
+    if (_disposed || _status == VpnStatus.disconnecting) return;
 
     _connectEpoch++;
     _suppressNativeConnect = true;
     _userDisconnecting = true;
     HivemindService.cancel();
 
-    // Explicit Disconnect always sends an idempotent native stop command.
     _setStatus(VpnStatus.disconnecting, 'Tearing down…');
 
     if (kIsWeb) {
       await Future.delayed(const Duration(milliseconds: 500));
+      if (_disposed) return;
       _clearRuntimeSnapshot();
       _setStatus(VpnStatus.disconnected, 'Tap to connect');
       _userDisconnecting = false;
@@ -429,6 +433,7 @@ class VpnConnection extends ChangeNotifier {
     try {
       await _vless.stopVless().timeout(const Duration(seconds: 8));
     } catch (e) {
+      if (_disposed) return;
       debugPrint('[VPN] VLESS stop error: $e');
       _errorMessage = 'VPN shutdown error.\nPlease restart the app.';
       _clearRuntimeSnapshot();
@@ -437,6 +442,7 @@ class VpnConnection extends ChangeNotifier {
       return;
     }
 
+    if (_disposed) return;
     _errorMessage = null;
     _clearRuntimeSnapshot();
     _setStatus(VpnStatus.disconnected, 'Tap to connect');
@@ -449,21 +455,27 @@ class VpnConnection extends ChangeNotifier {
   }
 
   void _setStatus(VpnStatus status, String message) {
+    if (_disposed) return;
     _status = status;
     _statusMessage = message;
     notifyListeners();
   }
 
   Future<void> _checkHealth() async {
-    // A live tunnel already proves reachability; only probe while disconnected
-    // so we don't add direct /health traffic while the VPN is active.
-    if (_status == VpnStatus.connected) return;
-    _serverReachable = await HivemindService.checkHealth();
+    if (_disposed || _status == VpnStatus.connected) return;
+    final reachable = await HivemindService.checkHealth();
+    if (_disposed || _status == VpnStatus.connected) return;
+    _serverReachable = reachable;
     notifyListeners();
   }
 
   @override
   void dispose() {
+    _disposed = true;
+    _connectEpoch++;
+    _suppressNativeConnect = true;
+    _userDisconnecting = true;
+    HivemindService.cancel();
     _healthTimer?.cancel();
     _networkSubscription?.cancel();
     // Provider/UI disposal is not a user disconnect command. Keeping teardown

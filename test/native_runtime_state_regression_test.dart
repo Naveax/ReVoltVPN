@@ -27,6 +27,22 @@ void main() {
     expect(plugin, contains('result.error("NO_ACTIVITY"'));
     expect(plugin, isNot(contains('activity!!')));
 
+    // The bridge must never create a STOP_SERVICE request without the runtime
+    // generation token, and dead unauthenticated delay bridges stay unreachable.
+    expect(plugin, contains('if (token == null) {'));
+    expect(plugin, contains('intent.putExtra("RUNTIME_TOKEN", token)'));
+    expect(
+      plugin,
+      isNot(contains('if (token != null) intent.putExtra("RUNTIME_TOKEN", token)')),
+    );
+    expect(plugin, isNot(contains('"getServerDelay" ->')));
+    expect(plugin, isNot(contains('"getConnectedServerDelay" ->')));
+
+    // Pending permission results cannot survive a permanent Activity/engine
+    // detach and later complete against a dead Flutter lifecycle.
+    expect(plugin, contains('failPendingPermission("ENGINE_DETACHED"'));
+    expect(plugin, contains('failPendingPermission("NO_ACTIVITY"'));
+
     expect(service, contains('BOOTSTRAP_SESSION_SECONDS = 120L'));
     expect(service, contains('UPDATE_SESSION_DEADLINE'));
     expect(service, contains('SystemClock.elapsedRealtime()'));
@@ -49,6 +65,15 @@ void main() {
     expect(timer, contains('Connected with a stopped clock - resuming.'));
     expect(timer, contains('Completer<void>? _syncCompletion'));
     expect(timer, contains('await active.future;'));
+    expect(timer, contains('_sessionEpoch++;'));
+    expect(timer, contains('_supportStateEpoch++;'));
+    expect(timer, contains('_isDisconnecting = true;'));
+
+    expect(vpn, contains('bool _disposed = false;'));
+    expect(vpn, contains('if (_disposed) return;'));
+    expect(vpn, contains('_connectEpoch++;'));
+    expect(vpn, contains('HivemindService.cancel();'));
+
     expect(main, contains('ChangeNotifierProxyProvider<VpnConnection, SessionTimer>('));
     expect(main, contains('lazy: false'));
     expect(support, contains('await timer.syncNow();'));

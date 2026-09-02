@@ -401,6 +401,11 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    // Invalidate every asynchronous generation before removing listeners so
+    // late storage/network completions cannot notify a disposed notifier.
+    _sessionEpoch++;
+    _supportStateEpoch++;
+    _isDisconnecting = true;
     WidgetsBinding.instance.removeObserver(this);
     vpnConnection.removeListener(_onVpnConnectionChanged);
     _timer?.cancel();

@@ -17,7 +17,6 @@ import android.os.Looper
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.github.tfox.flutter_vless.xray.core.XrayCoreManager
 import com.github.tfox.flutter_vless.xray.dto.XrayConfig
 import com.github.tfox.flutter_vless.xray.service.XrayVPNService
 import com.github.tfox.flutter_vless.xray.utils.AppConfigs
@@ -37,13 +36,9 @@ import java.util.concurrent.Executors
 
 /**
  * Main entry point for the Flutter Vless plugin on Android.
- * 
- * This class handles communication between Flutter (Dart) and Android (Kotlin) using MethodChannels.
- * It is responsible for:
- * 1. Receiving commands from Flutter (start, stop, get delay, etc.).
- * 2. managing permissions (VPN, Notifications).
- * 3. Starting the [XrayVPNService] to run the VPN or Proxy.
- * 4. Sending status updates and traffic statistics back to Flutter via EventChannel.
+ *
+ * ReVolt keeps this bridge deliberately narrow: start/stop, session deadline,
+ * permission handling, core version and private runtime status only.
  */
 class FlutterVlessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.ActivityResultListener, MethodChannel.MethodCallHandler {
 
@@ -72,9 +67,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.Activity
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         context = binding.applicationContext
-        // Channel for method calls (startVless, stopVless, etc.)
         vpnControlMethod = MethodChannel(binding.binaryMessenger, "flutter_vless")
-        // Channel for streaming status updates (Connected, Disconnected, Traffic stats)
         vpnStatusEvent = EventChannel(binding.binaryMessenger, "flutter_vless/status")
 
         vpnControlMethod.setMethodCallHandler(this)
@@ -99,7 +92,6 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.Activity
                     return
                 }
 
-                // 1. Parse configuration from Flutter and assign a fresh generation token.
                 val config = XrayConfig()
                 val runtimeToken = UUID.randomUUID().toString()
                 expectedRuntimeToken = runtimeToken
@@ -109,27 +101,24 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.Activity
                 config.BLOCKED_APPS = call.argument<ArrayList<String>>("blocked_apps") ?: ArrayList()
                 config.BYPASS_SUBNETS = call.argument<ArrayList<String>>("bypass_subnets") ?: ArrayList()
                 config.NOTIFICATION_DISCONNECT_BUTTON_NAME = call.argument("notificationDisconnectButtonName") ?: "Disconnect"
-                
-                // 2. Handle custom notification icon if set via initializeVless
+
                 if (AppConfigs.NOTIFICATION_ICON_RESOURCE_NAME.isNotEmpty() && AppConfigs.NOTIFICATION_ICON_RESOURCE_TYPE.isNotEmpty()) {
                     config.NOTIFICATION_ICON_RESOURCE_NAME = AppConfigs.NOTIFICATION_ICON_RESOURCE_NAME
                     config.NOTIFICATION_ICON_RESOURCE_TYPE = AppConfigs.NOTIFICATION_ICON_RESOURCE_TYPE
                     val resId = context.resources.getIdentifier(
-                        AppConfigs.NOTIFICATION_ICON_RESOURCE_NAME, 
-                        AppConfigs.NOTIFICATION_ICON_RESOURCE_TYPE, 
+                        AppConfigs.NOTIFICATION_ICON_RESOURCE_NAME,
+                        AppConfigs.NOTIFICATION_ICON_RESOURCE_TYPE,
                         context.packageName
                     )
                     config.APPLICATION_ICON = resId
                 }
 
-                // 3. Determine connection mode (VPN vs Proxy Only)
                 if (call.argument<Boolean>("proxy_only") == true) {
                     AppConfigs.V2RAY_CONNECTION_MODE = AppConfigs.V2RAY_CONNECTION_MODES.PROXY_ONLY
                 } else {
                     AppConfigs.V2RAY_CONNECTION_MODE = AppConfigs.V2RAY_CONNECTION_MODES.VPN_TUN
                 }
 
-                // 4. Try to parse the server address to exclude it from VPN routing (avoid loop)
                 try {
                     val jsonConfig = org.json.JSONObject(config.V2RAY_FULL_JSON_CONFIG)
                     val outbounds = jsonConfig.optJSONArray("outbounds")
@@ -146,17 +135,15 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.Activity
                             config.CONNECTED_V2RAY_SERVER_PORT = settings.optInt("port", 0).toString()
                         }
                     }
-                } catch (e: Exception) {
-                    // Ignore parsing errors, fallback to not excluding IP
+                } catch (_: Exception) {
+                    // Optional metadata only; runtime config validation happens downstream.
                 }
 
-                // 5. Start the XrayVPNService
-                // We pass the config and PROXY_ONLY flag via Intent extras
                 val intent = Intent(context, XrayVPNService::class.java)
                 intent.putExtra("COMMAND", AppConfigs.V2RAY_SERVICE_COMMANDS.START_SERVICE)
                 intent.putExtra("V2RAY_CONFIG", config)
                 intent.putExtra("PROXY_ONLY", call.argument<Boolean>("proxy_only") ?: false)
-                
+
                 try {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                         context.startForegroundService(intent)
@@ -169,32 +156,37 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.Activity
                     result.error("START_FAILED", e.message ?: "Could not start VPN service", null)
                 }
             }
+
             "stopVless" -> {
                 if (pendingStopResult != null) {
                     result.error("STOP_IN_PROGRESS", "VPN shutdown is already in progress", null)
                     return
                 }
 
+                // A STOP without a generation token can kill a newer runtime after
+                // UI/process churn. No token means this bridge owns nothing to stop.
                 val token = expectedRuntimeToken
+                if (token == null) {
+                    result.success(null)
+                    return
+                }
+
                 val intent = Intent(context, XrayVPNService::class.java)
                 intent.putExtra("COMMAND", AppConfigs.V2RAY_SERVICE_COMMANDS.STOP_SERVICE)
-                if (token != null) intent.putExtra("RUNTIME_TOKEN", token)
+                intent.putExtra("RUNTIME_TOKEN", token)
 
                 try {
                     context.startService(intent)
-                    if (token == null) {
-                        result.success(null)
-                    } else {
-                        pendingStopResult = result
-                        mainHandler.removeCallbacks(stopTimeoutRunnable)
-                        mainHandler.postDelayed(stopTimeoutRunnable, 6_000L)
-                    }
+                    pendingStopResult = result
+                    mainHandler.removeCallbacks(stopTimeoutRunnable)
+                    mainHandler.postDelayed(stopTimeoutRunnable, 6_000L)
                 } catch (e: Exception) {
                     pendingStopResult = null
                     mainHandler.removeCallbacks(stopTimeoutRunnable)
                     result.error("STOP_FAILED", e.message ?: "Could not stop VPN service", null)
                 }
             }
+
             "setSessionDeadline" -> {
                 val token = expectedRuntimeToken
                 val remainingSeconds = call.argument<Number>("remainingSeconds")?.toLong()
@@ -218,8 +210,8 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.Activity
                     result.error("DEADLINE_FAILED", e.message ?: "Could not update session deadline", null)
                 }
             }
+
             "initializeVless" -> {
-                // Store notification icon settings globally
                 val iconResourceName = call.argument<String>("notificationIconResourceName")
                 val iconResourceType = call.argument<String>("notificationIconResourceType")
                 if (iconResourceName != null && iconResourceType != null) {
@@ -228,47 +220,8 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.Activity
                 }
                 result.success(null)
             }
-            "getServerDelay" -> {
-                // Measures delay (ping) to a target URL using a specific config (without connecting)
-                android.util.Log.d("FlutterVlessPlugin", "getServerDelay called")
-                val configJson = call.argument<String>("config")
-                val url = call.argument<String>("url") ?: "https://www.google.com"
-                
-                if (configJson == null) {
-                    result.error("INVALID_CONFIG", "Config is null", null)
-                    return
-                }
-                
-                val currentActivity = activity
-                if (currentActivity == null) {
-                    result.error("NO_ACTIVITY", "Activity is null", null)
-                    return
-                }
-                
-                executor.execute {
-                    val delay = XrayCoreManager.getServerDelay(currentActivity, configJson, url)
-                    currentActivity.runOnUiThread {
-                        result.success(delay)
-                    }
-                }
-            }
-            "getConnectedServerDelay" -> {
-                // Measures delay through the CURRENTLY active connection
-                val url = call.argument<String>("url") ?: "https://www.google.com"
-                val currentActivity = activity
-                if (currentActivity == null) {
-                    result.error("NO_ACTIVITY", "Activity is null", null)
-                    return
-                }
-                executor.execute {
-                    val delay = XrayCoreManager.getConnectedV2rayServerDelay(currentActivity, url)
-                    currentActivity.runOnUiThread {
-                        result.success(delay)
-                    }
-                }
-            }
+
             "getCoreVersion" -> {
-                // Returns the version of the underlying libxray.so
                 executor.submit {
                     try {
                         val nativeLibraryDir = context.applicationInfo.nativeLibraryDir
@@ -286,9 +239,8 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.Activity
                     }
                 }
             }
+
             "requestPermission" -> {
-                // The Activity can detach during configuration/lifecycle churn.
-                // Never turn that into a Kotlin NPE on the MethodChannel.
                 val currentActivity = activity
                 if (currentActivity == null) {
                     result.error("NO_ACTIVITY", "Activity is not attached", null)
@@ -307,14 +259,11 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.Activity
                     result.success(true)
                 }
             }
+
             else -> result.notImplemented()
         }
     }
 
-    /**
-     * Registers a BroadcastReceiver to listen for updates from XrayVPNService.
-     * This allows us to receive state changes (Connected/Disconnected) and traffic stats.
-     */
     private fun registerReceiver() {
         if (activity == null) return
         if (xrayReceiver == null) {
@@ -371,6 +320,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.Activity
                 }
             }
         }
+
         val filter = IntentFilter(AppConfigs.V2RAY_CONNECTION_INFO)
         val currentActivity = activity ?: return
         ContextCompat.registerReceiver(
@@ -394,10 +344,16 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.Activity
         xrayReceiver = null
     }
 
+    private fun failPendingPermission(code: String, message: String) {
+        pendingResult?.error(code, message, null)
+        pendingResult = null
+    }
+
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         mainHandler.removeCallbacks(stopTimeoutRunnable)
         pendingStopResult?.error("ENGINE_DETACHED", "Flutter engine detached during VPN shutdown", null)
         pendingStopResult = null
+        failPendingPermission("ENGINE_DETACHED", "Flutter engine detached during VPN permission request")
         unregisterReceiver()
         vpnControlMethod.setMethodCallHandler(null)
         vpnStatusEvent.setStreamHandler(null)
@@ -426,6 +382,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.Activity
     }
 
     override fun onDetachedFromActivity() {
+        failPendingPermission("NO_ACTIVITY", "Activity detached during VPN permission request")
         unregisterReceiver()
         activity = null
     }
