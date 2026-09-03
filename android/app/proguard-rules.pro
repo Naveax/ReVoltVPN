@@ -1,4 +1,4 @@
-# PaladinVPN ProGuard / R8 Rules
+# ReVoltVPN ProGuard / R8 Rules
 # ==============================================================================
 # These rules prevent R8 from stripping classes and methods that are accessed
 # via JNI (Java Native Interface) or reflection, which would cause
@@ -11,9 +11,8 @@
 -keep class xray.** { *; }
 
 # ── Flutter / Platform Channels ───────────────────────────────────────────────
+# io.flutter.** already includes embedding and plugin subpackages.
 -keep class io.flutter.** { *; }
--keep class io.flutter.embedding.** { *; }
--keep class io.flutter.plugin.** { *; }
 
 # ── Google Mobile Ads (AdMob) ─────────────────────────────────────────────────
 -keep class com.google.android.gms.ads.** { *; }
