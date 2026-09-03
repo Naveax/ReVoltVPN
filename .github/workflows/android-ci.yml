@@ -1,0 +1,165 @@
+name: Android CI
+
+on:
+  push:
+    branches:
+      - fix/3.3.2-esef-security-cleanup
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Verify committed Gradle supply chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x android/gradlew
+          test -f android/gradlew.bat
+          test -f android/gradle/wrapper/gradle-wrapper.jar
+          test -s android/gradle/verification-metadata.xml
+          test "$(git hash-object android/gradlew)" = '0f14772e0e50ffe504fa3be1a869e6281b09ccd1'
+          test "$(git hash-object android/gradlew.bat)" = '8de1053a1f921b9ac5910187e2f99fdaa774f81a'
+          test "$(git hash-object android/gradle/wrapper/gradle-wrapper.jar)" = '1b33c55baabb587c669f562ae36f953de2481846'
+          test "$(sha256sum android/gradle/wrapper/gradle-wrapper.jar | awk '{print $1}')" = '7d3a4ac4de1c32b59bc6a4eb8ecb8e612ccd0cf1ae1e99f66902da64df296172'
+          test "$(git hash-object android/gradle/verification-metadata.xml)" = '590f03de94d38d83873a42d7c3d535f187b74069'
+          test "$(sha256sum android/gradle/verification-metadata.xml | awk '{print $1}')" = '5ada5cb52c3ed7d2dc07976771bbe41257bf2d4d13d54f9d661d2237543127ce'
+          grep -qx 'distributionSha256Sum=efe9a3d147d948d7528a9887fa35abcf24ca1a43ad06439996490f77569b02d1' android/gradle/wrapper/gradle-wrapper.properties
+          grep -q '<verify-metadata>true</verify-metadata>' android/gradle/verification-metadata.xml
+          grep -q '<verify-signatures>false</verify-signatures>' android/gradle/verification-metadata.xml
+          ./android/gradlew --version
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: '3.47.2'
+          channel: stable
+          cache: false
+
+      - name: Create CI app config
+        run: cp lib/logic/app_config.example.dart lib/logic/app_config.dart
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Verify dependency lock is committed
+        run: git diff --exit-code -- pubspec.lock
+
+      - name: Verify vendored flutter_vless runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG='local_packages/flutter_vless_android-1.1.5'
+          MANIFEST="$PKG/android/src/main/AndroidManifest.xml"
+          PLUGIN="$PKG/android/src/main/kotlin/com/github/tfox/flutter_vless/FlutterVlessPlugin.kt"
+          CORE="$PKG/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/core/XrayCoreManager.kt"
+          SERVICE="$PKG/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt"
+          test -f "$PKG/UPSTREAM"
+          grep -q 'Tag: v1.1.5' "$PKG/UPSTREAM"
+          grep -q 'path: local_packages/flutter_vless_android-1.1.5' pubspec.yaml
+          grep -q 'android:value="false"' "$MANIFEST"
+          ! grep -q 'android.permission.CHANGE_NETWORK_STATE' "$MANIFEST"
+          ! grep -q 'android.permission.READ_EXTERNAL_STORAGE' "$MANIFEST"
+          grep -q 'ContextCompat.RECEIVER_NOT_EXPORTED' "$PLUGIN"
+          ! grep -q 'Context.RECEIVER_EXPORTED' "$PLUGIN"
+          grep -q 'setPackage(context.packageName)' "$CORE"
+          grep -q 'fd00:26:26::1' "$SERVICE"
+          grep -q 'builder.addRoute("0.0.0.0", 0)' "$SERVICE"
+          grep -q 'builder.addRoute("::", 0)' "$SERVICE"
+          grep -q 'Android refused to establish VPN interface' "$SERVICE"
+          grep -q 'Per-app VPN bypass is disabled in ReVolt' "$SERVICE"
+          grep -q 'Failed to configure VPN DNS' "$SERVICE"
+          grep -q 'deleteEphemeralConfigOnFailure' "$CORE"
+          grep -q 'Authenticated ReVolt SOCKS5 inbound missing' "$SERVICE"
+          grep -q 'NotificationManager.IMPORTANCE_LOW' "$CORE"
+          grep -q '"REVOLT_VPN_SERVICE"' "$CORE"
+          grep -q '"REVOLT_VPN_SERVICE"' "$SERVICE"
+          ! grep -q 'fun getV2rayTraffic' "$CORE"
+          ! grep -q 'for (pkg in config.BLOCKED_APPS)' "$SERVICE"
+          ! grep -q 'Log.d(TAG, "xray: $line")' "$CORE"
+          ! grep -q 'Log.d(TAG, "tun2socks: $line")' "$SERVICE"
+          ! grep -q 'patchFlutterVless' android/app/build.gradle.kts
+
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+
+      - name: Test
+        run: flutter test
+
+      - name: Android lint
+        working-directory: android
+        run: ./gradlew :app:lintDebug --no-daemon
+
+      - name: Verify production release config fails closed
+        shell: bash
+        working-directory: android
+        run: |
+          set -euo pipefail
+          set +e
+          output="$(./gradlew :app:verifyReleaseAppConfig --no-daemon 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$status" -ne 0
+          grep -Fq 'REVOLT_APP_CONFIG_SHA256 is required for production release builds' <<<"$output"
+
+      - name: Cold APK build
+        run: flutter build apk --debug
+
+      - name: Verify vendored native source stayed immutable
+        run: git diff --exit-code -- local_packages/flutter_vless_android-1.1.5
+
+      - name: Warm APK build
+        run: flutter build apk --debug
+
+      - name: Release R8 smoke build
+        env:
+          REVOLT_CI_RELEASE_SMOKE: 'true'
+        run: |
+          flutter build apk --release
+          test -f build/app/outputs/flutter-apk/app-release.apk
+          test -f build/app/outputs/mapping/release/mapping.txt
+
+      - name: Verify tracked build inputs stayed immutable
+        run: |
+          git diff --exit-code -- \
+            pubspec.yaml \
+            pubspec.lock \
+            local_packages/flutter_vless_android-1.1.5 \
+            android/app/build.gradle.kts \
+            android/app/proguard-rules.pro \
+            android/gradle/verification-metadata.xml \
+            android/gradle/wrapper/gradle-wrapper.properties \
+            android/gradle/wrapper/gradle-wrapper.jar \
+            android/gradlew \
+            android/gradlew.bat
+
+      - name: Upload APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: revoltvpn-debug-apk
+          if-no-files-found: error
+          path: build/app/outputs/flutter-apk/app-debug.apk
+
+      - name: Upload resolved lockfile
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: revoltvpn-resolved-lockfile
+          if-no-files-found: error
+          path: pubspec.lock
