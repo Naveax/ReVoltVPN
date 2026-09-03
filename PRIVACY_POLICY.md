@@ -1,6 +1,6 @@
 # Privacy Policy
 
-**Last updated:** September 2026
+**Last updated:** August 2026
 
 ReVoltVPN is a free VPN service built and operated by ReVolt Team.
 
@@ -27,7 +27,7 @@ Support ads (the "Support us" button) extend an active session by 30 minutes and
 
 ## Operational logs
 
-Server logs are written to the systemd journal (`journalctl -u hivemind`). These logs include truncated device IDs (first 8 characters only), session start/stop events, and error messages. Logs stay on the server and are accessible only to the server operator via local console; retention follows the server's systemd journal settings. We also maintain an aggregate total of all data ever transferred (in GB) for capacity planning — this counter is not tied to any individual device.
+We keep a short in-memory log buffer (last 200 lines) for debugging and server health monitoring. These logs include truncated device IDs (first 8 characters only), session start/stop events, and error messages. Logs never leave the server, are not retained after a server restart, and are only accessible to the server operator via local console. We also maintain an aggregate total of all data ever transferred (in GB) for capacity planning — this counter is not tied to any individual device.
 
 ## What we do not collect
 

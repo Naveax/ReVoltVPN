@@ -23,7 +23,7 @@ No email. No password. No payment. The ad pays for the server.
 ## Protocol
 
 - **Transport** — VLESS over XHTTP (HTTP/2 multiplexed, path-hidden behind `/revolt`)
-- **Obfuscation** — Xray Reality spoofs a real website's TLS. To any DPI box, your tunnel looks like a browser visiting that website
+- **Obfuscation** — Xray Reality spoofs `some website's` TLS. To any DPI box, your tunnel looks like a browser visiting that website
 - **Encryption** — TLS 1.3 with borrowed certificate (Reality). No certbot, no domain ownership required
 - **API** — Standard HTTPS to a separate domain. Tunnel destination is IP-pinned — domain compromise is DoS only
 
