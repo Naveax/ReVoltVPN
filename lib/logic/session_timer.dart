@@ -7,13 +7,11 @@ import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/notification_service.dart';
-import 'package:revoltvpn/logic/power_settings.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 
 class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _timer;
   int _tickCount = 0;
-  int _lastPushedExpiryAtMs = 0;
   bool _appBackgrounded = false;
 
   final VpnConnection vpnConnection;
@@ -25,7 +23,10 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   bool _hasSyncedOnce = false;
   int _consecutiveFailures = 0;
   bool _isDisconnecting = false;
-  bool _syncInProgress = false;
+  int? _syncEpochInProgress;
+  Completer<void>? _syncCompletion;
+  int _sessionEpoch = 0;
+
   bool _supportRewardClaimed = false;
   bool _supportRewardStateLoaded = false;
   int _supportStateEpoch = 0;
@@ -38,25 +39,21 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   static const int _maxOfflineSeconds = 120;
   int _offlineSeconds = 0;
 
-  // The countdown ticks locally every second; these only drive the slow
-  // server heartbeat that catches server-side changes (support-ad extension,
-  // 10 GB cap, session-ended). Keeping it slow avoids a chatty /session/status
-  // beacon (see internal/LAUNCH_READINESS.md "cut the beacon rate").
   static const int _pollIntervalSeconds = 60;
   static const int _backgroundPollIntervalSeconds = 60;
 
   int _lastUsedBytes = 0;
-  DateTime? _lastSuccessfulSyncAt;
+  Stopwatch? _sinceLastSuccessfulSync;
   double _currentSpeedKBps = 0.0;
 
   SessionTimer({required this.vpnConnection}) {
     WidgetsBinding.instance.addObserver(this);
     vpnConnection.addListener(_onVpnConnectionChanged);
     unawaited(_loadSupportRewardState());
-    // This provider is built lazily, so the tunnel may already be up and
-    // VpnConnection may already have fired its change before we attached.
-    // A listener does not replay history -- evaluate the current state once.
-    // Deferred so we never notify during the build that created us.
+
+    // VpnConnection is eager and can report an already-running native tunnel
+    // before this provider is created. ChangeNotifier listeners do not replay
+    // old events, so always evaluate the current state once after construction.
     unawaited(Future.microtask(_onVpnConnectionChanged));
   }
 
@@ -113,11 +110,8 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _onVpnConnectionChanged() {
-    // A live tunnel with a stopped clock is always wrong, however we got here:
-    // adopting a tunnel that outlived the UI process, recovering from a blip, or
-    // attaching late to one that was already up. Previously this required either
-    // adoptedRunningRuntime or _hasSyncedOnce, both false on a fresh process, so
-    // the clock stayed at 00:00:00 and the notification countdown froze with it.
+    // A live tunnel with a stopped clock is always wrong, whether this process
+    // adopted an existing runtime, attached late, or recovered from a blip.
     if (vpnConnection.status == VpnStatus.connected &&
         !isRunning &&
         !_isDisconnecting) {
@@ -130,7 +124,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     if (!hadActiveSession || _isDisconnecting) return;
 
     if (vpnConnection.status == VpnStatus.error) {
-      _stopForVpnFailure('VPN entered error state');
+      unawaited(_doDisconnect('VPN entered error state'));
       return;
     }
 
@@ -139,33 +133,16 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  void _stopForVpnFailure(String reason) {
-    if (_isDisconnecting) return;
-    _isDisconnecting = true;
-    debugPrint('[Timer] Stopping after VPN failure: $reason');
-
-    _timer?.cancel();
-    _timer = null;
-    _currentSpeedKBps = 0.0;
-    _remainingSeconds = 0;
-    _remainingAtLastSync = 0;
-    _hasSyncedOnce = false;
-    _lastSuccessfulSyncAt = null;
-    _consecutiveFailures = 0;
-    _offlineSeconds = 0;
-    NotificationService.reset();
-    notifyListeners();
-  }
-
   Future<void> start() async {
+    _sessionEpoch++;
     _remainingSeconds = 0;
     _remainingAtLastSync = 0;
     _usedBytes = 0;
     _lastUsedBytes = 0;
-    _lastSuccessfulSyncAt = null;
+    _sinceLastSuccessfulSync?.stop();
+    _sinceLastSuccessfulSync = null;
     _currentSpeedKBps = 0.0;
     _tickCount = 0;
-    _lastPushedExpiryAtMs = 0;
     _hasSyncedOnce = false;
     _consecutiveFailures = 0;
     _offlineSeconds = 0;
@@ -188,7 +165,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   void _tick(Timer t) {
     if (_isDisconnecting) return;
 
-    if (_hasSyncedOnce && _consecutiveFailures < _maxConsecutiveFailures) {
+    if (_hasSyncedOnce) {
       _reconcileElapsedTime();
     }
 
@@ -220,9 +197,23 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// Force an immediate server sync (e.g. after a support-ad extension so the
-  /// countdown reflects the new expiry without waiting for the next heartbeat).
-  Future<void> syncNow() => _syncWithHivemind();
+  /// Force a control-plane refresh after an event that changes the session
+  /// server-side. If a periodic sync is already in flight, wait for it and
+  /// issue a fresh request so the event cannot be hidden behind the busy guard.
+  Future<void> syncNow() async {
+    final requestedEpoch = _sessionEpoch;
+    while (requestedEpoch == _sessionEpoch && !_isDisconnecting) {
+      final active = _syncEpochInProgress == requestedEpoch
+          ? _syncCompletion
+          : null;
+      if (active != null) {
+        await active.future;
+        continue;
+      }
+      await _syncWithHivemind();
+      return;
+    }
+  }
 
   Future<void> disconnect({String reason = 'User requested'}) async {
     await _doDisconnect(reason);
@@ -231,6 +222,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _doDisconnect(String reason) async {
     if (_isDisconnecting) return;
     _isDisconnecting = true;
+    _sessionEpoch++;
     debugPrint('[Timer] Disconnecting: $reason');
 
     _timer?.cancel();
@@ -239,13 +231,13 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     _remainingSeconds = 0;
     _remainingAtLastSync = 0;
     _hasSyncedOnce = false;
-    _lastSuccessfulSyncAt = null;
+    _sinceLastSuccessfulSync?.stop();
+    _sinceLastSuccessfulSync = null;
     NotificationService.reset();
     notifyListeners();
 
     await vpnConnection.disconnect();
 
-    if (!_isDisconnecting) return;
     _isDisconnecting = false;
     notifyListeners();
   }
@@ -257,20 +249,28 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _syncWithHivemind() async {
-    if (_isDisconnecting || _syncInProgress) return;
-    _syncInProgress = true;
+    if (_isDisconnecting) return;
+    final epoch = _sessionEpoch;
+    if (_syncEpochInProgress == epoch) return;
+
+    final completion = Completer<void>();
+    _syncCompletion = completion;
+    _syncEpochInProgress = epoch;
+
     try {
       final deviceId = await CryptoService.getDeviceId();
+      if (epoch != _sessionEpoch || _isDisconnecting) return;
+
       final base = Uri.parse('${AppConfig.hivemindApiPublic}/session/status');
       final url = base.replace(queryParameters: {'device_id': deviceId});
       final response = await HivemindService.directGet(url);
-      if (_isDisconnecting) return;
+      if (epoch != _sessionEpoch || _isDisconnecting) return;
 
       if (response.statusCode == 200) {
         final decoded = jsonDecode(response.body);
         if (decoded is! Map<String, dynamic>) {
           debugPrint('[Timer] Invalid session payload type.');
-          _markSyncFailure();
+          _markSyncFailure(epoch);
           return;
         }
         final data = decoded;
@@ -278,7 +278,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
         final activeValue = data['active'];
         if (activeValue is! bool) {
           debugPrint('[Timer] Session payload missing boolean active state.');
-          _markSyncFailure();
+          _markSyncFailure(epoch);
           return;
         }
         if (!activeValue) {
@@ -291,61 +291,66 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
             !expiresValue.isFinite ||
             expiresValue < 0) {
           debugPrint('[Timer] Session payload has invalid expiry.');
-          _markSyncFailure();
+          _markSyncFailure(epoch);
           return;
         }
 
+        final elapsedMs = _sinceLastSuccessfulSync?.elapsedMilliseconds;
         _remainingAtLastSync = expiresValue.toInt();
         _remainingSeconds = _remainingAtLastSync;
-        // Push the absolute deadline to the VPN service so it can tear the
-        // tunnel down on its own clock, even if this UI process is gone.
-        final expiresAtMs =
-            DateTime.now().millisecondsSinceEpoch + _remainingSeconds * 1000;
-        if ((expiresAtMs - _lastPushedExpiryAtMs).abs() > 5000) {
-          _lastPushedExpiryAtMs = expiresAtMs;
-          unawaited(PowerSettings.setSessionExpiry(expiresAtMs));
-        }
         _usedBytes = _readNonNegativeInt(data['used_bytes'], _usedBytes);
 
-        final now = DateTime.now();
-        final previousSyncAt = _lastSuccessfulSyncAt;
         final deltaBytes = _usedBytes - _lastUsedBytes;
-        if (_hasSyncedOnce && previousSyncAt != null) {
-          final elapsedMs = now.difference(previousSyncAt).inMilliseconds;
-          if (deltaBytes > 0 && elapsedMs > 0) {
-            _currentSpeedKBps = (deltaBytes / (elapsedMs / 1000.0)) / 1000.0;
-          } else {
-            _currentSpeedKBps = 0.0;
-          }
+        if (_hasSyncedOnce && elapsedMs != null && elapsedMs > 0) {
+          _currentSpeedKBps = deltaBytes > 0
+              ? (deltaBytes / (elapsedMs / 1000.0)) / 1000.0
+              : 0.0;
         } else {
           _currentSpeedKBps = 0.0;
         }
         _lastUsedBytes = _usedBytes;
-        _lastSuccessfulSyncAt = now;
+        _sinceLastSuccessfulSync?.stop();
+        _sinceLastSuccessfulSync = Stopwatch()..start();
 
         if (data['cap_exhausted'] == true) {
           await _doDisconnect('Data cap reached');
           return;
         }
 
+        if (epoch != _sessionEpoch || _isDisconnecting) return;
+        try {
+          await vpnConnection.setNativeSessionDeadline(_remainingAtLastSync);
+        } catch (e) {
+          debugPrint('[Timer] Failed to arm native session deadline: $e');
+          await _doDisconnect('Native session deadline unavailable');
+          return;
+        }
+        if (epoch != _sessionEpoch || _isDisconnecting) return;
         _consecutiveFailures = 0;
         _offlineSeconds = 0;
         _hasSyncedOnce = true;
         notifyListeners();
       } else {
-        _markSyncFailure();
+        _markSyncFailure(epoch);
       }
     } catch (e) {
-      if (!_isDisconnecting) {
+      if (epoch == _sessionEpoch && !_isDisconnecting) {
         debugPrint('Hivemind sync error: $e');
-        _markSyncFailure();
+        _markSyncFailure(epoch);
       }
     } finally {
-      _syncInProgress = false;
+      if (_syncEpochInProgress == epoch) {
+        _syncEpochInProgress = null;
+      }
+      if (identical(_syncCompletion, completion)) {
+        _syncCompletion = null;
+      }
+      if (!completion.isCompleted) completion.complete();
     }
   }
 
-  void _markSyncFailure() {
+  void _markSyncFailure(int epoch) {
+    if (epoch != _sessionEpoch || _isDisconnecting) return;
     _consecutiveFailures++;
     if (_consecutiveFailures >= _maxConsecutiveFailures) {
       notifyListeners();
@@ -353,10 +358,10 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _reconcileElapsedTime() {
-    final syncedAt = _lastSuccessfulSyncAt;
-    if (!_hasSyncedOnce || syncedAt == null) return;
+    final clock = _sinceLastSuccessfulSync;
+    if (!_hasSyncedOnce || clock == null) return;
 
-    final elapsed = DateTime.now().difference(syncedAt).inSeconds;
+    final elapsed = clock.elapsed.inSeconds;
     _remainingSeconds =
         (_remainingAtLastSync - elapsed).clamp(0, 1 << 31).toInt();
   }
@@ -396,9 +401,15 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    // Invalidate every asynchronous generation before removing listeners so
+    // late storage/network completions cannot notify a disposed notifier.
+    _sessionEpoch++;
+    _supportStateEpoch++;
+    _isDisconnecting = true;
     WidgetsBinding.instance.removeObserver(this);
     vpnConnection.removeListener(_onVpnConnectionChanged);
     _timer?.cancel();
+    _sinceLastSuccessfulSync?.stop();
     super.dispose();
   }
 }
