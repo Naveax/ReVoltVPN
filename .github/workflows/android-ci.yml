@@ -52,50 +52,14 @@ jobs:
           channel: stable
           cache: false
 
-      - name: Create device-test app config
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > lib/logic/app_config.dart <<'DART'
-          abstract final class AppConfig {
-            AppConfig._();
-
-            static const String serverIp = '204.168.246.88';
-            static const String hivemindApiPublic = 'https://paladinvpn.duckdns.org/api';
-            static const String realityFp = 'chrome';
-            static const String vlessSecurity = 'reality';
-            static const String vlessType = 'xhttp';
-            static const String vlessPath = '/revolt';
-            static const String applicationId = 'com.paladinvpn.app';
-            static const String githubOwner = 'esefxdz';
-            static const String githubRepo = 'ReVoltVPN';
-            static const String githubReleasesUrl =
-                'https://github.com/$githubOwner/$githubRepo/releases/latest';
-            static const String adUnitId =
-                'ca-app-pub-5671224884648691/9198987725';
-          }
-          DART
-          grep -Fq "204.168.246.88" lib/logic/app_config.dart
-          grep -Fq "https://paladinvpn.duckdns.org/api" lib/logic/app_config.dart
-          grep -Fq "static const String vlessPath = '/revolt';" lib/logic/app_config.dart
-          grep -Fq "static const String githubOwner = 'esefxdz';" lib/logic/app_config.dart
-          ! grep -Fq "YOUR_DOMAIN" lib/logic/app_config.dart
-          ! grep -Fq "0.0.0.0" lib/logic/app_config.dart
+      - name: Create CI app config
+        run: cp lib/logic/app_config.example.dart lib/logic/app_config.dart
 
       - name: Resolve dependencies
         run: flutter pub get
 
       - name: Verify dependency lock is committed
         run: git diff --exit-code -- pubspec.lock
-
-      - name: Verify device-test haptic contract
-        shell: bash
-        run: |
-          set -euo pipefail
-          grep -Fq 'HapticSettings.selection();' lib/components/connect_button.dart
-          grep -Fq 'static bool _enabled = true;' lib/logic/haptic_settings.dart
-          grep -Fq "static void selection() => unawaited(_impact('selection'));" lib/logic/haptic_settings.dart
-          grep -Fq "static void success() => unawaited(_impact('success'));" lib/logic/haptic_settings.dart
 
       - name: Verify vendored flutter_vless runtime
         shell: bash
@@ -189,7 +153,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: revoltvpn-device-test-debug-apk
+          name: revoltvpn-debug-apk
           if-no-files-found: error
           path: build/app/outputs/flutter-apk/app-debug.apk
 
