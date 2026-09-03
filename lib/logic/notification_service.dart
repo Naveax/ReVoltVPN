@@ -16,16 +16,17 @@ class NotificationService {
   /// Sets the notification's content text to [text].
   ///
   /// The native side rebuilds the whole notification, so skip the round-trip
-  /// when the text has not changed.
+  /// when the text has not changed. A failed native update is intentionally
+  /// not cached so the next tick can retry it.
   static Future<void> updateTimer(String text) async {
     if (text == _lastText) return;
-    _lastText = text;
     try {
       await _channel.invokeMethod<void>('updateNotificationText', {
         'title': 'Revolt VPN',
         'text': text,
         'disconnectLabel': 'Disconnect',
       });
+      _lastText = text;
     } catch (_) {
       // Cosmetic.
     }
