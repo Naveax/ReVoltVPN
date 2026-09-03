@@ -83,3 +83,7 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/custom-fonts/#from-packages
+
+dependency_overrides:
+  flutter_vless_android:
+    path: local_packages/flutter_vless_android-1.1.5
