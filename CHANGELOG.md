@@ -5,7 +5,7 @@ Versions follow [semver](https://semver.org/): MAJOR.MINOR.PATCH
 
 ---
 
-## [3.3.4] — 2026-09-02
+## [3.3.5] — 2026-09-03
 
 ### Added
 - **OS-level session-expiry enforcement.** The native VPN service now enforces the
@@ -34,7 +34,7 @@ Versions follow [semver](https://semver.org/): MAJOR.MINOR.PATCH
 - Unknown/obsolete persisted connection-mode labels, including the old `ass`/`auto`
   values, now fail closed to TUN. Only the explicit current `proxy` value restores
   SOCKS5 mode.
-- App version is `3.3.4+30`.
+- App version is `3.3.5+31`.
 
 ### Security
 - Existing AdMob bypass/callback behavior is intentionally unchanged.
@@ -43,6 +43,41 @@ Versions follow [semver](https://semver.org/): MAJOR.MINOR.PATCH
 - Full IPv4/IPv6 TUN routing, fail-closed DNS/TUN setup, authenticated ephemeral
   loopback SOCKS5, generation-scoped STOP/state handling, production config pinning,
   dependency verification, R8 gates and updater host allowlists remain in force.
+
+---
+
+## [3.3.4] — 2026-09-02
+
+### Added
+- **OS-level session-expiry enforcement.** The VPN service now holds an absolute
+  deadline and tears the tunnel down on its own clock — a main-looper handler
+  plus an `AlarmManager` exact alarm (falling back to an inexact alarm on
+  Android 13+ when exact alarms aren't granted). The app pushes
+  `now + expires_in_seconds` on each session sync, so a session ends even if the
+  UI process has been killed.
+- **Session survival across process death.** The service persists the active
+  session and re-establishes it when Android restarts it (`START_STICKY`).
+- **Support-ad extension reflected immediately.** A rewarded "Support us" ad now
+  forces an immediate server sync, so the countdown and expiry deadline update
+  without waiting for the next heartbeat.
+
+### Changed
+- **Session-status beacon slowed.** Foreground poll: 5 s → 60 s; background poll:
+  30 s → 60 s.
+- **Background-reliability guidance.** The "Always-on VPN" settings deep-link was
+  removed; the battery-optimisation exemption remains, with expiry now enforced
+  by the service itself.
+
+### Removed
+- Legacy `ass` connection-mode migration — unrecognized persisted modes now
+  default to TUN.
+
+### Security & privacy
+- Session credentials and the per-user VLESS UUID are now held app-private on
+  disk (`active_session.bin`) for the session's lifetime and removed on
+  disconnect or expiry. Previously they were memory-only.
+
+---
 
 ## [3.3.3] — 2026-09-01
 
