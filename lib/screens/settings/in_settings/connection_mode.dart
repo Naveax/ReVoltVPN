@@ -51,8 +51,14 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
       return;
     }
 
-    await ConnectionSettings.setMode(next);
+    final saved = await ConnectionSettings.setMode(next);
     if (!mounted) return;
+    if (!saved) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not save connection mode.')),
+      );
+      return;
+    }
 
     setState(() {
       _mode = next;
@@ -61,10 +67,6 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
     widget.onChanged?.call(next);
   }
 
-  /// Recovers from an orphaned proxy: tear the runtime down and start a fresh
-  /// session so a readable set of credentials exists again. No rewarded ad —
-  /// the user is repairing a connection they already paid for, not opening a
-  /// new one.
   Future<void> _reconnect() async {
     if (_reconnecting) return;
     final vpn = context.read<VpnConnection>();
@@ -168,11 +170,6 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
             builder: (context, vpn, _) {
               final session = vpn.activeSocksSession;
               if (session == null) {
-                // The proxy can be running while this session is unknown:
-                // Android killed the app process, the foreground service kept
-                // the listener alive, and its credentials existed only in the
-                // memory that died with it. Saying "Connect" there would be a
-                // lie — the user is already connected.
                 final orphaned = vpn.status == VpnStatus.connected &&
                     vpn.adoptedRunningRuntime;
                 if (orphaned) {
