@@ -19,23 +19,28 @@ class DataDisclosureDialog {
 
     if (!context.mounted) return;
 
-    await showDialog(
+    final accepted = await showDialog<bool>(
       context: context,
       barrierDismissible: false, // Must tap Continue — no tap-outside dismiss.
-      builder: (_) => _DisclosureDialog(
-        onContinue: () {
-          prefs.setBool(_key, true);
-          Navigator.of(context).pop(); // Dismiss the dialog.
-        },
-      ),
+      builder: (_) => const _DisclosureDialog(),
     );
+    if (accepted != true) return;
+
+    // Persist only after the user action is complete. If storage fails, do not
+    // invent an accepted state; the disclosure will simply reappear later.
+    try {
+      final saved = await prefs.setBool(_key, true);
+      if (!saved) {
+        debugPrint('[Disclosure] Preference write was rejected');
+      }
+    } catch (e) {
+      debugPrint('[Disclosure] Failed to persist acknowledgement: $e');
+    }
   }
 }
 
 class _DisclosureDialog extends StatelessWidget {
-  final VoidCallback onContinue;
-
-  const _DisclosureDialog({required this.onContinue});
+  const _DisclosureDialog();
 
   @override
   Widget build(BuildContext context) {
@@ -49,7 +54,6 @@ class _DisclosureDialog extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Title
             const Text(
               'Before you connect',
               style: TextStyle(
@@ -59,8 +63,6 @@ class _DisclosureDialog extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 16),
-
-            // Body
             const Text(
               'Revolt VPN creates a secure VPN tunnel to protect your '
               'traffic. To enforce your data/time quota, we log your '
@@ -76,12 +78,10 @@ class _DisclosureDialog extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 24),
-
-            // Continue button — full-width, accent
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed: onContinue,
+                onPressed: () => Navigator.of(context).pop(true),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.accent,
                   foregroundColor: AppColors.bgDeep,
