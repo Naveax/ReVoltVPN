@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
-import 'package:revoltvpn/logic/haptic_settings.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/screens/main_screen.dart';
 import 'package:revoltvpn/screens/settings/in_settings/rain.dart';
@@ -45,11 +44,10 @@ class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
     final elapsed = Stopwatch()..start();
     final vpn = context.read<VpnConnection>();
 
-    // The overlays and haptic layer read these before MainScreen mounts.
+    // Haptics is initialized before runApp. Only visual preferences remain.
     final settingsPrefs = Future.wait([
       loadRainPref(),
       loadLightningPref(),
-      HapticSettings.initialize(),
     ]);
 
     try {
@@ -80,11 +78,10 @@ class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
 
   void _navigateIfReady() {
     if (!mounted || _navigated || !_bootComplete) return;
-    if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused) {
-      return;
-    }
-    _navigated = true;
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    if (lifecycle != null && lifecycle != AppLifecycleState.resumed) return;
 
+    _navigated = true;
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(
         transitionDuration: const Duration(milliseconds: 400),

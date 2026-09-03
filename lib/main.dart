@@ -7,7 +7,6 @@ import 'package:revoltvpn/logic/ad_manager.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/logic/connection_settings.dart';
 import 'package:revoltvpn/logic/haptic_settings.dart';
-import 'package:revoltvpn/logic/server_list.dart';
 import 'package:revoltvpn/logic/session_timer.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/screens/intro.dart';
@@ -26,13 +25,10 @@ Future<void> main() async {
     systemNavigationBarIconBrightness: Brightness.light,
   ));
 
-  FlutterError.onError = (details) {
-    debugPrint('[FlutterError] ${details.exception}');
-  };
-
+  FlutterError.onError = FlutterError.presentError;
   PlatformDispatcher.instance.onError = (error, stack) {
     debugPrint('[PlatformError] $error\n$stack');
-    return true;
+    return false;
   };
 
   runApp(const ReVoltApp());
@@ -47,8 +43,6 @@ class ReVoltApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => VpnConnection(), lazy: false),
         ChangeNotifierProxyProvider<VpnConnection, SessionTimer>(
-          // Eager, like VpnConnection: the timer has to be listening before the
-          // engine reports an already-running tunnel, not after the intro.
           lazy: false,
           create: (ctx) =>
               SessionTimer(vpnConnection: ctx.read<VpnConnection>()),
@@ -56,10 +50,6 @@ class ReVoltApp extends StatelessWidget {
               prev ?? SessionTimer(vpnConnection: vpn),
         ),
         ChangeNotifierProvider(create: (_) => AdManager()),
-        ChangeNotifierProvider(
-          create: (_) => ServerList()..init(),
-          lazy: false,
-        ),
       ],
       child: MaterialApp(
         title: 'ReVolt VPN',
