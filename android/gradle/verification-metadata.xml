@@ -2324,6 +2324,9 @@
          <artifact name="aapt2-8.11.1-12782657-linux.jar">
             <sha256 value="5ce2f1c4262b99174047f3d413816c57ceef5fb00a520264cf5ed564576bf250" origin="Independently verified from Google Maven"/>
          </artifact>
+         <artifact name="aapt2-8.11.1-12782657-windows.jar">
+            <sha256 value="3ac122c7fc5a6b8bd5fd4b65b94fd00afc7ec69f51a00245fa05803517a588a7" origin="Verified"/>
+         </artifact>
          <artifact name="aapt2-8.11.1-12782657.pom">
             <sha256 value="43f1683656c6fcd2f24070bd781948427af61a67eb31a9a92fc0ffab9fc0953b" origin="Independently verified from Google Maven"/>
          </artifact>
