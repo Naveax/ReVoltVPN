@@ -5,6 +5,50 @@ Versions follow [semver](https://semver.org/): MAJOR.MINOR.PATCH
 
 ---
 
+## [3.3.5] — 2026-09-06
+
+### Added
+- **Reproducible release verification.** The release build pins the production
+  `app_config.dart` by SHA-256 and fails closed on any mismatch, so a release
+  APK cannot silently ship a template or wrong server config.
+
+### Changed
+- **Vendored Android runtime.** The pinned `flutter_vless` Android runtime is now
+  vendored in-tree instead of being patched in the pub cache at build time.
+- **Harden the control-plane trust boundary.** `/session/status` fields are
+  strictly validated (nonce, destination IP, port, SNI, XHTTP path), control
+  responses are capped and never follow redirects, and the tunnel destination
+  is pinned to the compiled server — a compromised API can no longer redirect
+  user traffic.
+- **Authenticated local SOCKS5 is now mandatory.** The ephemeral local proxy
+  replaces rather than filters inbounds, so only the authenticated SOCKS5
+  listener can exist.
+- **Fail closed on connection-mode changes.** The mode is persisted before it is
+  applied, and a failed save leaves the UI and runtime unchanged instead of
+  silently selecting a weaker route.
+
+### Fixed
+- Connect button no longer leaks a listener into a disposed `AnimationController`
+  during teardown.
+- Disclosure acknowledgement is only persisted once the user accepts it.
+- Session countdown now uses a monotonic clock (cannot be extended by rolling the
+  device clock back) and a VPN error tears the tunnel down instead of freezing
+  the timer on a live session.
+- The VPN-service notification's disconnect action and countdown re-post are
+  aligned with the vendored runtime.
+
+### Removed
+- Unsupported server-selector UI (single server today; design retained for
+  multi-server later).
+- Unused Flutter dependencies and orphaned assets.
+- Dead Dart wrappers whose native handlers no longer exist.
+
+### Security & privacy
+- IPv6 is captured by the VPN interface (`::/0` route), closing a leak where
+  IPv6 traffic could bypass the tunnel on IPv6-capable carriers.
+
+---
+
 ## [3.3.4] — 2026-09-02
 
 ### Added
