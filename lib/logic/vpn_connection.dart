@@ -120,7 +120,7 @@ class VpnConnection extends ChangeNotifier {
       await _vless.initializeVless(
         providerBundleIdentifier: 'com.paladinvpn.app',
         notificationIconResourceType: 'drawable',
-        notificationIconResourceName: 'notification_status_icon',
+        notificationIconResourceName: 'notification_icon',
       );
       if (_disposed) return;
       _initialized = true;

@@ -655,7 +655,8 @@ class XrayVPNService : VpnService() {
             android.app.Notification.Builder(this)
         }
 
-        val icon = android.R.drawable.ic_dialog_info
+        val icon = resources.getIdentifier("notification_icon", "drawable", packageName)
+            .takeIf { it != 0 } ?: android.R.drawable.ic_dialog_info
 
         val notification = builder
             .setContentTitle("VPN Service")

@@ -172,13 +172,13 @@ class MainActivity : FlutterActivity() {
         }
 
         val publicVersion = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setSmallIcon(R.drawable.notification_status_icon)
+            .setSmallIcon(R.drawable.notification_icon)
             .setContentTitle("Revolt VPN")
             .setContentText("VPN is active")
             .build()
 
         val builder = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setSmallIcon(R.drawable.notification_status_icon)
+            .setSmallIcon(R.drawable.notification_icon)
             .setContentTitle(title)
             .setContentText(text)
             .setColorized(true)
