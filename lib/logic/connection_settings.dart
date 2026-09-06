@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 enum ConnectionMode { tun, proxy }
@@ -19,16 +20,21 @@ abstract final class ConnectionSettings {
     final storedMode = prefs.getString(_modeKey);
 
     // Only the explicit current proxy value restores SOCKS5. Unknown and
-    // obsolete values, including the former 'auto'/'ass' labels, fail closed
-    // to full-tunnel TUN instead of silently selecting a weaker route.
+    // obsolete values, including the pre-V3 'auto' label, fail closed to
+    // full-tunnel TUN instead of silently selecting a weaker route.
     _mode = storedMode == ConnectionMode.proxy.name
         ? ConnectionMode.proxy
         : ConnectionMode.tun;
 
     if (storedMode != _mode.name) {
+      // Best-effort. _mode is already the safe TUN default in memory, so a
+      // failed write leaves nothing insecure — it only means the migration
+      // is retried next launch. initialize() runs from main() before
+      // runApp(), with no zone guard, so throwing here would black-screen
+      // the app on the fresh-install path for no security gain.
       final migrated = await prefs.setString(_modeKey, _mode.name);
       if (!migrated) {
-        throw StateError('Could not persist migrated connection mode.');
+        debugPrint('[ConnectionSettings] Could not persist migrated mode.');
       }
     }
 
