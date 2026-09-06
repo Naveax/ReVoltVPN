@@ -39,40 +39,29 @@ class SecureSocksSession {
     final username = _token(16);
     final password = _token(32);
 
-    final sourceInbounds = decoded['inbounds'];
-    final inbounds = <dynamic>[];
-    if (sourceInbounds is List) {
-      for (final value in sourceInbounds) {
-        if (value is Map) {
-          final protocol = value['protocol']?.toString().toLowerCase();
-          // ReVolt owns local proxy ingress on Android. Drop imported SOCKS/HTTP
-          // listeners so a stale no-auth proxy cannot remain reachable beside
-          // the authenticated session listener.
-          if (protocol == 'socks' || protocol == 'http') continue;
-        }
-        inbounds.add(value);
-      }
-    }
-
-    inbounds.add(<String, dynamic>{
-      'tag': inboundTag,
-      'port': port,
-      'listen': '127.0.0.1',
-      'protocol': 'socks',
-      'settings': <String, dynamic>{
-        'auth': 'password',
-        'udp': true,
-        'ip': '127.0.0.1',
-        'users': <Map<String, String>>[
-          <String, String>{'user': username, 'pass': password},
-        ],
+    // ReVolt owns local ingress. Never accept listeners supplied by a remote
+    // or imported Xray config; the client exposes exactly one authenticated
+    // loopback SOCKS5 listener for the current ephemeral session.
+    decoded['inbounds'] = <Map<String, dynamic>>[
+      <String, dynamic>{
+        'tag': inboundTag,
+        'port': port,
+        'listen': '127.0.0.1',
+        'protocol': 'socks',
+        'settings': <String, dynamic>{
+          'auth': 'password',
+          'udp': true,
+          'ip': '127.0.0.1',
+          'users': <Map<String, String>>[
+            <String, String>{'user': username, 'pass': password},
+          ],
+        },
+        'sniffing': <String, dynamic>{
+          'enabled': true,
+          'destOverride': <String>['http', 'tls'],
+        },
       },
-      'sniffing': <String, dynamic>{
-        'enabled': true,
-        'destOverride': <String>['http', 'tls'],
-      },
-    });
-    decoded['inbounds'] = inbounds;
+    ];
 
     return SecureSocksSession._(
       port: port,
