@@ -14,8 +14,8 @@ class InfoButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return IconButton(
-      icon: const Icon(Icons.help_outline, color: AppColors.textWhite, size: 28),
+    return const IconButton(
+      icon: Icon(Icons.help_outline, color: AppColors.textWhite, size: 28),
       onPressed: launchGitHub,
       tooltip: 'About ReVoltVPN',
       splashRadius: 24,

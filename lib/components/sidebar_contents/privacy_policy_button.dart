@@ -14,8 +14,8 @@ class PrivacyPolicyButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return IconButton(
-      icon: const Icon(Icons.privacy_tip_outlined, color: AppColors.textWhite, size: 28),
+    return const IconButton(
+      icon: Icon(Icons.privacy_tip_outlined, color: AppColors.textWhite, size: 28),
       onPressed: launchPrivacyPolicy,
       tooltip: 'Privacy Policy',
       splashRadius: 24,

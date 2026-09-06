@@ -14,8 +14,8 @@ class DiscordLinkButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return IconButton(
-      icon: const Icon(Icons.discord, color: AppColors.textWhite, size: 28),
+    return const IconButton(
+      icon: Icon(Icons.discord, color: AppColors.textWhite, size: 28),
       onPressed: launchDiscord,
       tooltip: 'Join Discord',
       splashRadius: 24,
