@@ -14,7 +14,7 @@ As a contributor, here are the guidelines we would like you to follow:
   │       │             │
   │       │             └─⫸ Summary in present tense. Not capitalized. No period at the end.
   │       │
-  │       └─⫸ Commit Scope: app|server|xray|nginx|docs|config
+  │       └─⫸ Commit Scope: app|docs|config
   │
   └─⫸ Commit Type: build|ci|docs|feat|fix|perf|refactor|test
 ```
@@ -40,11 +40,11 @@ Must be one of the following:
 The scope should be the part of the project affected:
 
 * `app` — Flutter client (screens, components, logic)
-* `server` — Python Hivemind backend
-* `xray` — Xray Reality config or tunnel behavior
-* `nginx` — nginx routing, SSL, auth
 * `docs` — documentation files
 * `config` — app_config, .gitignore, pubspec
+
+The `server`, `xray` and `nginx` components are not in this repository, so
+contributions targeting them cannot be reviewed or tested here.
 
 ##### Summary
 
@@ -65,10 +65,9 @@ You can include a comparison of the previous behavior with the new behavior in o
 #### Examples
 
 ```
-feat(server): add swarm monitoring endpoint
+feat(app): add a server selector to the settings screen
 
-GET /api/swarm returns sorted drone list for the TUI dashboard.
-Persistent total GB saved to swarm_total.json, survives restarts.
+Lists the available exit locations and persists the user's choice locally.
 ```
 
 ```
