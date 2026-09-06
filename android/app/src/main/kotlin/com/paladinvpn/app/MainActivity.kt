@@ -3,7 +3,6 @@ package com.paladinvpn.app
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.ActivityManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -21,8 +20,6 @@ import android.os.VibratorManager
 import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import com.github.tfox.flutter_vless.xray.service.XrayVPNService
-import com.github.tfox.flutter_vless.xray.utils.AppConfigs
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -54,24 +51,10 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, powerChannel)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    // Doze and App Standby stop background services of apps that
-                    // are not exempt. A VPN has to be exempt to survive the screen
-                    // going off, so surface the real state rather than guessing.
                     "isIgnoringBatteryOptimizations" ->
                         result.success(isIgnoringBatteryOptimizations())
                     "requestIgnoreBatteryOptimizations" ->
                         result.success(requestIgnoreBatteryOptimizations())
-                    "setSessionExpiry" -> {
-                        val expiresAtMs = call.argument<Number>("expiresAtMs")?.toLong() ?: 0L
-                        if (expiresAtMs > 0) {
-                            sendSessionExpiryToDaemon(expiresAtMs)
-                        }
-                        result.success(null)
-                    }
-                    // Is our VPN runtime actually alive? The service lives in
-                    // :RunSoLibXrayDaemon, a separate process, so its statics are
-                    // NOT visible here -- this is the only honest check.
-                    "isVpnRuntimeAlive" -> result.success(isVpnRuntimeAlive())
                     else -> result.notImplemented()
                 }
             }
@@ -118,7 +101,6 @@ class MainActivity : FlutterActivity() {
         super.onDestroy()
     }
 
-    /** True when the OS has exempted us from Doze / App Standby. */
     private fun isIgnoringBatteryOptimizations(): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
         return try {
@@ -129,11 +111,6 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /**
-     * Opens the system exemption prompt. Android shows this as a single dialog;
-     * it cannot be granted silently, so the caller must treat a false return as
-     * "ask again later" rather than a denial.
-     */
     private fun requestIgnoreBatteryOptimizations(): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
         if (isIgnoringBatteryOptimizations()) return true
@@ -146,7 +123,6 @@ class MainActivity : FlutterActivity() {
             )
             true
         } catch (_: Exception) {
-            // Some OEM builds hide the direct intent; fall back to the list.
             try {
                 startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                 true
@@ -156,72 +132,11 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /** Pushes the session-expiry deadline to the VPN service process. */
-    private fun sendSessionExpiryToDaemon(expiresAtMs: Long) {
-        try {
-            val intent = Intent(this, XrayVPNService::class.java)
-            intent.putExtra("SESSION_EXPIRES_AT_MS", expiresAtMs)
-            startService(intent)
-        } catch (_: Exception) {
-            // Daemon not reachable; its persisted expiry still applies.
-        }
-    }
-
-    /**
-     * Whether the VPN runtime is genuinely alive.
-     *
-     * The Xray service runs in :RunSoLibXrayDaemon, a separate process, so its
-     * statics (AppConfigs.V2RAY_CONFIG, V2RAY_STATE) are NOT visible from here --
-     * reading them yields a fresh, empty copy. getRunningAppProcesses still
-     * returns our *own* processes, which makes it the one reliable signal.
-     */
-    private fun isVpnRuntimeAlive(): Map<String, Any> {
-        var processAlive = false
-        try {
-            val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            processAlive = am.runningAppProcesses
-                ?.any { it.processName.endsWith(VPN_PROCESS_SUFFIX) } == true
-        } catch (_: Exception) {
-        }
-
-        var vpnTransport = false
-        try {
-            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            vpnTransport = cm.allNetworks.any { network ->
-                cm.getNetworkCapabilities(network)
-                    ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
-            }
-        } catch (_: Exception) {
-        }
-
-        return mapOf(
-            "processAlive" to processAlive,
-            "vpnTransport" to vpnTransport,
-        )
-    }
-
-    /** Removes a notification left behind by a runtime that is no longer alive. */
-    private fun cancelVpnNotification() {
-        try {
-            NotificationManagerCompat.from(this).cancel(NOTIFICATION_ID)
-        } catch (_: Exception) {
-        }
-    }
-
     private fun updateVpnNotification(title: String, text: String, actionLabel: String) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
                 PackageManager.PERMISSION_GRANTED
         ) {
-            return
-        }
-
-        // The foreground notification (id 1) is owned by XrayVPNService via
-        // startForeground. Posting to it from this process while the service is
-        // gone leaves a frozen countdown nothing will ever update again.
-        val alive = isVpnRuntimeAlive()["processAlive"] == true
-        if (!alive) {
-            cancelVpnNotification()
             return
         }
 
@@ -234,17 +149,28 @@ class MainActivity : FlutterActivity() {
         }
 
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-        launchIntent?.action = "FROM_DISCONNECT_BTN"
         launchIntent?.flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or
             Intent.FLAG_ACTIVITY_CLEAR_TOP or
             Intent.FLAG_ACTIVITY_NEW_TASK
 
-        val stopIntent = Intent(this, XrayVPNService::class.java)
-        stopIntent.putExtra("COMMAND", AppConfigs.V2RAY_SERVICE_COMMANDS.STOP_SERVICE)
-        val stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, flags)
+        // The VPN service owns the authoritative Disconnect PendingIntent and
+        // embeds the current runtime-generation token in it. Never recreate an
+        // unscoped STOP intent from the UI process: a stale notification could
+        // otherwise stop a newer tunnel. Reuse the live service action when the
+        // platform exposes it; on older Android versions omit the action rather
+        // than weaken generation scoping.
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val serviceStopAction = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            manager.activeNotifications
+                .firstOrNull { it.id == NOTIFICATION_ID }
+                ?.notification
+                ?.actions
+                ?.firstOrNull()
+                ?.actionIntent
+        } else {
+            null
+        }
 
-        // Public lock-screen preview: keep the VPN status visible but hide the
-        // session countdown/speed so usage metadata never reaches the lock screen.
         val publicVersion = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.notification_status_icon)
             .setContentTitle("Revolt VPN")
@@ -255,7 +181,6 @@ class MainActivity : FlutterActivity() {
             .setSmallIcon(R.drawable.notification_status_icon)
             .setContentTitle(title)
             .setContentText(text)
-            .addAction(0, actionLabel, stopPendingIntent)
             .setColorized(true)
             .setColor(0xFF0D1117.toInt())
             .setOngoing(true)
@@ -266,6 +191,10 @@ class MainActivity : FlutterActivity() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(publicVersion)
+
+        if (serviceStopAction != null) {
+            builder.addAction(0, actionLabel, serviceStopAction)
+        }
 
         if (launchIntent != null) {
             builder.setContentIntent(PendingIntent.getActivity(this, 0, launchIntent, flags))
@@ -473,7 +402,6 @@ class MainActivity : FlutterActivity() {
 
     companion object {
         private const val NOTIFICATION_ID = 1
-        private const val VPN_PROCESS_SUFFIX = ":RunSoLibXrayDaemon"
-        private const val NOTIFICATION_CHANNEL_ID = "XRAY_SERVICE_CHANNEL"
+        private const val NOTIFICATION_CHANNEL_ID = "REVOLT_VPN_SERVICE"
     }
 }
