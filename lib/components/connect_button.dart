@@ -19,6 +19,7 @@ class _ConnectButtonState extends State<ConnectButton>
   DateTime _lastTap = DateTime.fromMillisecondsSinceEpoch(0);
   AnimationController? _pulse;
   Animation<double>? _pulseAnim;
+  VpnConnection? _vpn;
 
   double get _pulseValue => _pulseAnim?.value ?? 0.0;
 
@@ -35,20 +36,25 @@ class _ConnectButtonState extends State<ConnectButton>
     );
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) context.read<VpnConnection>().addListener(_onVpnChanged);
+      if (!mounted || _vpn != null) return;
+      final vpn = context.read<VpnConnection>();
+      _vpn = vpn;
+      vpn.addListener(_onVpnChanged);
+      _onVpnChanged();
     });
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    context.read<VpnConnection>().removeListener(_onVpnChanged);
+    _vpn?.removeListener(_onVpnChanged);
     _pulse?.dispose();
     super.dispose();
   }
 
   void _onVpnChanged() {
-    final vpn = context.read<VpnConnection>();
+    final vpn = _vpn;
+    if (vpn == null) return;
     if (vpn.status == VpnStatus.connected) {
       _pulse?.repeat(reverse: true);
     } else {
@@ -60,14 +66,12 @@ class _ConnectButtonState extends State<ConnectButton>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (!mounted) return;
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached) {
+    if (state != AppLifecycleState.resumed) {
       _pulse?.stop();
-    } else if (state == AppLifecycleState.resumed) {
-      final vpn = context.read<VpnConnection>();
-      if (vpn.status == VpnStatus.connected) {
-        _pulse?.repeat(reverse: true);
-      }
+      return;
+    }
+    if (_vpn?.status == VpnStatus.connected) {
+      _pulse?.repeat(reverse: true);
     }
   }
 
