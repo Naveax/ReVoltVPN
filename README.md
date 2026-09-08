@@ -4,7 +4,7 @@
 
 # ReVoltVPN
 
-A free VPN app for Android. Open-source client, transparent infrastructure. Watch an ad, get 2 hours of full-speed traffic — no accounts, no logs, no subscriptions.
+A free VPN app for Android. Open-source client, transparent infrastructure. Watch an ad, get 2 hours of full-speed traffic — no account or subscription required, and no browsing-traffic logging is intended by the service design.
 
 ---
 
@@ -22,10 +22,10 @@ No email. No password. No payment. The ad pays for the server.
 
 ## Protocol
 
-- **Transport** — VLESS over XHTTP (HTTP/2 multiplexed, path-hidden behind `/revolt`)
-- **Obfuscation** — Xray Reality spoofs a real website's TLS. To any DPI box, your tunnel looks like a browser visiting that website
-- **Encryption** — TLS 1.3 with borrowed certificate (Reality). No certbot, no domain ownership required
-- **API** — Standard HTTPS to a separate domain. Tunnel destination is IP-pinned — domain compromise is DoS only
+- **Transport** — VLESS over XHTTP. The client accepts session credentials and Reality parameters from the control plane while keeping the tunnel destination pinned in the app.
+- **Camouflage** — Xray REALITY is used to make the transport resemble ordinary TLS traffic. Its effectiveness depends on the network and DPI implementation; the client does not claim universal DPI invisibility.
+- **Encryption** — The tunnel uses Xray's VLESS + REALITY transport. ReVolt does not rely on a user-managed certificate/domain for the tunnel endpoint.
+- **Control plane** — Session/status traffic uses a separate configured HTTPS origin. The client rejects cleartext or cross-origin control-plane requests and pins the VLESS tunnel destination independently. The control plane remains a security boundary for session issuance and must not be treated as "DoS only" if compromised.
 
 ---
 
@@ -34,8 +34,8 @@ No email. No password. No payment. The ad pays for the server.
 | Layer | Technology |
 |-------|-----------|
 | App | Flutter (Android) |
-| VPN | VLESS + Xray Reality + XHTTP |
-| Backend | Python Flask ("Hivemind") — session management, quotas, stats |
+| VPN | VLESS + Xray REALITY + XHTTP |
+| Backend | Hivemind control plane — session management, quotas, stats |
 | Ads | Google AdMob rewarded, verified server-side |
 | Server | Debian, single Hetzner box in Finland |
 
@@ -46,14 +46,13 @@ No email. No password. No payment. The ad pays for the server.
 - One server, one location (Finland)
 - 2 vCPU / 4 GB RAM — not built for thousands of concurrent users
 - Android only
+- True Android always-on/lockdown support is not currently advertised; the native service keeps that capability disabled until protected bootstrap and device acceptance are complete
 
 ---
 
 ## Privacy
 
-Your traffic routes through Finland. We don't log it, inspect it, or sell it. Hivemind tracks only session liveness and byte counters for quota enforcement — no packet contents, no destination IPs, no DNS queries.
-
-Full privacy policy: [`PRIVACY_POLICY.md`](PRIVACY_POLICY.md)
+The client is designed not to create Xray browsing/access logs locally, and its tunnel destination is separate from the HTTPS session control plane. The service still has operational/session metadata needed for quota and reliability handling. See [`PRIVACY_POLICY.md`](PRIVACY_POLICY.md) for the stated data handling and retention behavior; production deployment behavior should be verified against that policy before release claims are treated as audited guarantees.
 
 ---
 
