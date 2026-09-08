@@ -97,14 +97,46 @@ class AdManager extends ChangeNotifier {
   // ── Show ad (or debug bypass) ─────────────────────────────────────
 
   Future<bool> showAd(String adType) async {
-    // Debug bypass: fire a fake callback only in debug builds. A main reward establishes the
-    // session possession nonce; support rewards have their own nonce and must never replace it.
+    // Never let an unknown UI/client value fall into the privileged main reward path.
+    if (adType != 'main' && adType != 'support') {
+      debugPrint('[AdManager] Rejected unknown ad type.');
+      return false;
+    }
+
+    String nonce;
+    if (adType == 'main') {
+      // If a previous user-requested disconnect still has an ambiguous server revocation,
+      // do not mint a new main nonce. Replacing a possibly-live generation must fail closed.
+      if (!await HivemindService.retryPendingSessionStop()) {
+        debugPrint('[AdManager] Server session revocation is still pending.');
+        return false;
+      }
+
+      final existing = await HivemindService.probeCurrentSession();
+      if (existing == SessionProbeResult.active) {
+        // The user already owns a live server session. Reuse that entitlement rather than
+        // watching another ad whose different nonce the hardened server will reject.
+        return true;
+      }
+      if (existing == SessionProbeResult.unavailable) {
+        return false;
+      }
+      nonce = HivemindService.newNonce();
+    } else {
+      // Support rewards authorize an extension of the exact active generation. The server
+      // deliberately requires the current possession nonce, so a fresh random nonce is invalid.
+      if (await HivemindService.probeCurrentSession() != SessionProbeResult.active) {
+        return false;
+      }
+      final currentNonce = await HivemindService.getSessionNonce();
+      if (currentNonce == null) return false;
+      nonce = currentNonce;
+    }
+
+    // Debug bypass: emit the same custom_data contract as production, but never persist a main
+    // candidate until the server confirms that exact nonce as the active generation.
     if (!adsEnabled && kDebugMode) {
       final deviceId = await CryptoService.getDeviceId();
-      final nonce = HivemindService.newNonce();
-      if (adType == 'main') {
-        await HivemindService.setSessionNonce(nonce);
-      }
       try {
         final customData = jsonEncode({
           'device_id': deviceId,
@@ -115,7 +147,14 @@ class AdManager extends ChangeNotifier {
             '${AppConfig.hivemindApiPublic}/admob/callback'
             '?signature=test&key_id=test'
             '&custom_data=${Uri.encodeComponent(customData)}');
-        await HivemindService.directGet(fakeUrl, timeout: const Duration(seconds: 8));
+        final response = await HivemindService.directGet(
+          fakeUrl,
+          timeout: const Duration(seconds: 8),
+        );
+        if (response.statusCode != 200) return false;
+        if (adType == 'main') {
+          return HivemindService.confirmAndSetSessionNonce(nonce);
+        }
         return true;
       } catch (_) {
         return false;
@@ -134,11 +173,6 @@ class AdManager extends ChangeNotifier {
     }
 
     final deviceId = await CryptoService.getDeviceId();
-    final nonce = HivemindService.newNonce();
-    if (adType == 'main') {
-      await HivemindService.setSessionNonce(nonce);
-    }
-
     final ssvOptions = ServerSideVerificationOptions(
       customData: jsonEncode({
         'device_id': deviceId,
@@ -147,7 +181,7 @@ class AdManager extends ChangeNotifier {
       }),
     );
 
-    Completer<bool> rewardCompleter = Completer<bool>();
+    final rewardCompleter = Completer<bool>();
 
     _rewardedAd!.fullScreenContentCallback = FullScreenContentCallback(
       onAdShowedFullScreenContent: (ad) => debugPrint('[AdManager] Ad showing.'),
@@ -182,7 +216,15 @@ class AdManager extends ChangeNotifier {
       },
     );
 
-    return rewardCompleter.future;
+    final earned = await rewardCompleter.future;
+    if (!earned) return false;
+
+    // Local onUserEarnedReward is not proof that Google SSV was accepted. For main rewards,
+    // commit the possession nonce only after the server projects that exact nonce as active.
+    if (adType == 'main') {
+      return HivemindService.confirmAndSetSessionNonce(nonce);
+    }
+    return true;
   }
 
   @override
