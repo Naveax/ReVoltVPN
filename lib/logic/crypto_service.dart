@@ -21,7 +21,8 @@ class CryptoService {
   /// Persist the current main-session possession token across app/process restarts.
   static Future<void> setSessionNonce(String nonce) async {
     if (!_sessionNoncePattern.hasMatch(nonce)) {
-      throw ArgumentError.value(nonce, 'nonce', 'expected 128-bit lowercase hex');
+      throw ArgumentError.value(
+          nonce, 'nonce', 'expected 128-bit lowercase hex');
     }
     await _storage.write(key: _sessionNoncePref, value: nonce);
   }
