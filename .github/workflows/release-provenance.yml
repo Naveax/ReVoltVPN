@@ -1,0 +1,134 @@
+name: Build attested production APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: '3.47.2'
+          channel: stable
+          cache: false
+
+      - name: Materialize production-only inputs
+        shell: bash
+        env:
+          APP_CONFIG_B64: ${{ secrets.REVOLT_APP_CONFIG_DART_B64 }}
+          APP_CONFIG_SHA256: ${{ secrets.REVOLT_APP_CONFIG_SHA256 }}
+          KEYSTORE_B64: ${{ secrets.REVOLT_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.REVOLT_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.REVOLT_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.REVOLT_KEY_PASSWORD }}
+          ADMOB_PROPERTIES_B64: ${{ secrets.REVOLT_ADMOB_PROPERTIES_B64 }}
+        run: |
+          set -euo pipefail
+          for name in APP_CONFIG_B64 APP_CONFIG_SHA256 KEYSTORE_B64 STORE_PASSWORD KEY_ALIAS KEY_PASSWORD ADMOB_PROPERTIES_B64; do
+            test -n "${!name:-}" || { echo "Required production secret missing: $name"; exit 1; }
+          done
+          printf '%s' "$APP_CONFIG_B64" | base64 --decode > lib/logic/app_config.dart
+          test "$(sha256sum lib/logic/app_config.dart | awk '{print $1}')" = "$APP_CONFIG_SHA256"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > android/release.jks
+          cat > android/key.properties <<EOF
+          storePassword=$STORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=release.jks
+          EOF
+          printf '%s' "$ADMOB_PROPERTIES_B64" | base64 --decode > android/admob.properties
+          chmod 600 android/release.jks android/key.properties android/admob.properties lib/logic/app_config.dart
+
+      - name: Resolve and verify dependencies
+        run: |
+          flutter pub get
+          git diff --exit-code -- pubspec.lock
+          ./android/gradlew --version
+
+      - name: Analyze and test
+        run: |
+          flutter analyze
+          flutter test
+          (cd android && ./gradlew :flutter_vless_android:testDebugUnitTest :app:lintDebug --no-daemon)
+
+      - name: Build signed production APK
+        env:
+          REVOLT_APP_CONFIG_SHA256: ${{ secrets.REVOLT_APP_CONFIG_SHA256 }}
+        run: |
+          flutter build apk --release
+          test -s build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Record artifact provenance manifest
+        shell: bash
+        env:
+          REVOLT_APP_CONFIG_SHA256: ${{ secrets.REVOLT_APP_CONFIG_SHA256 }}
+        run: |
+          set -euo pipefail
+          APK='build/app/outputs/flutter-apk/app-release.apk'
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" > build/signing-cert.txt
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess, zipfile
+          apk = pathlib.Path('build/app/outputs/flutter-apk/app-release.apk')
+          def digest(data): return hashlib.sha256(data).hexdigest()
+          native = {}
+          with zipfile.ZipFile(apk) as zf:
+              for name in sorted(zf.namelist()):
+                  if name.endswith('.so'):
+                      native[name] = digest(zf.read(name))
+          cert_lines = pathlib.Path('build/signing-cert.txt').read_text().splitlines()
+          cert_sha = ''
+          for line in cert_lines:
+              if 'certificate SHA-256 digest:' in line:
+                  cert_sha = line.split(':', 1)[1].strip()
+                  break
+          if not cert_sha:
+              raise SystemExit('APK signer SHA-256 fingerprint missing')
+          manifest = {
+              'source_repository': os.environ['GITHUB_REPOSITORY'],
+              'source_sha': os.environ['GITHUB_SHA'],
+              'workflow_ref': os.environ.get('GITHUB_WORKFLOW_REF', ''),
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'apk_sha256': digest(apk.read_bytes()),
+              'signing_certificate_sha256': cert_sha,
+              'app_config_sha256': os.environ['REVOLT_APP_CONFIG_SHA256'],
+              'gradle_wrapper_jar_sha256': digest(pathlib.Path('android/gradle/wrapper/gradle-wrapper.jar').read_bytes()),
+              'native_libraries': native,
+          }
+          pathlib.Path('build/provenance.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+          PY
+          cat build/provenance.json
+
+      - name: Attest APK provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Upload attested build inputs and outputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: revoltvpn-attested-production-apk-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            build/app/outputs/flutter-apk/app-release.apk
+            build/provenance.json
+            build/signing-cert.txt

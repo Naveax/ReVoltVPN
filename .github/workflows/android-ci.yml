@@ -77,6 +77,56 @@ jobs:
         working-directory: android
         run: ./gradlew :flutter_vless_android:testDebugUnitTest --no-daemon
 
+      - name: Verify native Kotlin test evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob
+          import sys
+          import xml.etree.ElementTree as ET
+
+          paths = glob.glob('**/test-results/testDebugUnitTest/TEST-*.xml', recursive=True)
+          if not paths:
+              raise SystemExit('native JUnit XML was not produced')
+
+          required = {
+              'com.github.tfox.flutter_vless.xray.core.XrayCoreManagerTest': 5,
+              'com.github.tfox.flutter_vless.xray.core.CoreConfigPipeTest': 3,
+              'com.github.tfox.flutter_vless.VersionProbeTest': 5,
+          }
+          seen = {}
+          for path in paths:
+              root = ET.parse(path).getroot()
+              name = root.attrib.get('name', '')
+              tests = int(root.attrib.get('tests', '0'))
+              failures = int(root.attrib.get('failures', '0'))
+              errors = int(root.attrib.get('errors', '0'))
+              skipped = int(root.attrib.get('skipped', '0'))
+              if failures or errors or skipped:
+                  raise SystemExit(
+                      f'{name}: failures={failures} errors={errors} skipped={skipped}'
+                  )
+              seen[name] = seen.get(name, 0) + tests
+
+          missing = []
+          for suite, minimum in required.items():
+              actual = seen.get(suite, 0)
+              if actual < minimum:
+                  missing.append(f'{suite}: expected >= {minimum}, got {actual}')
+          if missing:
+              raise SystemExit('required native tests did not execute: ' + '; '.join(missing))
+          print('Native JUnit evidence OK:', seen)
+          PY
+
+      - name: Upload native test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-kotlin-junit
+          if-no-files-found: warn
+          path: '**/test-results/testDebugUnitTest/TEST-*.xml'
+
       - name: Android lint
         working-directory: android
         run: ./gradlew :app:lintDebug --no-daemon
@@ -93,6 +143,15 @@ jobs:
           printf '%s\n' "$output"
           test "$status" -ne 0
           grep -Fq 'REVOLT_APP_CONFIG_SHA256 is required for production release builds' <<<"$output"
+
+      - name: Verify runtime secret transport contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          CORE='local_packages/flutter_vless_android-1.1.5/android/src/main/kotlin/com/github/tfox/flutter_vless/xray/core/XrayCoreManager.kt'
+          grep -Fq '"stdin:"' "$CORE"
+          ! grep -Fq 'writeText(configJson' "$CORE"
+          ! grep -Fq '"-config", File(' "$CORE"
 
       - name: Cold APK build
         run: flutter build apk --debug
