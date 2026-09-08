@@ -5,6 +5,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:revoltvpn/logic/app_config.dart';
+import 'package:revoltvpn/logic/control_plane_policy.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 
 class HivemindService {
@@ -32,8 +33,12 @@ class HivemindService {
     Uri uri, {
     Duration timeout = const Duration(seconds: 5),
   }) async {
+    final validatedUri = ControlPlanePolicy.validate(
+      requested: uri,
+      configuredBase: AppConfig.hivemindApiPublic,
+    );
     final client = http.Client();
-    final request = http.Request('GET', uri)
+    final request = http.Request('GET', validatedUri)
       ..headers['User-Agent'] = _ua
       ..followRedirects = false;
 
