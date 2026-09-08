@@ -6,11 +6,15 @@ abstract final class AppConfig {
   AppConfig._(); // static members only
 
   // ── Server ───────────────────────────────────────────────────────────
-  /// Your server's public IP.  The VPN tunnel is pinned to this.
-  static const String serverIp = '0.0.0.0';  // ◄── REPLACE
+  /// Your server's public IP. The VPN tunnel is pinned to this.
+  static const String serverIp = '0.0.0.0'; // ◄── REPLACE
+
+  /// Public HTTPS origin for the Rust API. Session possession nonces are bearer credentials,
+  /// so the client deliberately refuses plaintext HTTP, cross-origin requests and redirects.
+  static const String hivemindApiPublic = 'https://api.example.invalid'; // ◄── REPLACE
 
   // ── Bootstrap (first-connect config fetch) ────────────────────────────
-  /// Hardcoded Reality config.  App connects with this, fetches the real
+  /// Hardcoded Reality config. App connects with this, fetches the real
   /// per-session VLESS URL through the tunnel, then reconnects.
   static String get bootstrapVlessUrl =>
       'vless://$bootstrapUuid@$serverIp:8443'
@@ -18,8 +22,9 @@ abstract final class AppConfig {
       '&pbk=$realityPbk&sni=www.github.com&sid=$realitySid&fp=chrome'
       '#ReVoltVPN';
 
-  /// Generate with `xray uuid` on the server.  Must match xray_config_reality.json.
-  static const String bootstrapUuid = '00000000-0000-0000-0000-000000000000';  // ◄── REPLACE
+  /// Generate with `xray uuid` on the server. Must match xray_config_reality.json.
+  static const String bootstrapUuid =
+      '00000000-0000-0000-0000-000000000000'; // ◄── REPLACE
 
   /// Server's Reality public key (from `xray x25519`).
   static const String realityPbk = 'REPLACE_WITH_YOUR_PUBLIC_KEY';
@@ -36,20 +41,22 @@ abstract final class AppConfig {
 
   // These are normally overridden by /session/status response fields.
   static const String vlessSecurity = 'reality';
-  static const String vlessType     = 'xhttp';
+  static const String vlessType = 'xhttp';
 
   /// XHTTP path — must match xray_config_reality.json xhttpSettings.path.
   static const String vlessPath = '/revolt';
 
   // ── Updates ────────────────────────────────────────────────────────────
   /// Used by the updater.
-  static const String applicationId = 'com.paladinvpn.app';   // ◄── REPLACE
-  static const String githubOwner   = 'YOUR_USERNAME';        // ◄── REPLACE
-  static const String githubRepo    = 'revoltvpn';            // ◄── REPLACE
+  static const String applicationId = 'com.paladinvpn.app'; // ◄── REPLACE
+  static const String githubOwner = 'YOUR_USERNAME'; // ◄── REPLACE
+  static const String githubRepo = 'revoltvpn'; // ◄── REPLACE
 
   /// Fallback URL if the GitHub API call fails.
-  static const String githubReleasesUrl = 'https://github.com/$githubOwner/$githubRepo/releases/latest';
+  static const String githubReleasesUrl =
+      'https://github.com/$githubOwner/$githubRepo/releases/latest';
 
   // ── AdMob ──────────────────────────────────────────────────────────────
-  static const String adUnitId = 'ca-app-pub-0000000000000000/0000000000'; // REPLACE
+  static const String adUnitId =
+      'ca-app-pub-0000000000000000/0000000000'; // ◄── REPLACE
 }
