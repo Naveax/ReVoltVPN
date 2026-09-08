@@ -1,104 +1,138 @@
 # ReVoltVPN — doğrulanmış düzeltme ve kabul planı
 
-Tarih: 2026-09-08. Durum: **WIP — PR/release için hazır değil.**
+Tarih: 2026-09-08. Durum: **WIP — PR/release için henüz hazır değil.**
 
 ## Kaynak ve çalışma hattı
 
 - Upstream tabanı: `esefxdz/ReVoltVPN`, `6d8a923475ce66a511b6f7d1c99fd65ec72bcacc`.
-- v3.3.5 kaynak commit'i: `4718a5912afa58201a693f757e401b4fdc3a5967`; taban bunun bildirim düzeltmesi içeren devamıdır.
-- Fork main: `3da20fb386d6b611b8bd1fc3754e5cb229efd662`. Bu tabanla aynı ürün kesiti değildir.
+- v3.3.5 kaynak commit'i: `4718a5912afa58201a693f757e401b4fdc3a5967`.
 - Çalışma branch'i: `work/upstream-3.3.5-verified-hardening`.
-- Upstream PR #7 (`pr/fix-connection-mode-persistence`) açık; bu plan o PR'yi değiştirmez.
-- `hardening/release-native-security` başka bir aktif çalışma hattıdır. Bu oturum sırasında iki farklı SHA için queued CI görüldü (34249607998, 34249570068). Üzerine yazma veya kör cherry-pick yapma; taşınacak her değişikliği taze diff ile karşılaştır.
-- Yerel başlangıç temizdi; repo içinde AGENTS.md bulunmadı.
+- Bu checkpoint'teki son kaynak commit'i: `8a405cf79f2fcd17ea68cf7e42e42282b92cccc8`.
+- PR açılmadı, main'e merge/push yapılmadı, release/APK yayımlanmadı.
+- Upstream PR #7 ayrı iş hattıdır; bu branch onu değiştirmez.
 
 ## Kesin kapsam sınırları
 
-1. **AdMob'a dokunulmaz:** adsEnabled, test bypass, signature/key_id, reklam SDK'sı, consent ve support ödül akışı bu serinin değişiklik kapsamı dışındadır. Bilinçli bypass'ı hata sayma veya debug guard ekleyerek release bootstrap'ını bozma.
-2. **PR açılmaz, main'e merge/push yapılmaz, release/APK yayımlanmaz.** Yalnız bu branch'e incelemeye uygun kaynak ve belge commit'leri.
-3. Upstream API protokolü backend doğrulanmadan değiştirilmez. Rust backend geliştirilmiş olması bu istemcinin üretimde onu kullandığını kanıtlamaz.
-4. Paket kimliği, imza anahtarı, server/API origin, reklam kimlikleri, sürüm numarası ve quota politikası keyfi değiştirilmez.
-5. SOCKS5 proxy-only modu sessizce transparent TUN'a dönüştürülmez. Eski transparent branch'ler topluca alınmaz.
-6. Android VPN izni, runtime token/generation kontrolleri, IPv4/IPv6 rotaları, hedef pin ve TLS doğrulaması korunur.
-7. Branch protection gibi yönetim ayarları bu kaynak düzeltme serisinden ayrıdır; koruma bilgisi tek başına exploit kanıtı değildir.
-8. Canlı sunucu/üçüncü taraf üzerinde istismar denemesi yapılmaz. Testler yerel/sentetik girdiler ve kontrollü cihaz laboratuvarıyla sınırlıdır.
-9. Root/same-UID saldırgan varsayımı normal üçüncü taraf uygulama erişimiyle karıştırılmaz. Stil, dead code ve hardening eksikliği otomatik güvenlik açığı sayılmaz.
-10. APK, gerçek cihaz ve backend kanıtı yoksa o maddeler kapatılmaz. Testi yazmak testi geçirmek değildir.
+1. **AdMob'a dokunulmaz:** adsEnabled, signature/key_id, reklam SDK'sı, consent ve support ödül akışı kapsam dışıdır.
+2. Kullanıcı ayrıca istemeden PR açılmaz, main'e merge/push yapılmaz ve release yayımlanmaz.
+3. Backend gerçekliği doğrulanmadan API protokolü veya quota semantiği keyfi değiştirilmez.
+4. Paket kimliği, production origin, signing key, reklam kimlikleri ve sürüm numarası keyfi değiştirilmez.
+5. SOCKS5 proxy-only modu sessizce transparent TUN'a çevrilmez.
+6. Test yazmak testi geçirmek değildir. Cihaz/APK/backend kanıtı gereken maddeler bunlar olmadan kapanmaz.
+7. Aynı SHA/workflow/input için queued/waiting/in_progress CI varken manuel rerun yapılmaz.
 
-## Öncelikli iş paketleri
+## Güncel iş paketleri
 
-| ID | İş | Değişiklik ve kabul koşulu | Şimdiki durum |
+| ID | İş | Kabul koşulu | Güncel durum |
 |---|---|---|---|
-| H01 | Native ingress fail-closed | Tam bir authenticated loopback ingress; eksik/fazla/yanlış listener reddi; port/tip/account kontrolü; noauth ve HTTP fallback yok | Yama ve regression testleri yazıldı; çalıştırma bekliyor |
-| H02 | Kotlin CI | `:flutter_vless_android:testDebugUnitTest` gerçek CI adımı; bağımlılık doğrulamasını gevşetmeden sonuç XML'inde testlerin yürüdüğünü doğrula | Workflow'a eklendi; CI sonucu bekliyor |
-| H03 | Native dead code | Bridge/repo çağrısı olmayan delay subsystem'i ve kendi geçici config yazıcısını kaldır; dış platform sözleşmesinde aktif karşılığı olmadığını kontrol et | Kaynak çağrı taraması yapıldı; kaldırıldı; derleme bekliyor |
-| H04 | Network event doğruluğu | Yanlış tipli reason/transport/timestamp için güvenli varsayılan; geçerli native event aynen korunmalı | Yama ve iki Dart testi yazıldı; yürütme bekliyor |
-| H05 | Session config diski | Xray'ın sabitlenen sürümünde stdin/FD kabulünü kaynak ve binary ile doğrula; pipe/FD aktarımı, writer timeout, EOF ve süreç temizliği; tüm başlangıç/hata/kapanış yollarında secret dosyası olmamalı | AÇIK; aktif config.json yazıcısı hâlâ mevcut |
-| H06 | Ephemeral port TOCTOU | Gerçek listener sahipliği: Xray'ın bind(0)/FD devralma yeteneğini doğrula; destek yoksa runtime entegrasyonu gereklidir. Retry/rastgele port tek başına atomiklik değildir | AÇIK; Dart bind-close-Xray bind penceresi mevcut |
-| H07 | Stop/adoption sözleşmesi | Native durumu/token'ı doğrulayarak stop; token'sız success aktif runtime yokluğunu kanıtlamaz. Yeni generation'ı durdurmadan stop ack, timeout, geç event, engine yeniden oluşturma senaryoları | AÇIK; yalnız koşullu kaynak bulgusu, cihazda yeniden üretim yapılmadı |
-| H08 | Core version sorgusu | Bounded bekleme/çıktı, stream/process finally cleanup, executor yaşam döngüsü, Dart init deadline; eski Android API uyumluluğu | AÇIK; readLine beklemesi kaynakta sınırsız |
-| H09 | Error/timer lifecycle | UI hata durumunu göstermeli; cleanup hatası ile ilk hatayı ayır; geç disconnected event ve çift timer start için sıralama testleri | AÇIK; errorMessage UI tüketicisi bulunmadı, diğer zincirler henüz doğrulanmadı |
-| H10 | Always-on / lockdown | Aşağıdaki ayrı mimari paketi ve cihaz kabul koşulları; yalnız manifest flag değişikliği yeterli değil | AÇIK; desteksiz flag olduğu gibi korundu |
-| H11 | APK provenance | İmzalı APK digest'i, signing cert fingerprint, source SHA, config digest, Flutter/JDK/Gradle/NDK sürümleri, native artifact digests ve workflow run identity bağlanmalı; tüketici doğrulaması yapılmalı | AÇIK; mevcut release digest'i tek başına kaynak bağı değildir |
-| H12 | UDP/DNS/IPv6 | TUN ve proxy-only ayrı kabul; controlled UDP roundtrip, DNS/Private DNS, IPv6 ve ağ değişimi; TCP readiness UDP kanıtı sayılmaz | AÇIK; cihaz yok |
-| H13 | Control-plane sözleşmesi | HTTPS/origin ve status/revoke protokolü backend gerçekliğiyle eşleştir; AdMob'a dokunmadan bağımsız planla | AÇIK; server-side yetkilendirme kanıtlanmadı |
-| H14 | Doküman ve ürün doğruluğu | Mode, restart, memory-only, privacy ve readiness ifadelerini mevcut dağıtım kanıtına bağla; bilinmeyen retention değeri uydurma | Bu plan önceki raporları ayırıyor; ürün doküman güncellemesi bekliyor |
+| H01 | Native ingress fail-closed | Tek authenticated loopback SOCKS5; noauth/HTTP/fazla listener reddi; UDP + loopback UDP relay zorunlu | **Kaynak düzeltildi.** Kotlin fixture'ları UDP sözleşmesine uyarlandı. Son CI kabulü bekliyor |
+| H02 | Kotlin CI | `testDebugUnitTest` + JUnit XML; gerekli suite/test sayıları gerçekten yürümeli | **Kaynak tamam.** XrayCoreManager/CoreConfigPipe/VersionProbe/RuntimeGeneration evidence gate var; son CI bekliyor |
+| H03 | Native dead code | Kullanılmayan delay subsystem'i ve geçici config yazıcısı olmamalı | **Kaynak tamam** |
+| H04 | Network event doğruluğu | Malformed metadata güvenli fallback; geçerli event korunmalı; analyzer/test yeşil | **Kaynak tamam.** Eski CI analyzer'da yalnız `_appBackgrounded` uyarısı verdi; `dc08362` ile temizlendi, yeni CI bekliyor |
+| H05 | Session config diski | Per-session credential içeren Xray config diske yazılmamalı; bounded stdin writer + EOF + process cleanup | **Kaynak tamam.** Xray `stdin:` aktarımı ve legacy `config.json` fail-closed temizliği var. Packaged binary/device doğrulaması bekliyor |
+| H06 | SOCKS port sahipliği | bind-check-close sahte rezervasyonu olmamalı; Xray ilk bind sahibi; collision bounded retry ile ele alınmalı | **Kaynak tamam.** Cihaz stress testi bekliyor |
+| H07 | Stop/adoption/generation | Token kaybında sahte success yok; authoritative service query; generation-scoped STOP/ACK; stale event yeni runtime'ı bozmamalı | **Kaynak tamam.** QUERY_STATE, engine-scope receiver ve ownership-first confirmation token var; `RuntimeGenerationTest` eklendi. Cihaz lifecycle kabulü bekliyor |
+| H08 | Core version sorgusu | Bounded wait/output, process/stream cleanup ve executor lifecycle | **Kaynak tamam + regression testleri.** Son CI bekliyor |
+| H09 | Dart error/timer lifecycle | Normal connect çift timer başlatmamalı; unconfirmed stop session saatini öldürmemeli; kullanıcı gerçek hata görmeli | **Kaynak büyük ölçüde tamam.** Analyzer regression temizlendi; cihaz lifecycle kabulü bekliyor |
+| H10 | Always-on / lockdown | Protected bootstrap + runtime loop avoidance + reboot/expiry semantics + cihaz kabulü | **AÇIK.** `SUPPORTS_ALWAYS_ON=false` bilinçli korunuyor; CI yanlışlıkla true yapılmasını fail ediyor |
+| H11 | APK provenance | Source SHA + config digest + toolchain + signing cert + native SO digests + APK SHA + attestation | **Pipeline hazır.** Manuel production build/attestation çalıştırılmadı |
+| H12 | UDP/DNS/IPv6 | Authenticated UDP ASSOCIATE, TUN UDP roundtrip, DNS/Private DNS, IPv4/IPv6, ağ değişimi | **Kaynak kapsamı güçlendirildi.** UDP ingress validator/testleri ve SOCKS UDP ASSOCIATE var; gerçek cihaz e2e açık |
+| H13 | Control-plane/backend | status/revoke/quota/authz sözleşmesini gerçek production backend ile eşleştir | **AÇIK**; AdMob bağımsız tutulacak |
+| H14 | Doküman/ürün iddiaları | README/privacy/readiness ifadeleri dağıtım kanıtını aşmamalı | **AÇIK**; son kaynak/CI kabulünden sonra nihai metin güncellenecek |
 
-## Always-on / kill-switch tasarım paketi
+## Son hardening commit zinciri
 
-- AlarmManager oturum sonlandırması, tünel gidince trafiği engelleyen lockdown değildir.
-- Android tarafından başlatılan servisi (komut/config extra yok) ele al. Mevcut servis bunun için güvenli restore akışına sahip değil.
-- Oturum bitmiş/yetkisizken eski VLESS kimliğini yeniden etkinleştirme. Bağlantı kurulamadığında sistem lockdown durumunu kullanıcıya doğru göster.
-- Xray outbound'unu `VpnService.protect` ile döngü dışında tutan tasarım ile uygulama paketinin bütünüyle exclude edilmesini karşılaştır. Lockdown altında excluded uygulamanın bootstrap API erişimi ayrıca çözülmeli.
-- Proxy-only, cihaz geneli lockdown vaadi vermemeli. Mod değişimi sırasında kullanıcı onayı/OS VPN ayarı korunmalı.
-- Reboot, UI process ölümü, servis process ölümü, permission revoke, ağ değişimi, quota expiry ve internet yokluğu cihazda sınanmalı.
-- Ürün gereksinimi ve güvenli restore tamamlanmadan SUPPORTS_ALWAYS_ON=true yapma.
+- `f77d5d2` — startup/error görünürlüğü ve SOCKS port probe race kaldırma.
+- `113ef62` — Xray per-session config'i disk yerine stdin üzerinden aktarım.
+- `2daf541` — authoritative runtime state/adoption, bounded diagnostics, service startup worker.
+- `947e797` — Dart/native lifecycle eşleme, unconfirmed stop davranışı.
+- `e87cc66` — native test evidence ve build provenance altyapısı.
+- `dc08362` — SessionTimer analyzer regression temizliği.
+- `55e619c` — worker-thread `CountDownTimer` yerine lazy main-looper ticker.
+- `c98c78e` — disconnect ACK token'ını gerçekten sahip olunan runtime generation'ına bağlama.
+- `9e60e98` — runtime generation regression testleri.
+- `5ce5214` — bu test suite'ini CI evidence gate'e ekleme.
+- `2be59fc` — UDP ingress fixture/negative testlerini gerçek native kontratla eşleme.
+- `8a405cf` — always-on desteklenene kadar manifest capability'sini CI ile fail-closed tutma.
+
+## Always-on / lockdown mimari kapısı
+
+Sadece manifestte `SUPPORTS_ALWAYS_ON=true` yapmak kabul edilmez.
+
+Mevcut TUN tasarımında uygulama paketi `addDisallowedApplication(packageName)` ile kendi VPN'inden çıkarılır. Lockdown açıkken excluded app'in control-plane erişimi kesilebilir. Ayrıca Xray/tun2socks child-process socket'lerinin VPN döngüsüne girmemesi için yalnız paket exclude'a güvenilmektedir. Bu nedenle gerçek always-on/lockdown için aşağıdakiler tamamlanmadan capability açılmaz:
+
+1. Android/system-start durumunda command/config extra olmadan güvenli başlangıç semantiği.
+2. Süresi dolmuş VLESS session credential'ını reboot/process death sonrası diriltmeyen bootstrap.
+3. Xray/tun2socks outbound socket'lerinin `VpnService.protect` veya eşdeğer runtime-integrated mekanizmayla VPN döngüsünden güvenli çıkarılması.
+4. Control-plane HTTP'nin lockdown sırasında ulaşılabilir kalması; Dart socket'lerinin topluca bypass edilmesine güvenilmemesi.
+5. Lockdown altında başarısız bootstrap'ın direct-network fallback üretmemesi.
+6. Reboot, process kill, permission revoke, quota expiry, internet yokluğu ve ağ değişimi cihaz testleri.
+7. Proxy-only modunun cihaz-geneli kill-switch vaadi vermemesi.
+
+Bu maddeler yokken `SUPPORTS_ALWAYS_ON=false` güvenli davranıştır; true yapmak feature değil regression olur.
+
+## UDP / DNS / IPv6 kabul matrisi
+
+Kaynak seviyesinde gerekli şartlar:
+
+- SOCKS ingress `auth=password`.
+- `udp=true`.
+- UDP relay bind adresi `127.0.0.1`.
+- TUN IPv4 route `0.0.0.0/0`.
+- TUN IPv6 route `::/0` ve IPv6 TUN address.
+- Local SOCKS authenticated UDP ASSOCIATE.
+
+Gerçek cihazda ayrıca:
+
+1. IPv4 TCP HTTPS.
+2. IPv4 UDP roundtrip.
+3. IPv6 TCP ve UDP roundtrip.
+4. DNS UDP/TCP ve Android Private DNS davranışı.
+5. Wi-Fi ↔ LTE geçişinde leak/direct fallback kontrolü.
+6. Xray crash ve tun2socks crash sırasında trafik fail-closed.
+7. Discord/WebRTC/QUIC benzeri UDP-heavy uygulama kabulü.
+
+UDP ASSOCIATE başarısı tek başına internet UDP roundtrip kanıtı sayılmaz.
 
 ## Release provenance kabulü
 
-v3.3.5 GitHub release'inde `app-release.apk` için görülen digest:
-`sha256:d2af7002659fe7dc406b5e24029e1f7a17450693ed3bf78f89b0423476b3a623`.
-Bu API metadata'sıdır; APK bu oturumda indirilip hash/signature karşılaştırması yapılmadı.
+Production pipeline manuel `workflow_dispatch` olarak kalır; otomatik release yapmaz. Kabul için:
 
-1. Üretim build'i temiz ve sabit SHA'dan yapılmalı; production app_config hash kontrolü korunmalı.
-2. Debug/R8 smoke APK release ürünü sayılmamalı; signing certificate kimliği ayrıca doğrulanmalı.
-3. Native AAR/SO digest ve toolchain sürümleri build manifest'inde bulunmalı.
-4. Güvenilir workflow kimliğine bağlı attestation ile tam APK digest'i ilişkilendirilmeli.
-5. Ayrı doğrulayıcı APK'nın digest, sertifika, kaynak SHA ve workflow kimliğini kontrol etmeli.
-6. Bir hash dosyası veya başarılı CI geçmişte yayımlanmış APK'yı geriye dönük kanıtlamaz.
-7. İmza/secret erişimi olmayan bu branch'te üretim release'i yapılmaz.
+1. Temiz, sabit source SHA.
+2. Production app-config digest doğrulaması.
+3. Dependency lock ve Gradle verification metadata.
+4. Flutter/JDK/Gradle/NDK/toolchain kimliği.
+5. Native `.so` SHA256 digest'leri.
+6. Production APK SHA256.
+7. Signing certificate SHA256 fingerprint.
+8. GitHub workflow/run identity ve artifact attestation.
+9. Ayrı doğrulayıcıyla digest/cert/source bağının kontrolü.
 
-## On ayrı kontrol kapısı
+`build_xray.sh` Xray v26.7.11 commit `50231eaff98ccc31b5cbd247a721c16e97fe5ec1` üzerine sabitlendi. `build_tun2socks.sh` artık mutable `git pull` kullanarak build yapamaz; exact commit zorunludur.
 
-Kullanıcının "en az 10 defa" talebi aşağıdaki bağımsız kapılarla izlenir. **On tam denetim tamamlandı denmiyor.** Her düzeltme için bu kapıların geçerli olanları gerçek kanıtla kapanır; tekrar aynı grep'i çalıştırmak yeni kontrol sayılmaz.
+## On kontrol kapısı
 
-| Kapı | Kontrol | Bu oturum |
+| Kapı | Kontrol | Durum |
 |---|---|---|
-| K01 | SHA/tag/branch ve temiz başlangıç | Yapıldı: üstteki sabitler |
-| K02 | PR/issue/CI çatışması ve başka çalışan branch | Yapıldı; başka branch CI'sı görüldü, yeniden tetiklenmedi |
-| K03 | Rapor iddiasını hedef kaynakta bul | H01/H02/H05/H06/H08 ve mode ayrımı için yapıldı |
-| K04 | Çağıran/ulaşılabilirlik ve test sözleşmesi | Native delay ve ingress için yapıldı; bütün uygulama henüz değil |
-| K05 | Tehdit önkoşulu/yanlış pozitif ayrımı | CLAIM_REVIEW.md'de kayıtlı; tam madde eşlemesi bekliyor |
-| K06 | Yama diff'i / AdMob ve scope koruma | Bu commit öncesi kontrol edildi |
-| K07 | Olumlu ve olumsuz regression | Testler yazıldı; çalıştırılmadı |
-| K08 | Kotlin/Dart analyze, test, Android lint/build | Yerel ortam engelli; CI bekliyor |
-| K09 | Gerçek cihaz runtime/UDP/DNS/IPv6/kill-switch | BAŞLAMADI |
-| K10 | İmzalı APK/provenance ve bağımsız son diff/kanıt kabulü | BAŞLAMADI |
+| K01 | Fresh branch/SHA/base doğrulaması | Yapıldı |
+| K02 | PR/issue/CI çatışması, duplicate run kontrolü | Her devam turunda yapılıyor; manuel rerun yapılmadı |
+| K03 | İddia → hedef kaynak eşleme | H01–H12 için hedefli yapıldı |
+| K04 | Caller/consumer/state ownership incelemesi | Stop/adoption/timer/config/UDP için yapıldı |
+| K05 | Yanlış pozitif/tehdit önkoşulu ayrımı | CLAIM_REVIEW.md'de kayıtlı |
+| K06 | Scope/AdMob koruması | AdMob/consent/support değiştirilmedi |
+| K07 | Positive + negative regression | Native ingress/config/version/generation ve Dart metadata testleri mevcut; son CI bekliyor |
+| K08 | Analyze/test/lint/build | `e87cc66` yalnız analyzer unused-field nedeniyle fail oldu; düzeltildi. Yeni SHA CI kuyruğunda |
+| K09 | Gerçek cihaz runtime/UDP/DNS/IPv6/kill-switch | AÇIK |
+| K10 | Production signed APK/provenance + bağımsız final diff | AÇIK |
 
-## Devam sırası ve commit düzeni
+## Devam sırası
 
-1. Önce bu branch'in mevcut SHA ve aktif CI run ID'sini oku. Aynı SHA/workflow/input için ikinci run oluşturma.
-2. H01–H04 test/build sonuçlarını doğrula. Başarısız test varsa sebebi düzelt; assertion'ı kaldırarak yeşil elde etme.
-3. Aktif diğer hardening branch ile güncel diff'i karşılaştır. Eşdeğer düzeltmeyi ikinci kez taşıma. Geçmişi force-push ile silme.
-4. H05 ve H06 için sabitlenmiş Xray runtime capability incelemesi ve ayrı mimari değişiklikler.
-5. H07–H09 lifecycle/initialization için küçük commit'ler ve davranış testleri.
-6. H10 ayrı sistem entegrasyonu; H12 cihaz doğrulaması ile birlikte.
-7. H11 build/release sorumlusu kanıtı ve H13 gerçek backend kontratı.
-8. H14 ürün dokümanı, tam iddia matrisi, son scope diff ve kullanıcı incelemesi.
-9. Her tamamlanan paket PLAN/CLAIM_REVIEW/VALIDATION durumunu günceller. PR açmak ayrıca kullanıcı tarafından istenene kadar yasak.
-
-## Teknik başvuru kaynakları
-
-- Android VPN/always-on/lockdown: https://developer.android.com/develop/connectivity/vpn
-- Dart isolate/event loop: https://dart.dev/language/concurrency
-- GitHub build provenance: https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds
+1. En yeni SHA'nın mevcut CI run'ını oku; aynı SHA için manuel rerun yapma.
+2. Analyze → Flutter test → Kotlin tests/evidence → Android lint → debug APK → R8 smoke hattında ilk gerçek failure'ı düzelt.
+3. CI yeşil olmadan H01–H09'u "accepted" yazma.
+4. H12 gerçek Android cihaz ağı/UDP/DNS/IPv6 kabul matrisi.
+5. H10 için protected bootstrap/runtime loop mimarisi; yalnız bundan sonra always-on capability.
+6. H11 production secrets ile manuel signed-build attestation.
+7. H13 production backend kontrat doğrulaması.
+8. H14 README/privacy/readiness iddia temizliği ve bağımsız son diff.
+9. PR kullanıcı ayrıca istemeden açılmaz.
