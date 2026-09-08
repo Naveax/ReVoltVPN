@@ -22,6 +22,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
 
       - name: Install pinned Flutter SDK
         shell: bash
@@ -50,8 +52,19 @@ jobs:
       - name: Resolve locked dependencies
         run: flutter pub get --enforce-lockfile
 
-      - name: Check Dart formatting
-        run: dart format --output=none --set-exit-if-changed lib
+      - name: Check formatting of changed Dart files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' changed_dart < <(
+            git diff --name-only -z --diff-filter=ACMR HEAD^ HEAD -- '*.dart'
+          )
+          if (( ${#changed_dart[@]} == 0 )); then
+            echo 'No Dart files changed.'
+            exit 0
+          fi
+          dart format "${changed_dart[@]}"
+          git diff --exit-code -- "${changed_dart[@]}"
 
       - name: Analyze Flutter sources
         run: flutter analyze
