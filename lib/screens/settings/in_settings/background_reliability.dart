@@ -2,12 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/logic/power_settings.dart';
 
-/// Keeping the tunnel alive is an OS concern, not an app one.
+/// Android owns background scheduling and VPN lockdown policy.
 ///
-/// Android stops background services of apps that are not exempt from Doze, and
-/// removes the whole process group when its task is swiped away. There are
-/// exactly two sanctioned ways around that, both requiring one user tap, and
-/// neither can be enabled programmatically. This tile surfaces both.
+/// ReVolt can request a Doze exemption and declare Always-on VPN support, but
+/// Android intentionally requires the user/admin to enable Always-on and
+/// "Block connections without VPN" from system settings.
 class BackgroundReliabilityTile extends StatefulWidget {
   const BackgroundReliabilityTile({super.key});
 
@@ -35,8 +34,6 @@ class _BackgroundReliabilityTileState extends State<BackgroundReliabilityTile>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // The exemption is granted in a system dialog, so the only reliable moment
-    // to re-read it is when we come back to the foreground.
     if (state == AppLifecycleState.resumed) _refresh();
   }
 
@@ -55,6 +52,16 @@ class _BackgroundReliabilityTileState extends State<BackgroundReliabilityTile>
     );
   }
 
+  Future<void> _openVpnPolicy() async {
+    final opened = await PowerSettings.openVpnPolicySettings();
+    if (!mounted || opened) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Could not open Android VPN settings on this device.'),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final exempt = _batteryExempt;
@@ -68,8 +75,8 @@ class _BackgroundReliabilityTileState extends State<BackgroundReliabilityTile>
             style: TextStyle(color: AppColors.textWhite, fontSize: 15),
           ),
           subtitle: Text(
-            'Android stops background apps to save power. Disabling battery '
-            'optimisation is what keeps the VPN running when the app is closed.',
+            'Use battery exemption for process survival. For leak protection, '
+            'enable Android Always-on VPN and Block connections without VPN.',
             style: TextStyle(color: AppColors.textDim, fontSize: 12),
           ),
         ),
@@ -83,21 +90,37 @@ class _BackgroundReliabilityTileState extends State<BackgroundReliabilityTile>
                     ? 'Battery optimisation: checking…'
                     : exempt
                         ? 'Battery optimisation: disabled for Revolt VPN ✓'
-                        : 'Battery optimisation: still active — the system may '
-                            'stop the VPN in the background.',
+                        : 'Battery optimisation: still active — Android may '
+                            'stop background work.',
                 style: TextStyle(
                   color: exempt == true ? AppColors.accent : AppColors.textMuted,
                   fontSize: 12,
                 ),
               ),
-              if (exempt == false) ...[
-                const SizedBox(height: 8),
-                OutlinedButton.icon(
-                  onPressed: _requestExemption,
-                  icon: const Icon(Icons.battery_saver),
-                  label: const Text('Allow background activity'),
-                ),
-              ],
+              const SizedBox(height: 8),
+              const Text(
+                'Kill-switch: Android lockdown is a system policy. ReVolt never '
+                'pretends proxy-only mode is leak-proof.',
+                style: TextStyle(color: AppColors.textMuted, fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  if (exempt == false)
+                    OutlinedButton.icon(
+                      onPressed: _requestExemption,
+                      icon: const Icon(Icons.battery_saver),
+                      label: const Text('Allow background activity'),
+                    ),
+                  OutlinedButton.icon(
+                    onPressed: _openVpnPolicy,
+                    icon: const Icon(Icons.shield_outlined),
+                    label: const Text('Always-on / Kill-switch'),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
