@@ -4,6 +4,7 @@ import 'package:uuid/uuid.dart';
 class CryptoService {
   static const String _deviceIdPref = 'device_uuid';
   static const String _sessionNoncePref = 'session_auth_nonce';
+  static const String _sessionStopPendingPref = 'session_stop_pending';
   static const _storage = FlutterSecureStorage();
   static final RegExp _sessionNoncePattern = RegExp(r'^[0-9a-f]{32}$');
 
@@ -38,5 +39,20 @@ class CryptoService {
 
   static Future<void> clearSessionNonce() async {
     await _storage.delete(key: _sessionNoncePref);
+  }
+
+  /// Persist an explicit user-requested server revocation until the server confirms it.
+  /// This prevents a process restart or transient network failure from silently forgetting
+  /// that the current possession token still needs to be revoked server-side.
+  static Future<void> setSessionStopPending() async {
+    await _storage.write(key: _sessionStopPendingPref, value: '1');
+  }
+
+  static Future<bool> isSessionStopPending() async {
+    return await _storage.read(key: _sessionStopPendingPref) == '1';
+  }
+
+  static Future<void> clearSessionStopPending() async {
+    await _storage.delete(key: _sessionStopPendingPref);
   }
 }
