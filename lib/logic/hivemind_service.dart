@@ -33,9 +33,12 @@ class HivemindService {
     Duration timeout = const Duration(seconds: 5),
     Map<String, String>? headers,
   }) {
-    return http
-        .get(uri, headers: {'User-Agent': _ua, ...?headers})
-        .timeout(timeout);
+    return _sendNoRedirect(
+      'GET',
+      uri,
+      timeout: timeout,
+      headers: headers,
+    );
   }
 
   static Future<http.Response> directPost(
@@ -44,17 +47,38 @@ class HivemindService {
     Duration timeout = const Duration(seconds: 5),
     Map<String, String>? headers,
   }) {
-    return http
-        .post(
-          uri,
-          headers: {
-            'User-Agent': _ua,
-            'Content-Type': 'application/json',
-            ...?headers,
-          },
-          body: body,
-        )
-        .timeout(timeout);
+    return _sendNoRedirect(
+      'POST',
+      uri,
+      timeout: timeout,
+      headers: {
+        'Content-Type': 'application/json',
+        ...?headers,
+      },
+      body: body,
+    );
+  }
+
+  static Future<http.Response> _sendNoRedirect(
+    String method,
+    Uri uri, {
+    required Duration timeout,
+    Map<String, String>? headers,
+    String? body,
+  }) async {
+    _validateApiUri(uri);
+    final client = http.Client();
+    try {
+      final request = http.Request(method, uri)
+        ..followRedirects = false
+        ..headers.addAll({'User-Agent': _ua, ...?headers});
+      if (body != null) request.body = body;
+
+      final streamed = await client.send(request).timeout(timeout);
+      return await http.Response.fromStream(streamed).timeout(timeout);
+    } finally {
+      client.close();
+    }
   }
 
   static String newNonce() {
@@ -176,7 +200,8 @@ class HivemindService {
   /// Revoke the currently-authorized server session. The revocation intent is persisted before
   /// the first network write and cleared only after a definitive 200/401 response. Ambiguous
   /// failures keep both the nonce and pending marker so a later process can retry safely.
-  static Future<SessionStopResult> stopSession({bool markPending = true}) async {
+  static Future<SessionStopResult> stopSession(
+      {bool markPending = true}) async {
     final existing = _stopInFlight;
     if (existing != null) return existing;
 
@@ -191,7 +216,8 @@ class HivemindService {
     }
   }
 
-  static Future<SessionStopResult> _stopSessionInner({required bool markPending}) async {
+  static Future<SessionStopResult> _stopSessionInner(
+      {required bool markPending}) async {
     final nonce = await getSessionNonce();
     if (nonce == null) {
       await CryptoService.clearSessionStopPending();
@@ -258,7 +284,8 @@ class HivemindService {
     if (nonce == null && !skipAdBypass && kDebugMode) {
       final candidate = newNonce();
       try {
-        final customData = jsonEncode({'device_id': deviceId, 'nonce': candidate});
+        final customData =
+            jsonEncode({'device_id': deviceId, 'nonce': candidate});
         final fakeUrl = _publicUrl(
             '/admob/callback?signature=test&key_id=test&custom_data=${Uri.encodeComponent(customData)}');
         final response =
@@ -292,7 +319,8 @@ class HivemindService {
           // matches the possession token we sent; newer servers deliberately never echo it.
           final serverNonce = data['nonce'] as String?;
           if (serverNonce != null && serverNonce != nonce) {
-            debugPrint('[HivemindService] Session authorization mismatch — retrying…');
+            debugPrint(
+                '[HivemindService] Session authorization mismatch — retrying…');
           } else if (data['active'] == true && data['vless_uuid'] != null) {
             final vlessUuid = data['vless_uuid'];
             final vlessIp = data['vless_ip'] ?? AppConfig.serverIp;
@@ -300,7 +328,8 @@ class HivemindService {
             final pbk = data['reality_pbk'] ?? '';
             final sid = data['reality_sid'] ?? '';
             final sni = data['reality_sni'];
-            if (sni == null) throw Exception('Server did not provide reality_sni');
+            if (sni == null)
+              throw Exception('Server did not provide reality_sni');
             final fp = data['reality_fp'] ?? AppConfig.realityFp;
             final xhttpPath = data['xhttp_path'] ?? AppConfig.vlessPath;
 
@@ -324,13 +353,16 @@ class HivemindService {
       if (i < maxAttempts) await Future.delayed(const Duration(seconds: 1));
     }
 
-    throw Exception('Session not activated. Server callback may have timed out.');
+    throw Exception(
+        'Session not activated. Server callback may have timed out.');
   }
 
   static Future<bool> checkHealth() async {
     try {
-      final url = Uri.parse('${AppConfig.hivemindApiPublic}/health');
-      final response = await directGet(url, timeout: const Duration(seconds: 3));
+      final response = await directGet(
+        _publicUrl('/health'),
+        timeout: const Duration(seconds: 3),
+      );
       return response.statusCode == 200;
     } catch (_) {
       return false;
@@ -339,6 +371,45 @@ class HivemindService {
 
   // ── URL builders ──────────────────────────────────────────────────
 
-  static Uri _publicUrl(String path) =>
-      Uri.parse('${AppConfig.hivemindApiPublic}$path');
+  static Uri _configuredApiBase() {
+    final base = Uri.tryParse(AppConfig.hivemindApiPublic.trim());
+    if (base == null ||
+        base.scheme != 'https' ||
+        !base.hasAuthority ||
+        base.host.isEmpty ||
+        base.userInfo.isNotEmpty ||
+        base.query.isNotEmpty ||
+        base.fragment.isNotEmpty) {
+      throw StateError('hivemindApiPublic must be a canonical HTTPS base URL.');
+    }
+    return base;
+  }
+
+  static void _validateApiUri(Uri uri) {
+    final base = _configuredApiBase();
+    if (uri.scheme != 'https' ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty ||
+        uri.origin != base.origin) {
+      throw ArgumentError.value(
+        uri,
+        'uri',
+        'API requests must remain on the configured HTTPS origin',
+      );
+    }
+  }
+
+  static Uri _publicUrl(String path) {
+    if (!path.startsWith('/') || path.startsWith('//')) {
+      throw ArgumentError.value(path, 'path', 'expected an absolute API path');
+    }
+
+    final base = _configuredApiBase();
+    final baseText = base.toString().endsWith('/')
+        ? base.toString().substring(0, base.toString().length - 1)
+        : base.toString();
+    final uri = Uri.parse('$baseText$path');
+    _validateApiUri(uri);
+    return uri;
+  }
 }
