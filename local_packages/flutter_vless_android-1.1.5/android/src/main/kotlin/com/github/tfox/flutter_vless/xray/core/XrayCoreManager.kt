@@ -160,6 +160,14 @@ object XrayCoreManager {
         return configJson
     }
 
+    internal fun runtimeConfirmationToken(
+        ownedRuntimeToken: String?,
+        requestedConfirmationToken: String?,
+    ): String {
+        val owned = ownedRuntimeToken.orEmpty()
+        return if (owned.isNotEmpty()) owned else requestedConfirmationToken.orEmpty()
+    }
+
     fun startCore(context: Service, config: XrayConfig): Boolean {
         AppConfigs.RUNTIME_READY = false
         AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_CONNECTING
@@ -270,6 +278,10 @@ object XrayCoreManager {
         context: Service,
         confirmationToken: String? = AppConfigs.V2RAY_CONFIG?.RUNTIME_TOKEN,
     ) {
+        val broadcastToken = runtimeConfirmationToken(
+            AppConfigs.V2RAY_CONFIG?.RUNTIME_TOKEN,
+            confirmationToken,
+        )
         try {
             xrayProcess?.destroy()
             xrayProcess = null
@@ -282,7 +294,7 @@ object XrayCoreManager {
         val notificationManager =
             context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.cancel(NOTIFICATION_ID)
-        sendDisconnectedBroadcast(context, confirmationToken.orEmpty())
+        sendDisconnectedBroadcast(context, broadcastToken)
         AppConfigs.V2RAY_CONFIG = null
     }
 
