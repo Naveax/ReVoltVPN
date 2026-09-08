@@ -6,7 +6,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
+import org.junit.fail
 import org.junit.Test
 
 class XrayCoreManagerTest {
@@ -27,6 +27,7 @@ class XrayCoreManagerTest {
         val output = XrayCoreManager.buildRuntimeConfigJson(config, filesDir)
         val log = output.getJSONObject("log")
         val inbound = output.getJSONArray("inbounds").getJSONObject(0)
+        val settings = inbound.getJSONObject("settings")
         val user = output
             .getJSONArray("outbounds")
             .getJSONObject(0)
@@ -39,7 +40,9 @@ class XrayCoreManagerTest {
         assertFalse(log.has("access"))
         assertEquals(File(filesDir, "error.log").absolutePath, log.getString("error"))
         assertEquals("revolt-secure-socks", inbound.getString("tag"))
-        assertEquals("password", inbound.getJSONObject("settings").getString("auth"))
+        assertEquals("password", settings.getString("auth"))
+        assertTrue(settings.getBoolean("udp"))
+        assertEquals("127.0.0.1", settings.getString("ip"))
         assertEquals(19080, config.LOCAL_SOCKS5_PORT)
         assertEquals(0, config.LOCAL_HTTP_PORT)
         assertEquals(vlessEncryption, user.getString("encryption"))
@@ -57,7 +60,12 @@ class XrayCoreManagerTest {
                       "listen": "127.0.0.1",
                       "port": 19080,
                       "protocol": "socks",
-                      "settings": { "auth": "noauth", "users": [] }
+                      "settings": {
+                        "auth": "noauth",
+                        "udp": true,
+                        "ip": "127.0.0.1",
+                        "users": []
+                      }
                     }
                   ],
                   "outbounds": []
@@ -89,6 +97,8 @@ class XrayCoreManagerTest {
                       "protocol": "socks",
                       "settings": {
                         "auth": "password",
+                        "udp": true,
+                        "ip": "127.0.0.1",
                         "users": [{"user": "runtime-user", "pass": "runtime-pass"}]
                       }
                     }
@@ -161,6 +171,8 @@ class XrayCoreManagerTest {
             { it.put("port", "19080") },
             { it.put("port", 19080.5) },
             { it.getJSONObject("settings").put("auth", "noauth") },
+            { it.getJSONObject("settings").put("udp", false) },
+            { it.getJSONObject("settings").put("ip", "0.0.0.0") },
             { it.getJSONObject("settings").getJSONArray("users")
                 .getJSONObject(0).put("user", "") },
             { it.getJSONObject("settings").getJSONArray("users")
@@ -198,6 +210,8 @@ class XrayCoreManagerTest {
               "protocol": "socks",
               "settings": {
                 "auth": "password",
+                "udp": true,
+                "ip": "127.0.0.1",
                 "users": [{"user": "runtime-user", "pass": "runtime-pass"}]
               }
             }
