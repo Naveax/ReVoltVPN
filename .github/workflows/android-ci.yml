@@ -181,6 +181,65 @@ jobs:
           print('Always-on capability remains explicitly fail-closed.')
           PY
 
+      - name: Verify Android app data and network security policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          android = '{http://schemas.android.com/apk/res/android}'
+          manifest = ET.parse('android/app/src/main/AndroidManifest.xml').getroot()
+          app = manifest.find('application')
+          if app is None:
+              raise SystemExit('application element missing')
+
+          expected_attrs = {
+              android + 'allowBackup': 'false',
+              android + 'usesCleartextTraffic': 'false',
+              android + 'networkSecurityConfig': '@xml/network_security_config',
+              android + 'fullBackupContent': '@xml/backup_rules',
+              android + 'dataExtractionRules': '@xml/data_extraction_rules',
+          }
+          for key, expected in expected_attrs.items():
+              actual = app.attrib.get(key)
+              if actual != expected:
+                  raise SystemExit(f'manifest security policy mismatch: {key}={actual!r}, expected {expected!r}')
+
+          net = ET.parse('android/app/src/main/res/xml/network_security_config.xml').getroot()
+          base = net.find('base-config')
+          if base is None or base.attrib.get('cleartextTrafficPermitted') != 'false':
+              raise SystemExit('network security config must disable cleartext')
+          certs = base.findall('./trust-anchors/certificates')
+          sources = [node.attrib.get('src') for node in certs]
+          if sources != ['system']:
+              raise SystemExit(f'network trust anchors must be system-only, got {sources!r}')
+
+          required_domains = {'root', 'file', 'database', 'sharedpref', 'external'}
+          rules = ET.parse('android/app/src/main/res/xml/data_extraction_rules.xml').getroot()
+          for section_name in ('cloud-backup', 'device-transfer'):
+              section = rules.find(section_name)
+              if section is None:
+                  raise SystemExit(f'{section_name} rules missing')
+              excluded = {
+                  node.attrib.get('domain')
+                  for node in section.findall('exclude')
+                  if node.attrib.get('path') == '.'
+              }
+              if excluded != required_domains:
+                  raise SystemExit(f'{section_name} exclusions incomplete: {excluded!r}')
+
+          legacy = ET.parse('android/app/src/main/res/xml/backup_rules.xml').getroot()
+          excluded = {
+              node.attrib.get('domain')
+              for node in legacy.findall('exclude')
+              if node.attrib.get('path') == '.'
+          }
+          if excluded != required_domains:
+              raise SystemExit(f'legacy backup exclusions incomplete: {excluded!r}')
+          print('Android app data/network security policy OK.')
+          PY
+
       - name: Cold APK build
         run: flutter build apk --debug
 
