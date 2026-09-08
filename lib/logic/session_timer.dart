@@ -13,12 +13,12 @@ class SessionTimer extends ChangeNotifier {
   final VpnConnection vpnConnection;
 
   int _remainingSeconds = 0;
-  int _usedBytes       = 0;
+  int _usedBytes = 0;
 
-  bool _hasSyncedOnce       = false;
-  int  _consecutiveFailures = 0;
-  bool _isDisconnecting     = false;
-  bool _syncInProgress      = false;
+  bool _hasSyncedOnce = false;
+  int _consecutiveFailures = 0;
+  bool _isDisconnecting = false;
+  bool _syncInProgress = false;
 
   static const int _maxConsecutiveFailures = 3;
   static const int _maxOfflineSeconds = 120;
@@ -26,19 +26,19 @@ class SessionTimer extends ChangeNotifier {
 
   static const int _pollIntervalSeconds = 5;
 
-  int    _lastUsedBytes     = 0;
-  double _currentSpeedKBps  = 0.0;
+  int _lastUsedBytes = 0;
+  double _currentSpeedKBps = 0.0;
 
   SessionTimer({required this.vpnConnection}) {
     vpnConnection.addListener(_onVpnConnectionChanged);
   }
 
-  int  get remaining        => _remainingSeconds;
-  bool get isRunning        => _timer != null && _timer!.isActive;
-  bool get isExpired        => _remainingSeconds <= 0 && !isRunning;
-  bool get hasSyncedOnce    => _hasSyncedOnce;
+  int get remaining => _remainingSeconds;
+  bool get isRunning => _timer != null && _timer!.isActive;
+  bool get isExpired => _remainingSeconds <= 0 && !isRunning;
+  bool get hasSyncedOnce => _hasSyncedOnce;
 
-  int    get usedBytes      => _usedBytes;
+  int get usedBytes => _usedBytes;
   double get currentSpeedKBps => _currentSpeedKBps;
 
   String get formatted {
@@ -73,15 +73,15 @@ class SessionTimer extends ChangeNotifier {
   }
 
   Future<void> start() async {
-    _remainingSeconds    = 0;
-    _usedBytes           = 0;
-    _lastUsedBytes       = 0;
-    _currentSpeedKBps    = 0.0;
-    _tickCount           = 0;
-    _hasSyncedOnce       = false;
+    _remainingSeconds = 0;
+    _usedBytes = 0;
+    _lastUsedBytes = 0;
+    _currentSpeedKBps = 0.0;
+    _tickCount = 0;
+    _hasSyncedOnce = false;
     _consecutiveFailures = 0;
-    _offlineSeconds      = 0;
-    _isDisconnecting     = false;
+    _offlineSeconds = 0;
+    _isDisconnecting = false;
 
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), _tick);
@@ -149,19 +149,20 @@ class SessionTimer extends ChangeNotifier {
       final deviceId = await CryptoService.getDeviceId();
       final url = Uri.parse(
           '${AppConfig.hivemindApiPublic}/session/status?device_id=$deviceId');
-      final response = await HivemindService.directGet(url);
+      final response = await HivemindService.authenticatedGet(url);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
 
         final bool active = data['active'] ?? false;
         if (!active) {
+          await HivemindService.clearSessionNonce();
           await _doDisconnect('Server ended session');
           return;
         }
 
         _remainingSeconds = data['expires_in_seconds'] ?? _remainingSeconds;
-        _usedBytes        = data['used_bytes']        ?? _usedBytes;
+        _usedBytes = data['used_bytes'] ?? _usedBytes;
 
         final int deltaBytes = _usedBytes - _lastUsedBytes;
         if (_hasSyncedOnce && deltaBytes > 0) {
@@ -173,6 +174,7 @@ class SessionTimer extends ChangeNotifier {
 
         final capExhausted = data['cap_exhausted'] ?? false;
         if (capExhausted) {
+          await HivemindService.clearSessionNonce();
           await _doDisconnect('Data cap reached');
           return;
         }
@@ -181,6 +183,9 @@ class SessionTimer extends ChangeNotifier {
         _offlineSeconds = 0;
         _hasSyncedOnce = true;
         notifyListeners();
+      } else if (response.statusCode == 401) {
+        await HivemindService.clearSessionNonce();
+        await _doDisconnect('Session authorization expired');
       } else {
         _markSyncFailure();
       }
