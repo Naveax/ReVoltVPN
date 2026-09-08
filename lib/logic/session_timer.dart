@@ -12,7 +12,6 @@ import 'package:revoltvpn/logic/vpn_connection.dart';
 class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _timer;
   int _tickCount = 0;
-  bool _appBackgrounded = false;
   final VpnConnection vpnConnection;
 
   int _remainingSeconds = 0;
@@ -118,7 +117,6 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     _sessionEpoch++;
     _resetSessionMetrics();
     _isDisconnecting = false;
-    _appBackgrounded = false;
     NotificationService.reset();
     _supportStateEpoch++;
     _supportRewardClaimed = false;
@@ -318,15 +316,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached ||
-        state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.hidden) {
-      _appBackgrounded = true;
-      return;
-    }
     if (state != AppLifecycleState.resumed || _isDisconnecting) return;
-    _appBackgrounded = false;
     if (vpnConnection.status != VpnStatus.connected) return;
     _reconcileElapsedTime();
     if (!isRunning && (vpnConnection.adoptedRunningRuntime || _hasSyncedOnce)) {
