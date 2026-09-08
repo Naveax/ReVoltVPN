@@ -55,6 +55,7 @@ class MainActivity : FlutterActivity() {
                         result.success(isIgnoringBatteryOptimizations())
                     "requestIgnoreBatteryOptimizations" ->
                         result.success(requestIgnoreBatteryOptimizations())
+                    "openVpnSettings" -> result.success(openVpnSettings())
                     else -> result.notImplemented()
                 }
             }
@@ -132,6 +133,15 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun openVpnSettings(): Boolean {
+        return try {
+            startActivity(Intent(Settings.ACTION_VPN_SETTINGS))
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private fun updateVpnNotification(title: String, text: String, actionLabel: String) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
@@ -155,10 +165,7 @@ class MainActivity : FlutterActivity() {
 
         // The VPN service owns the authoritative Disconnect PendingIntent and
         // embeds the current runtime-generation token in it. Never recreate an
-        // unscoped STOP intent from the UI process: a stale notification could
-        // otherwise stop a newer tunnel. Reuse the live service action when the
-        // platform exposes it; on older Android versions omit the action rather
-        // than weaken generation scoping.
+        // unscoped STOP intent from the UI process.
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val serviceStopAction = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             manager.activeNotifications
