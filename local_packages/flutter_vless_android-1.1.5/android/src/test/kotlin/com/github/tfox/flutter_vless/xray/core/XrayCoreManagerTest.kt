@@ -138,6 +138,55 @@ class XrayCoreManagerTest {
         assertFalse(stream.getJSONObject("tlsSettings").has("allowInsecure"))
     }
 
+    @Test
+    fun buildRuntimeConfigJson_rejectsMissingOrAdditionalIngress() {
+        val missing = JSONObject(runtimeConfig()).apply { remove("inbounds") }
+        val empty = JSONObject(runtimeConfig()).apply {
+            put("inbounds", org.json.JSONArray())
+        }
+        val additional = JSONObject(runtimeConfig()).apply {
+            getJSONArray("inbounds").put(getJSONArray("inbounds").getJSONObject(0))
+        }
+        for (json in listOf(missing, empty, additional)) assertRejected(json)
+    }
+
+    @Test
+    fun buildRuntimeConfigJson_rejectsMalformedIngressWithoutChangingPorts() {
+        val mutations: List<(JSONObject) -> Unit> = listOf(
+            { it.put("tag", "legacy") },
+            { it.put("protocol", "http") },
+            { it.put("listen", "0.0.0.0") },
+            { it.put("port", 1024) },
+            { it.put("port", 65536) },
+            { it.put("port", "19080") },
+            { it.put("port", 19080.5) },
+            { it.getJSONObject("settings").put("auth", "noauth") },
+            { it.getJSONObject("settings").getJSONArray("users")
+                .getJSONObject(0).put("user", "") },
+            { it.getJSONObject("settings").getJSONArray("users")
+                .getJSONObject(0).put("pass", 123) },
+            { it.getJSONObject("settings").getJSONArray("users")
+                .put(JSONObject().put("user", "extra").put("pass", "extra")) }
+        )
+        for (mutate in mutations) {
+            val json = JSONObject(runtimeConfig())
+            mutate(json.getJSONArray("inbounds").getJSONObject(0))
+            assertRejected(json)
+        }
+    }
+
+    private fun assertRejected(json: JSONObject) {
+        val config = XrayConfig(V2RAY_FULL_JSON_CONFIG = json.toString())
+        val originalPort = config.LOCAL_SOCKS5_PORT
+        try {
+            XrayCoreManager.buildRuntimeConfigJson(config, File("build/test-files/rejected"))
+            fail("Invalid ingress must fail closed")
+        } catch (expected: IllegalStateException) {
+            assertTrue(expected.message.orEmpty().contains("Secure SOCKS5"))
+            assertEquals(originalPort, config.LOCAL_SOCKS5_PORT)
+        }
+    }
+
     private fun runtimeConfig(extraLog: String = ""): String = """
         {
           $extraLog

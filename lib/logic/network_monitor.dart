@@ -19,12 +19,12 @@ class NetworkSnapshot {
 
   factory NetworkSnapshot.fromMap(Map<dynamic, dynamic> map) {
     return NetworkSnapshot(
-      reason: map['reason'] as String? ?? 'changed',
-      transport: map['transport'] as String? ?? 'unknown',
+      reason: map['reason'] is String ? map['reason'] as String : 'changed',
+      transport: map['transport'] is String ? map['transport'] as String : 'unknown',
       connected: map['connected'] == true,
       validated: map['validated'] == true,
       metered: map['metered'] == true,
-      timestamp: (map['timestamp'] as num?)?.toInt() ?? 0,
+      timestamp: map['timestamp'] is int ? map['timestamp'] as int : 0,
     );
   }
 }

@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - work/upstream-3.3.5-verified-hardening
   pull_request:
     branches:
       - main
@@ -71,6 +72,10 @@ jobs:
 
       - name: Test
         run: flutter test
+
+      - name: Native Kotlin regression tests
+        working-directory: android
+        run: ./gradlew :flutter_vless_android:testDebugUnitTest --no-daemon
 
       - name: Android lint
         working-directory: android
