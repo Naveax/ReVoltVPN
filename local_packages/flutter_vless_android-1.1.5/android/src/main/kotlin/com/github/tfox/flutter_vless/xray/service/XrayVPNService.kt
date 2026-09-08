@@ -8,9 +8,11 @@ import android.net.LocalSocket
 import android.net.LocalSocketAddress
 import android.net.VpnService
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.os.ResultReceiver
 import android.os.SystemClock
 import android.util.Log
 import com.github.tfox.flutter_vless.xray.core.XrayCoreManager
@@ -18,43 +20,30 @@ import com.github.tfox.flutter_vless.xray.dto.XrayConfig
 import com.github.tfox.flutter_vless.xray.utils.AppConfigs
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.Executors
 
-/**
- * Android VPN Service implementation.
- *
- * This service owns the TUN interface and keeps runtime state generation-scoped.
- * Session deadlines are enforced both by an in-process monotonic timer and by
- * AlarmManager, while only the non-secret token/deadline pair is persisted.
- * Per-session VLESS/SOCKS credentials remain memory-only.
- */
 class XrayVPNService : VpnService() {
-
     private var mInterface: ParcelFileDescriptor? = null
     private var tun2socksProcess: Process? = null
     @Volatile private var isRunning = false
     @Volatile private var recoveringXray = false
     @Volatile private var recoveringTun2socks = false
+    @Volatile private var currentConfig: XrayConfig? = null
+    @Volatile private var currentProxyOnly = false
+    @Volatile private var shuttingDownIntentionally = false
     private var tun2socksRecoveryAttempt = 0
-    private var currentConfig: XrayConfig? = null
-    private var currentProxyOnly = false
-    private var shuttingDownIntentionally = false
+    private val runtimeExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "revolt-vpn-runtime").apply { isDaemon = true }
+    }
 
     private val deadlineHandler = Handler(Looper.getMainLooper())
     private var sessionDeadlineElapsed: Long? = null
     private var sessionDeadlineToken: String? = null
     private val sessionDeadlineRunnable = Runnable { enforceSessionDeadline() }
 
-    override fun onCreate() {
-        super.onCreate()
-    }
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent == null) {
             if (isRunning && currentConfig != null) return START_REDELIVER_INTENT
-
-            // Session credentials intentionally stay memory-only. If Android
-            // cannot redeliver the original START intent, fail closed instead
-            // of rebuilding a tunnel from sensitive material stored on disk.
             clearPersistedDeadline()
             cancelSessionExpiryAlarm()
             stopSelf()
@@ -73,14 +62,18 @@ class XrayVPNService : VpnService() {
             intent.getSerializableExtra("COMMAND") as? AppConfigs.V2RAY_SERVICE_COMMANDS
         }
 
+        if (command == AppConfigs.V2RAY_SERVICE_COMMANDS.QUERY_STATE) {
+            replyRuntimeState(intent)
+            if (!runtimeAppearsActive()) stopSelfResult(startId)
+            return if (runtimeAppearsActive()) START_REDELIVER_INTENT else START_NOT_STICKY
+        }
+
         if (command == AppConfigs.V2RAY_SERVICE_COMMANDS.STOP_SERVICE) {
             val requestedToken = intent.getStringExtra("RUNTIME_TOKEN").orEmpty()
             val activeToken = currentConfig?.RUNTIME_TOKEN.orEmpty()
-            if (requestedToken.isEmpty() ||
-                (activeToken.isNotEmpty() && requestedToken != activeToken)
-            ) {
+            if (requestedToken.isEmpty() || activeToken.isEmpty() || requestedToken != activeToken) {
                 Log.w(TAG, "Ignoring STOP_SERVICE without matching runtime generation")
-                return START_NOT_STICKY
+                return if (runtimeAppearsActive()) START_REDELIVER_INTENT else START_NOT_STICKY
             }
             stopAll(requestedToken)
             return START_NOT_STICKY
@@ -88,7 +81,12 @@ class XrayVPNService : VpnService() {
 
         if (command == AppConfigs.V2RAY_SERVICE_COMMANDS.UPDATE_SESSION_DEADLINE) {
             updateSessionDeadline(intent)
-            return if (isRunning) START_REDELIVER_INTENT else START_NOT_STICKY
+            return if (runtimeAppearsActive()) START_REDELIVER_INTENT else START_NOT_STICKY
+        }
+
+        if (command != AppConfigs.V2RAY_SERVICE_COMMANDS.START_SERVICE) {
+            stopAll()
+            return START_NOT_STICKY
         }
 
         createNotificationChannel()
@@ -99,105 +97,119 @@ class XrayVPNService : VpnService() {
             } else {
                 startForeground(1, notification)
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start foreground", e)
+        } catch (error: Exception) {
+            Log.e(TAG, "Failed to start foreground", error)
             clearPersistedDeadline()
             cancelSessionExpiryAlarm()
             stopSelf()
             return START_NOT_STICKY
         }
 
-        if (command == AppConfigs.V2RAY_SERVICE_COMMANDS.START_SERVICE) {
-            val config = if (Build.VERSION.SDK_INT >= 33) {
-                intent.getSerializableExtra("V2RAY_CONFIG", XrayConfig::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getSerializableExtra("V2RAY_CONFIG") as? XrayConfig
-            }
-
-            if (config != null) {
-                if (XrayCoreManager.isXrayRunning()) {
-                    Log.w(TAG, "Stopping stale Xray core before restart")
-                    XrayCoreManager.stopCore(this)
-                }
-                cleanup(clearDeadline = true)
-                shuttingDownIntentionally = false
-                currentConfig = config
-
-                val proxyOnly = intent.getBooleanExtra("PROXY_ONLY", false)
-                currentProxyOnly = proxyOnly
-                armSessionDeadline(config, BOOTSTRAP_SESSION_SECONDS)
-                if (shuttingDownIntentionally) return START_NOT_STICKY
-
-                if (XrayCoreManager.startCore(this, config)) {
-                    if (!proxyOnly) {
-                        setupVpn(config)
-                    } else {
-                        isRunning = true
-                        Log.d(TAG, "Starting in PROXY_ONLY mode")
-                        XrayCoreManager.markRuntimeReady(this, config)
-                    }
-                } else {
-                    stopAll(config.RUNTIME_TOKEN)
-                    return START_NOT_STICKY
-                }
-            } else {
-                Log.e(TAG, "START_SERVICE missing V2RAY_CONFIG")
-                stopAll()
-                return START_NOT_STICKY
-            }
+        val config = if (Build.VERSION.SDK_INT >= 33) {
+            intent.getSerializableExtra("V2RAY_CONFIG", XrayConfig::class.java)
         } else {
+            @Suppress("DEPRECATION")
+            intent.getSerializableExtra("V2RAY_CONFIG") as? XrayConfig
+        }
+        if (config == null || config.RUNTIME_TOKEN.isEmpty()) {
+            Log.e(TAG, "START_SERVICE missing valid V2RAY_CONFIG")
             stopAll()
             return START_NOT_STICKY
         }
 
+        cleanup(clearDeadline = true)
+        shuttingDownIntentionally = false
+        currentConfig = config
+        val proxyOnly = intent.getBooleanExtra("PROXY_ONLY", false)
+        currentProxyOnly = proxyOnly
+        armSessionDeadline(config, BOOTSTRAP_SESSION_SECONDS)
+        if (shuttingDownIntentionally) return START_NOT_STICKY
+
+        runtimeExecutor.execute { startRuntime(config, proxyOnly) }
         return START_REDELIVER_INTENT
+    }
+
+    private fun startRuntime(config: XrayConfig, proxyOnly: Boolean) {
+        if (!isCurrent(config)) return
+        if (XrayCoreManager.isXrayRunning()) {
+            XrayCoreManager.stopCore(this, config.RUNTIME_TOKEN)
+        }
+        if (!isCurrent(config)) return
+        if (!XrayCoreManager.startCore(this, config)) {
+            if (isCurrent(config)) stopAll(config.RUNTIME_TOKEN)
+            return
+        }
+        if (!isCurrent(config)) {
+            XrayCoreManager.stopCore(this, config.RUNTIME_TOKEN)
+            return
+        }
+        if (proxyOnly) {
+            isRunning = true
+            XrayCoreManager.markRuntimeReady(this, config)
+        } else {
+            setupVpn(config)
+        }
+    }
+
+    private fun isCurrent(config: XrayConfig): Boolean =
+        !shuttingDownIntentionally && currentConfig?.RUNTIME_TOKEN == config.RUNTIME_TOKEN
+
+    private fun runtimeAppearsActive(): Boolean {
+        val config = currentConfig ?: return false
+        if (config.RUNTIME_TOKEN.isEmpty() || shuttingDownIntentionally) return false
+        return isRunning || XrayCoreManager.isXrayRunning() ||
+            AppConfigs.V2RAY_STATE == AppConfigs.V2RAY_STATES.V2RAY_CONNECTING
+    }
+
+    private fun replyRuntimeState(intent: Intent) {
+        val receiver = if (Build.VERSION.SDK_INT >= 33) {
+            intent.getParcelableExtra("STATE_RECEIVER", ResultReceiver::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra("STATE_RECEIVER") as? ResultReceiver
+        } ?: return
+        val config = currentConfig
+        val bundle = Bundle().apply {
+            putBoolean("active", runtimeAppearsActive())
+            putString("runtimeToken", config?.RUNTIME_TOKEN.orEmpty())
+            putBoolean("runtimeReady", AppConfigs.RUNTIME_READY)
+            putBoolean("proxyOnly", currentProxyOnly)
+            putString("state", AppConfigs.V2RAY_STATE.name)
+        }
+        receiver.send(0, bundle)
     }
 
     private fun setupVpn(config: XrayConfig) {
         try {
-            if (mInterface != null) {
-                mInterface?.close()
-                mInterface = null
-            }
-
+            if (!isCurrent(config)) return
+            mInterface?.close()
+            mInterface = null
             val builder = Builder()
-            builder.setSession(config.REMARK)
-            builder.setMtu(1500)
-            builder.addAddress("26.26.26.1", 30)
-            builder.addAddress("fd00:26:26::1", 126)
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                builder.setMetered(false)
-            }
-
+                .setSession(config.REMARK)
+                .setMtu(1500)
+                .addAddress("26.26.26.1", 30)
+                .addAddress("fd00:26:26::1", 126)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
             if (config.BLOCKED_APPS.isNotEmpty()) {
                 throw IllegalStateException("Per-app VPN bypass is disabled in ReVolt")
             }
-            try {
-                builder.addDisallowedApplication(packageName)
-            } catch (e: Exception) {
-                throw IllegalStateException("Failed to exclude ReVolt from its own VPN", e)
-            }
-
+            builder.addDisallowedApplication(packageName)
             builder.addRoute("0.0.0.0", 0)
             builder.addRoute("::", 0)
-
-            try {
-                builder.addDnsServer("8.8.8.8")
-                builder.addDnsServer("1.1.1.1")
-            } catch (e: Exception) {
-                throw IllegalStateException("Failed to configure VPN DNS", e)
-            }
-
-            mInterface = builder.establish()
+            builder.addDnsServer("8.8.8.8")
+            builder.addDnsServer("1.1.1.1")
+            val established = builder.establish()
                 ?: throw IllegalStateException("Android refused to establish VPN interface")
+            if (!isCurrent(config)) {
+                established.close()
+                return
+            }
+            mInterface = established
             isRunning = true
             runTun2socks(config)
-
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to setup VPN", e)
-            stopAll()
+        } catch (error: Exception) {
+            Log.e(TAG, "Failed to setup VPN", error)
+            if (isCurrent(config)) stopAll(config.RUNTIME_TOKEN)
         }
     }
 
@@ -213,115 +225,81 @@ class XrayVPNService : VpnService() {
         } catch (_: Exception) {
             null
         } ?: return null
-
-        for (i in 0 until inbounds.length()) {
-            val inbound = inbounds.optJSONObject(i) ?: continue
-            if (inbound.optString("tag") != "revolt-secure-socks") continue
-            if (inbound.optString("protocol") != "socks" ||
-                inbound.optString("listen") != "127.0.0.1"
-            ) return null
-
-            val settings = inbound.optJSONObject("settings") ?: return null
-            if (settings.optString("auth") != "password") return null
-            val user = settings.optJSONArray("users")?.optJSONObject(0) ?: return null
-            val port = inbound.optInt("port", -1)
-            val username = user.optString("user")
-            val password = user.optString("pass")
-            if (port <= 1024 || port > 65535 || username.isEmpty() || password.isEmpty()) {
-                return null
-            }
-            return SecureSocksCredentials(port, username, password)
-        }
-        return null
+        if (inbounds.length() != 1) return null
+        val inbound = inbounds.optJSONObject(0) ?: return null
+        if (inbound.optString("tag") != "revolt-secure-socks" ||
+            inbound.optString("protocol") != "socks" ||
+            inbound.optString("listen") != "127.0.0.1"
+        ) return null
+        val settings = inbound.optJSONObject("settings") ?: return null
+        if (settings.optString("auth") != "password" || !settings.optBoolean("udp", false)) return null
+        val users = settings.optJSONArray("users") ?: return null
+        if (users.length() != 1) return null
+        val user = users.optJSONObject(0) ?: return null
+        val port = inbound.optInt("port", -1)
+        val username = user.optString("user")
+        val password = user.optString("pass")
+        if (port <= 1024 || port > 65535 || username.isEmpty() || password.isEmpty()) return null
+        return SecureSocksCredentials(port, username, password)
     }
 
     private fun scheduleTun2socksRecovery(config: XrayConfig, reason: String) {
-        if (!isRunning || currentConfig !== config || recoveringTun2socks) return
+        if (!isRunning || !isCurrent(config) || recoveringTun2socks) return
         XrayCoreManager.markRuntimeConnecting(this, config)
         recoveringTun2socks = true
         val attempt = ++tun2socksRecoveryAttempt
-        val shift = (attempt - 1).coerceIn(0, 6)
-        val delayMs = (500L * (1L shl shift)).coerceAtMost(30_000L)
-        Log.w(TAG, "Scheduling tun2socks recovery attempt $attempt in ${delayMs}ms: $reason")
-
-        Thread {
+        val delayMs = (500L * (1L shl (attempt - 1).coerceIn(0, 6))).coerceAtMost(30_000L)
+        Thread({
             try {
                 Thread.sleep(delayMs)
             } catch (_: InterruptedException) {
                 recoveringTun2socks = false
                 return@Thread
             }
-
             recoveringTun2socks = false
-            if (isRunning && currentConfig === config) {
-                runTun2socks(config)
-            }
-        }.start()
+            if (isRunning && isCurrent(config)) runTun2socks(config)
+        }, "revolt-tun2socks-recovery").start()
+        Log.w(TAG, "Scheduled tun2socks recovery attempt $attempt: $reason")
     }
 
     private fun runTun2socks(config: XrayConfig) {
+        if (!isCurrent(config)) return
         val tun2socksPath = File(applicationInfo.nativeLibraryDir, "libtun2socks.so").absolutePath
         val socketFile = File(filesDir, "sock_path")
         if (socketFile.exists() && !socketFile.delete()) {
-            Log.w(TAG, "Could not delete stale tun2socks socket")
+            throw IllegalStateException("Could not delete stale tun2socks socket")
         }
-        val sockPath = socketFile.absolutePath
-
         val secure = secureSocksCredentials(config)
             ?: throw IllegalStateException("Authenticated ReVolt SOCKS5 inbound missing")
         config.LOCAL_SOCKS5_PORT = secure.port
-
-        val cmd = arrayListOf(
+        val process = ProcessBuilder(
             tun2socksPath,
-            "-sock-path", sockPath,
+            "-sock-path", socketFile.absolutePath,
             "-proxy", "socks5://${secure.username}:${secure.password}@127.0.0.1:${secure.port}",
             "-mtu", "1500",
-            "-loglevel", "debug"
-        )
-
-        Log.d(TAG, "Starting tun2socks with authenticated loopback SOCKS5")
-
-        try {
-            val pb = ProcessBuilder(cmd)
-            pb.redirectErrorStream(true)
-            pb.directory(filesDir)
-            val process = pb.start()
-            tun2socksProcess = process
-
-            Thread {
-                try {
-                    process.inputStream.bufferedReader().use { reader ->
-                        reader.forEachLine { _ -> }
-                    }
-
-                    process.waitFor()
-                    if (isRunning && tun2socksProcess === process && currentConfig === config) {
-                        Log.e(TAG, "tun2socks exited unexpectedly; keeping TUN fail-closed")
-                        tun2socksProcess = null
-                        scheduleTun2socksRecovery(config, "process exited")
-                    }
-                } catch (_: java.io.InterruptedIOException) {
-                    // Expected when stopping
-                } catch (_: InterruptedException) {
-                    // Expected when stopping
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error reading tun2socks output", e)
+            "-loglevel", "warning",
+        ).redirectErrorStream(true).directory(filesDir).start()
+        tun2socksProcess = process
+        Thread({
+            try {
+                process.inputStream.bufferedReader().use { reader -> reader.forEachLine { _ -> } }
+                process.waitFor()
+                if (isRunning && tun2socksProcess === process && isCurrent(config)) {
+                    tun2socksProcess = null
+                    scheduleTun2socksRecovery(config, "process exited")
                 }
-            }.start()
-
-            sendFd(process, config)
-
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start tun2socks; keeping TUN fail-closed", e)
-            scheduleTun2socksRecovery(config, "start failure")
-        }
+            } catch (_: InterruptedException) {
+            } catch (error: Exception) {
+                Log.e(TAG, "Error monitoring tun2socks", error)
+            }
+        }, "revolt-tun2socks-monitor").start()
+        sendFd(process, config)
     }
 
     private fun sendFd(process: Process, config: XrayConfig) {
         val fd = mInterface?.fileDescriptor ?: return
         val sockFile = File(filesDir, "sock_path").absolutePath
-
-        Thread {
+        Thread({
             var tries = 0
             while (tries < 10 && isRunning && tun2socksProcess === process && process.isAlive) {
                 var localSocket: LocalSocket? = null
@@ -329,57 +307,42 @@ class XrayVPNService : VpnService() {
                     Thread.sleep(500)
                     localSocket = LocalSocket()
                     localSocket.connect(LocalSocketAddress(sockFile, LocalSocketAddress.Namespace.FILESYSTEM))
-                    val out = localSocket.outputStream
                     localSocket.setFileDescriptorsForSend(arrayOf(fd))
-                    out.write(32)
-                    out.flush()
+                    localSocket.outputStream.write(32)
+                    localSocket.outputStream.flush()
                     localSocket.setFileDescriptorsForSend(null)
                     localSocket.shutdownOutput()
                     localSocket.close()
-                    if (isRunning && currentConfig === config && tun2socksProcess === process) {
+                    if (isRunning && isCurrent(config) && tun2socksProcess === process) {
                         tun2socksRecoveryAttempt = 0
                         XrayCoreManager.markRuntimeReady(this, config)
                     }
                     return@Thread
                 } catch (_: Exception) {
                     tries++
-                    try {
-                        localSocket?.close()
-                    } catch (closeError: Exception) {
-                        Log.w(TAG, "Failed to close tun2socks handoff socket", closeError)
-                    }
+                    try { localSocket?.close() } catch (_: Exception) {}
                 }
             }
-
             if (isRunning && tun2socksProcess === process) {
-                Log.e(TAG, "FD handoff failed; recycling tun2socks without dropping TUN")
-                try {
-                    process.destroy()
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to recycle tun2socks after FD handoff failure", e)
-                }
+                try { process.destroy() } catch (_: Exception) {}
             }
-        }.start()
+        }, "revolt-tun2socks-fd").start()
     }
 
     fun handleXrayCoreExit(config: XrayConfig) {
-        if (!isRunning || currentConfig !== config || recoveringXray) return
+        if (!isRunning || !isCurrent(config) || recoveringXray) return
         XrayCoreManager.markRuntimeConnecting(this, config)
         recoveringXray = true
-
-        Thread {
+        Thread({
             var attempt = 0
             try {
-                while (isRunning && currentConfig === config) {
+                while (isRunning && isCurrent(config)) {
                     attempt++
-                    val shift = (attempt - 1).coerceIn(0, 6)
-                    val delayMs = (500L * (1L shl shift)).coerceAtMost(30_000L)
-                    Log.w(TAG, "Recovering Xray core attempt $attempt in ${delayMs}ms")
+                    val delayMs =
+                        (500L * (1L shl (attempt - 1).coerceIn(0, 6))).coerceAtMost(30_000L)
                     Thread.sleep(delayMs)
-                    if (!isRunning || currentConfig !== config) break
-
+                    if (!isRunning || !isCurrent(config)) break
                     if (XrayCoreManager.startCore(this, config)) {
-                        Log.w(TAG, "Xray core recovered without dropping TUN")
                         if (currentProxyOnly || (mInterface != null && tun2socksProcess?.isAlive == true)) {
                             XrayCoreManager.markRuntimeReady(this, config)
                         }
@@ -387,11 +350,10 @@ class XrayVPNService : VpnService() {
                     }
                 }
             } catch (_: InterruptedException) {
-                // Expected when stopping
             } finally {
                 recoveringXray = false
             }
-        }.start()
+        }, "revolt-xray-recovery").start()
     }
 
     private fun cleanup(clearDeadline: Boolean = true) {
@@ -408,14 +370,12 @@ class XrayVPNService : VpnService() {
         tun2socksRecoveryAttempt = 0
         currentProxyOnly = false
         AppConfigs.RUNTIME_READY = false
-        tun2socksProcess?.destroy()
+        try { tun2socksProcess?.destroy() } catch (_: Exception) {}
         tun2socksProcess = null
-        try {
-            mInterface?.close()
-            mInterface = null
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to close VPN interface during cleanup", e)
+        try { mInterface?.close() } catch (error: Exception) {
+            Log.w(TAG, "Failed to close VPN interface during cleanup", error)
         }
+        mInterface = null
     }
 
     private fun stopAll(confirmationToken: String = currentConfig?.RUNTIME_TOKEN.orEmpty()) {
@@ -429,28 +389,18 @@ class XrayVPNService : VpnService() {
     }
 
     private fun armSessionDeadline(config: XrayConfig, remainingSeconds: Long) {
-        val boundedSeconds = remainingSeconds
-            .coerceAtLeast(0L)
-            .coerceAtMost(Long.MAX_VALUE / 1000L)
+        val boundedSeconds = remainingSeconds.coerceAtLeast(0L).coerceAtMost(Long.MAX_VALUE / 1000L)
         val delayMs = boundedSeconds * 1000L
         val nowEpochMs = System.currentTimeMillis()
-        val epochDeadline = if (Long.MAX_VALUE - nowEpochMs < delayMs) {
-            Long.MAX_VALUE
-        } else {
-            nowEpochMs + delayMs
-        }
-
+        val epochDeadline = if (Long.MAX_VALUE - nowEpochMs < delayMs) Long.MAX_VALUE else nowEpochMs + delayMs
         sessionDeadlineToken = config.RUNTIME_TOKEN
         sessionDeadlineElapsed = SystemClock.elapsedRealtime() + delayMs
-
         if (!persistDeadline(config.RUNTIME_TOKEN, epochDeadline) ||
             !scheduleSessionExpiryAlarm(config.RUNTIME_TOKEN, epochDeadline)
         ) {
-            Log.e(TAG, "Could not arm OS-level session expiry; stopping fail-closed")
             stopAll(config.RUNTIME_TOKEN)
             return
         }
-
         deadlineHandler.removeCallbacks(sessionDeadlineRunnable)
         if (delayMs == 0L) deadlineHandler.post(sessionDeadlineRunnable)
         else deadlineHandler.postDelayed(sessionDeadlineRunnable, delayMs)
@@ -474,47 +424,35 @@ class XrayVPNService : VpnService() {
             deadlineHandler.postDelayed(sessionDeadlineRunnable, remaining)
             return
         }
-        Log.w(TAG, "Native session deadline expired; stopping runtime fail-closed")
         stopAll(token)
     }
 
     private fun updateSessionDeadline(intent: Intent) {
         val config = currentConfig ?: return
         val token = intent.getStringExtra("RUNTIME_TOKEN").orEmpty()
-        if (token.isEmpty() || token != config.RUNTIME_TOKEN) {
-            Log.w(TAG, "Ignoring session deadline update for stale runtime generation")
-            return
-        }
+        if (token.isEmpty() || token != config.RUNTIME_TOKEN) return
         val remainingSeconds = intent.getLongExtra("REMAINING_SECONDS", -1L)
-        if (remainingSeconds < 0L) {
-            Log.w(TAG, "Ignoring invalid negative session deadline")
-            return
-        }
+        if (remainingSeconds < 0L) return
         armSessionDeadline(config, remainingSeconds)
     }
 
-    private fun persistDeadline(runtimeToken: String, expiresAtEpochMs: Long): Boolean {
-        return try {
-            getSharedPreferences(DEADLINE_PREFS, Context.MODE_PRIVATE)
-                .edit()
-                .putString(PREF_RUNTIME_TOKEN, runtimeToken)
-                .putLong(PREF_EXPIRES_AT_MS, expiresAtEpochMs)
-                .commit()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to persist non-secret session deadline", e)
-            false
-        }
+    private fun persistDeadline(runtimeToken: String, expiresAtEpochMs: Long): Boolean = try {
+        getSharedPreferences(DEADLINE_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PREF_RUNTIME_TOKEN, runtimeToken)
+            .putLong(PREF_EXPIRES_AT_MS, expiresAtEpochMs)
+            .commit()
+    } catch (error: Exception) {
+        Log.e(TAG, "Failed to persist non-secret session deadline", error)
+        false
     }
 
     private fun clearPersistedDeadline() {
         try {
             getSharedPreferences(DEADLINE_PREFS, Context.MODE_PRIVATE)
-                .edit()
-                .remove(PREF_RUNTIME_TOKEN)
-                .remove(PREF_EXPIRES_AT_MS)
-                .apply()
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to clear persisted session deadline", e)
+                .edit().remove(PREF_RUNTIME_TOKEN).remove(PREF_EXPIRES_AT_MS).apply()
+        } catch (error: Exception) {
+            Log.w(TAG, "Failed to clear persisted session deadline", error)
         }
     }
 
@@ -523,38 +461,29 @@ class XrayVPNService : VpnService() {
             val prefs = getSharedPreferences(DEADLINE_PREFS, Context.MODE_PRIVATE)
             prefs.getString(PREF_RUNTIME_TOKEN, null).orEmpty() to
                 prefs.getLong(PREF_EXPIRES_AT_MS, 0L)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to read persisted session deadline", e)
+        } catch (error: Exception) {
+            Log.e(TAG, "Failed to read persisted session deadline", error)
             clearPersistedDeadline()
             cancelSessionExpiryAlarm()
             stopSelf()
             return
         }
-
         val storedToken = stored.first
         val storedDeadline = stored.second
         if (alarmToken.isEmpty() || storedToken.isEmpty() || alarmToken != storedToken) {
-            Log.w(TAG, "Ignoring stale session-expiry alarm")
             if (currentConfig == null) stopSelf()
             return
         }
-
         val remaining = storedDeadline - System.currentTimeMillis()
         if (storedDeadline > 0L && remaining > 0L) {
             if (!scheduleSessionExpiryAlarm(storedToken, storedDeadline)) {
-                Log.e(TAG, "Failed to re-arm early session-expiry alarm")
                 val activeToken = currentConfig?.RUNTIME_TOKEN.orEmpty()
                 if (activeToken == storedToken) stopAll(storedToken) else stopSelf()
-                return
+            } else if (currentConfig == null) {
+                stopSelf()
             }
-            // An alarm can wake a fresh service process after clock changes.
-            // If there is no live runtime in this process, do not leave a
-            // background service instance hanging around just to hold a timer.
-            if (currentConfig == null) stopSelf()
             return
         }
-
-        Log.w(TAG, "OS session-expiry alarm fired; stopping runtime fail-closed")
         val activeToken = currentConfig?.RUNTIME_TOKEN.orEmpty()
         if (activeToken.isNotEmpty() && activeToken == storedToken) {
             stopAll(storedToken)
@@ -569,7 +498,6 @@ class XrayVPNService : VpnService() {
     private fun scheduleSessionExpiryAlarm(runtimeToken: String, expiresAtEpochMs: Long): Boolean {
         cancelSessionExpiryAlarm()
         if (runtimeToken.isEmpty() || expiresAtEpochMs <= 0L) return false
-
         return try {
             val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
             val pendingIntent = sessionExpiryPendingIntent(runtimeToken)
@@ -581,7 +509,6 @@ class XrayVPNService : VpnService() {
                         pendingIntent,
                     )
                 } catch (_: SecurityException) {
-                    Log.w(TAG, "Exact alarm unavailable; using inexact idle-capable expiry alarm")
                     alarmManager.setAndAllowWhileIdle(
                         AlarmManager.RTC_WAKEUP,
                         expiresAtEpochMs,
@@ -592,8 +519,8 @@ class XrayVPNService : VpnService() {
                 alarmManager.setExact(AlarmManager.RTC_WAKEUP, expiresAtEpochMs, pendingIntent)
             }
             true
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to schedule OS session-expiry alarm", e)
+        } catch (error: Exception) {
+            Log.e(TAG, "Failed to schedule OS session-expiry alarm", error)
             false
         }
     }
@@ -602,8 +529,8 @@ class XrayVPNService : VpnService() {
         try {
             val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
             alarmManager.cancel(sessionExpiryPendingIntent(""))
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to cancel session-expiry alarm", e)
+        } catch (error: Exception) {
+            Log.w(TAG, "Failed to cancel session-expiry alarm", error)
         }
     }
 
@@ -624,6 +551,7 @@ class XrayVPNService : VpnService() {
             XrayCoreManager.stopCore(this, confirmationToken)
             stopForeground(true)
         }
+        runtimeExecutor.shutdownNow()
         super.onDestroy()
     }
 
@@ -634,43 +562,38 @@ class XrayVPNService : VpnService() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channelId = "REVOLT_VPN_SERVICE"
-            val channelName = "VPN Service"
             val channel = android.app.NotificationChannel(
-                channelId,
-                channelName,
-                android.app.NotificationManager.IMPORTANCE_LOW
+                "REVOLT_VPN_SERVICE",
+                "VPN Service",
+                android.app.NotificationManager.IMPORTANCE_LOW,
             )
-            val manager = getSystemService(android.app.NotificationManager::class.java)
-            manager?.createNotificationChannel(channel)
+            getSystemService(android.app.NotificationManager::class.java)
+                ?.createNotificationChannel(channel)
         }
     }
 
     private fun createNotification(content: String): android.app.Notification {
-        val channelId = "REVOLT_VPN_SERVICE"
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            android.app.Notification.Builder(this, channelId)
+            android.app.Notification.Builder(this, "REVOLT_VPN_SERVICE")
         } else {
             @Suppress("DEPRECATION")
             android.app.Notification.Builder(this)
         }
-
         val icon = resources.getIdentifier("notification_icon", "drawable", packageName)
             .takeIf { it != 0 } ?: android.R.drawable.ic_dialog_info
-
-        val notification = builder
+        return builder
             .setContentTitle("VPN Service")
             .setContentText(content)
             .setSmallIcon(icon)
             .setOngoing(true)
             .setAutoCancel(false)
             .setOnlyAlertOnce(true)
+            .setVisibility(android.app.Notification.VISIBILITY_PRIVATE)
             .build()
-
-        notification.flags = notification.flags or
-            android.app.Notification.FLAG_ONGOING_EVENT or
-            android.app.Notification.FLAG_NO_CLEAR
-        return notification
+            .also {
+                it.flags = it.flags or android.app.Notification.FLAG_ONGOING_EVENT or
+                    android.app.Notification.FLAG_NO_CLEAR
+            }
     }
 
     companion object {
