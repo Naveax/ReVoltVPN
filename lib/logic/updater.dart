@@ -8,6 +8,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
+import 'package:revoltvpn/logic/update_uri_policy.dart';
 
 enum UpdateStatus { upToDate, updateAvailable, checkFailed }
 
@@ -15,7 +16,12 @@ enum InstallSource { playStore, sideload }
 
 Uri? _trustedHttpsUri(String raw, Set<String> allowedHosts) {
   final uri = Uri.tryParse(raw);
-  if (uri == null || uri.scheme != 'https' || !allowedHosts.contains(uri.host)) {
+  final normalizedHosts = allowedHosts.map((host) => host.toLowerCase()).toSet();
+  if (uri == null ||
+      uri.scheme != 'https' ||
+      uri.userInfo.isNotEmpty ||
+      uri.hasFragment ||
+      !normalizedHosts.contains(uri.host.toLowerCase())) {
     return null;
   }
   return uri;
@@ -40,7 +46,7 @@ class _ParsedVersion {
     if (rawCore.isEmpty || rawCore.any((p) => int.tryParse(p) == null)) {
       return null;
     }
-    final core = rawCore.map(int.parse).toList(growable: false);
+    final core = rawCore.map(int.parse).toList(growable: true);
     while (core.length < 3) {
       core.add(0);
     }
@@ -111,6 +117,13 @@ class GitHubUpdater {
 
   static String? _cachedDownloadUrl;
 
+  static Uri? _trustedReleaseUri(String raw) =>
+      UpdateUriPolicy.trustedGitHubRelease(
+        raw: raw,
+        owner: AppConfig.githubOwner,
+        repo: AppConfig.githubRepo,
+      );
+
   static Future<String?> fetchLatestVersion() async {
     final apiUri = Uri.https(
       'api.github.com',
@@ -134,8 +147,7 @@ class GitHubUpdater {
       }
 
       final htmlUrl = decoded['html_url'];
-      if (htmlUrl is String &&
-          _trustedHttpsUri(htmlUrl, const {'github.com'}) != null) {
+      if (htmlUrl is String && _trustedReleaseUri(htmlUrl) != null) {
         _cachedDownloadUrl = htmlUrl;
       } else {
         _cachedDownloadUrl = null;
@@ -161,9 +173,9 @@ class GitHubUpdater {
 
   static Future<bool> open() async {
     final raw = _cachedDownloadUrl ?? AppConfig.githubReleasesUrl;
-    final uri = _trustedHttpsUri(raw, const {'github.com'});
+    final uri = _trustedReleaseUri(raw);
     if (uri == null) {
-      debugPrint('[Updater] Refusing untrusted GitHub update URL.');
+      debugPrint('[Updater] Refusing update URL outside configured GitHub repository.');
       return false;
     }
 
