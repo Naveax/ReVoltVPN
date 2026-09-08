@@ -1,16 +1,22 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/control_plane_policy.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
+import 'package:revoltvpn/logic/session_auth.dart';
 
 class HivemindService {
-  static String? _expectedNonce;
+  static String? _pendingNonce;
+  static String? _activeSessionNonce;
+  static Future<String?>? _activeSessionNonceLoad;
   static int _currentCallId = 0;
+
+  static const FlutterSecureStorage _sessionStorage = FlutterSecureStorage();
+  static const String _activeSessionNonceKey = 'revolt_active_session_nonce_v1';
 
   static const _ua = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
@@ -32,6 +38,7 @@ class HivemindService {
   static Future<http.Response> controlGet(
     Uri uri, {
     Duration timeout = const Duration(seconds: 5),
+    Map<String, String> headers = const <String, String>{},
   }) async {
     final validatedUri = ControlPlanePolicy.validate(
       requested: uri,
@@ -39,6 +46,7 @@ class HivemindService {
     );
     final client = http.Client();
     final request = http.Request('GET', validatedUri)
+      ..headers.addAll(headers)
       ..headers['User-Agent'] = _ua
       ..followRedirects = false;
 
@@ -81,13 +89,81 @@ class HivemindService {
     }
   }
 
+  /// Cancel in-flight activation work without destroying authorization for an
+  /// already-running server session. An unconfirmed native STOP still needs
+  /// authenticated quota/status sync to fail closed safely.
   static void cancel() {
     _currentCallId++;
-    _expectedNonce = null;
+    _pendingNonce = null;
   }
 
+  /// Compatibility hook used by the existing rewarded-ad path. The active
+  /// session credential is promoted only after an authenticated status response.
   static void setExpectedNonce(String nonce) {
-    _expectedNonce = nonce;
+    _pendingNonce = nonce;
+  }
+
+  static Future<String?> _loadActiveSessionNonce() async {
+    final cached = _activeSessionNonce;
+    if (cached != null && SessionAuth.isValidNonce(cached)) return cached;
+
+    final inFlight = _activeSessionNonceLoad;
+    if (inFlight != null) return inFlight;
+
+    final operation = _readActiveSessionNonce();
+    _activeSessionNonceLoad = operation;
+    try {
+      return await operation;
+    } finally {
+      if (identical(_activeSessionNonceLoad, operation)) {
+        _activeSessionNonceLoad = null;
+      }
+    }
+  }
+
+  static Future<String?> _readActiveSessionNonce() async {
+    final stored = await _sessionStorage.read(key: _activeSessionNonceKey);
+    if (stored == null) return null;
+    if (!SessionAuth.isValidNonce(stored)) {
+      await _sessionStorage.delete(key: _activeSessionNonceKey);
+      return null;
+    }
+    _activeSessionNonce = stored;
+    return stored;
+  }
+
+  static Future<void> _storeActiveSessionNonce(String nonce) async {
+    if (!SessionAuth.isValidNonce(nonce)) {
+      throw const FormatException('Invalid active session authorization nonce.');
+    }
+    await _sessionStorage.write(key: _activeSessionNonceKey, value: nonce);
+    _activeSessionNonce = nonce;
+  }
+
+  static Future<http.Response> sessionStatus(
+    String deviceId, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    final nonce = await _loadActiveSessionNonce();
+    if (nonce == null) {
+      throw StateError('Active session authorization is unavailable.');
+    }
+    return _sessionStatusWithNonce(deviceId, nonce, timeout: timeout);
+  }
+
+  static Future<http.Response> _sessionStatusWithNonce(
+    String deviceId,
+    String nonce, {
+    Duration timeout = const Duration(seconds: 5),
+  }) {
+    final statusUri = _publicUrl('/session/status').replace(
+      queryParameters: {'device_id': deviceId},
+    );
+    return controlGet(
+      statusUri,
+      timeout: timeout,
+      headers: SessionAuth.headers(nonce),
+    );
   }
 
   static Future<String> fetchConfigDirectly({
@@ -101,8 +177,8 @@ class HivemindService {
     final deviceId = await CryptoService.getDeviceId();
     _throwIfCancelled(callId);
 
-    final nonce = _newNonce();
-    _expectedNonce = nonce;
+    final nonce = SessionAuth.newNonce();
+    _pendingNonce = nonce;
 
     if (!skipAdBypass) {
       await _runConfiguredBypass(deviceId, nonce);
@@ -118,7 +194,12 @@ class HivemindService {
         final session = await _fetchActiveSession(deviceId, nonce);
         _throwIfCancelled(callId);
         if (session != null) {
-          _expectedNonce = null;
+          // Persist the authorization before the tunnel starts. If the Flutter
+          // process later dies, the adopted native runtime must still be able
+          // to authenticate quota/expiry status checks.
+          await _storeActiveSessionNonce(nonce);
+          _throwIfCancelled(callId);
+          _pendingNonce = null;
           return session.toVlessUrl();
         }
       } catch (e) {
@@ -137,21 +218,16 @@ class HivemindService {
 
   static Future<bool> checkHealth() async {
     try {
+      // AppConfig.hivemindApiPublic is the /api base; the Rust daemon exposes
+      // its public health contract at /api/v2/health.
       final response = await controlGet(
-        _publicUrl('/health'),
+        _publicUrl('/v2/health'),
         timeout: const Duration(seconds: 3),
       );
       return response.statusCode == 200;
     } catch (_) {
       return false;
     }
-  }
-
-  static String _newNonce() {
-    final random = Random.secure();
-    final high = random.nextInt(0x7FFFFFFF);
-    final low = random.nextInt(0x7FFFFFFF);
-    return '$high-$low-${DateTime.now().microsecondsSinceEpoch}';
   }
 
   static Future<void> _runConfiguredBypass(String deviceId, String nonce) async {
@@ -170,22 +246,15 @@ class HivemindService {
     String deviceId,
     String nonce,
   ) async {
-    final statusUri = _publicUrl('/session/status').replace(
-      queryParameters: {'device_id': deviceId},
-    );
-    final response = await controlGet(statusUri);
+    final response = await _sessionStatusWithNonce(deviceId, nonce);
     if (response.statusCode != 200) return null;
 
     final decoded = jsonDecode(response.body);
     if (decoded is! Map<String, dynamic>) return null;
 
-    final serverNonce = decoded['nonce'];
-    if (_expectedNonce != nonce ||
-        serverNonce is! String ||
-        serverNonce != nonce) {
-      return null;
-    }
-
+    // The Rust API authenticates the request with the session nonce header and
+    // intentionally does not reflect that bearer credential in the response.
+    if (_pendingNonce != nonce) return null;
     if (decoded['active'] != true || decoded['vless_uuid'] == null) {
       return null;
     }

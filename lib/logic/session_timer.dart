@@ -3,7 +3,6 @@ import 'dart:convert';
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/notification_service.dart';
@@ -227,9 +226,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final deviceId = await CryptoService.getDeviceId();
       if (epoch != _sessionEpoch || _isDisconnecting) return;
-      final base = Uri.parse('${AppConfig.hivemindApiPublic}/session/status');
-      final url = base.replace(queryParameters: {'device_id': deviceId});
-      final response = await HivemindService.directGet(url);
+      final response = await HivemindService.sessionStatus(deviceId);
       if (epoch != _sessionEpoch || _isDisconnecting) return;
 
       if (response.statusCode != 200) {
