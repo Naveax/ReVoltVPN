@@ -94,6 +94,7 @@ jobs:
               'com.github.tfox.flutter_vless.xray.core.CoreConfigPipeTest': 3,
               'com.github.tfox.flutter_vless.VersionProbeTest': 5,
               'com.github.tfox.flutter_vless.xray.core.RuntimeGenerationTest': 3,
+              'com.github.tfox.flutter_vless.xray.service.RuntimeRecoveryGateTest': 3,
           }
           seen = {}
           for path in paths:
