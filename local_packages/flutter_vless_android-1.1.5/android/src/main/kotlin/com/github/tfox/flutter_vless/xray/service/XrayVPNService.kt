@@ -26,8 +26,8 @@ class XrayVPNService : VpnService() {
     private var mInterface: ParcelFileDescriptor? = null
     private var tun2socksProcess: Process? = null
     @Volatile private var isRunning = false
-    @Volatile private var recoveringXray = false
-    @Volatile private var recoveringTun2socks = false
+    private val xrayRecoveryGate = RuntimeRecoveryGate()
+    private val tun2socksRecoveryGate = RuntimeRecoveryGate()
     @Volatile private var currentConfig: XrayConfig? = null
     @Volatile private var currentProxyOnly = false
     @Volatile private var shuttingDownIntentionally = false
@@ -232,7 +232,10 @@ class XrayVPNService : VpnService() {
             inbound.optString("listen") != "127.0.0.1"
         ) return null
         val settings = inbound.optJSONObject("settings") ?: return null
-        if (settings.optString("auth") != "password" || !settings.optBoolean("udp", false)) return null
+        if (settings.optString("auth") != "password" ||
+            !settings.optBoolean("udp", false) ||
+            settings.optString("ip") != "127.0.0.1"
+        ) return null
         val users = settings.optJSONArray("users") ?: return null
         if (users.length() != 1) return null
         val user = users.optJSONObject(0) ?: return null
@@ -244,20 +247,37 @@ class XrayVPNService : VpnService() {
     }
 
     private fun scheduleTun2socksRecovery(config: XrayConfig, reason: String) {
-        if (!isRunning || !isCurrent(config) || recoveringTun2socks) return
+        if (!isRunning || !isCurrent(config)) return
+        val token = config.RUNTIME_TOKEN
+        if (!tun2socksRecoveryGate.tryAcquire(token)) return
         XrayCoreManager.markRuntimeConnecting(this, config)
-        recoveringTun2socks = true
         val attempt = ++tun2socksRecoveryAttempt
         val delayMs = (500L * (1L shl (attempt - 1).coerceIn(0, 6))).coerceAtMost(30_000L)
         Thread({
             try {
                 Thread.sleep(delayMs)
             } catch (_: InterruptedException) {
-                recoveringTun2socks = false
+                Thread.currentThread().interrupt()
+                tun2socksRecoveryGate.release(token)
                 return@Thread
             }
-            recoveringTun2socks = false
-            if (isRunning && isCurrent(config)) runTun2socks(config)
+            if (!isRunning || !isCurrent(config)) {
+                tun2socksRecoveryGate.release(token)
+                return@Thread
+            }
+
+            // Release this generation's claim before starting a fresh process.
+            // If that process exits immediately its monitor can schedule the
+            // next recovery instead of having the event swallowed by this gate.
+            tun2socksRecoveryGate.release(token)
+            try {
+                if (isRunning && isCurrent(config)) runTun2socks(config)
+            } catch (error: Exception) {
+                Log.e(TAG, "tun2socks recovery attempt failed", error)
+                if (isRunning && isCurrent(config)) {
+                    scheduleTun2socksRecovery(config, "restart failed")
+                }
+            }
         }, "revolt-tun2socks-recovery").start()
         Log.w(TAG, "Scheduled tun2socks recovery attempt $attempt: $reason")
     }
@@ -289,6 +309,7 @@ class XrayVPNService : VpnService() {
                     scheduleTun2socksRecovery(config, "process exited")
                 }
             } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
             } catch (error: Exception) {
                 Log.e(TAG, "Error monitoring tun2socks", error)
             }
@@ -330,9 +351,10 @@ class XrayVPNService : VpnService() {
     }
 
     fun handleXrayCoreExit(config: XrayConfig) {
-        if (!isRunning || !isCurrent(config) || recoveringXray) return
+        if (!isRunning || !isCurrent(config)) return
+        val token = config.RUNTIME_TOKEN
+        if (!xrayRecoveryGate.tryAcquire(token)) return
         XrayCoreManager.markRuntimeConnecting(this, config)
-        recoveringXray = true
         Thread({
             var attempt = 0
             try {
@@ -346,12 +368,21 @@ class XrayVPNService : VpnService() {
                         if (currentProxyOnly || (mInterface != null && tun2socksProcess?.isAlive == true)) {
                             XrayCoreManager.markRuntimeReady(this, config)
                         }
+
+                        // A freshly-started core can exit before its callback is
+                        // able to acquire the recovery gate. Release ownership,
+                        // then recheck liveness so such an exit cannot be lost.
+                        xrayRecoveryGate.release(token)
+                        if (isRunning && isCurrent(config) && !XrayCoreManager.isXrayRunning()) {
+                            handleXrayCoreExit(config)
+                        }
                         return@Thread
                     }
                 }
             } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
             } finally {
-                recoveringXray = false
+                xrayRecoveryGate.release(token)
             }
         }, "revolt-xray-recovery").start()
     }
@@ -365,8 +396,8 @@ class XrayVPNService : VpnService() {
             sessionDeadlineElapsed = null
             sessionDeadlineToken = null
         }
-        recoveringXray = false
-        recoveringTun2socks = false
+        xrayRecoveryGate.reset()
+        tun2socksRecoveryGate.reset()
         tun2socksRecoveryAttempt = 0
         currentProxyOnly = false
         AppConfigs.RUNTIME_READY = false
