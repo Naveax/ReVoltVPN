@@ -125,7 +125,8 @@ class AdManager extends ChangeNotifier {
     } else {
       // Support rewards authorize an extension of the exact active generation. The server
       // deliberately requires the current possession nonce, so a fresh random nonce is invalid.
-      if (await HivemindService.probeCurrentSession() != SessionProbeResult.active) {
+      if (await HivemindService.probeCurrentSession() !=
+          SessionProbeResult.active) {
         return false;
       }
       final currentNonce = await HivemindService.getSessionNonce();
@@ -143,10 +144,10 @@ class AdManager extends ChangeNotifier {
           'ad_type': adType,
           'nonce': nonce,
         });
-        final fakeUrl = Uri.parse(
-            '${AppConfig.hivemindApiPublic}/admob/callback'
-            '?signature=test&key_id=test'
-            '&custom_data=${Uri.encodeComponent(customData)}');
+        final fakeUrl =
+            Uri.parse('${AppConfig.hivemindApiPublic}/admob/callback'
+                '?signature=test&key_id=test'
+                '&custom_data=${Uri.encodeComponent(customData)}');
         final response = await HivemindService.directGet(
           fakeUrl,
           timeout: const Duration(seconds: 8),
@@ -184,7 +185,8 @@ class AdManager extends ChangeNotifier {
     final rewardCompleter = Completer<bool>();
 
     _rewardedAd!.fullScreenContentCallback = FullScreenContentCallback(
-      onAdShowedFullScreenContent: (ad) => debugPrint('[AdManager] Ad showing.'),
+      onAdShowedFullScreenContent: (ad) =>
+          debugPrint('[AdManager] Ad showing.'),
       onAdDismissedFullScreenContent: (ad) {
         debugPrint('[AdManager] Ad dismissed.');
         ad.dispose();
@@ -209,7 +211,8 @@ class AdManager extends ChangeNotifier {
     _rewardedAd!.setServerSideOptions(ssvOptions);
     await _rewardedAd!.show(
       onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {
-        debugPrint('[AdManager] Reward earned: ${reward.amount} ${reward.type}');
+        debugPrint(
+            '[AdManager] Reward earned: ${reward.amount} ${reward.type}');
         if (!rewardCompleter.isCompleted) {
           rewardCompleter.complete(true);
         }
