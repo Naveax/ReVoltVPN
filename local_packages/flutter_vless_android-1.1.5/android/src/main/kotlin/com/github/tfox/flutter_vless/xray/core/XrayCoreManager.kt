@@ -10,7 +10,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
-import android.os.CountDownTimer
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
@@ -27,8 +28,18 @@ object XrayCoreManager {
     private const val NOTIFICATION_ID = 1
     private const val TAG = "XrayCoreManager"
     private var xrayProcess: Process? = null
-    private var countDownTimer: CountDownTimer? = null
+    private var timerHandler: Handler? = null
+    private var timerContext: Context? = null
     private var seconds = 0
+    private val timerRunnable = object : Runnable {
+        override fun run() {
+            val context = timerContext ?: return
+            val config = AppConfigs.V2RAY_CONFIG ?: return
+            seconds++
+            sendStatusBroadcast(context, config)
+            timerHandler?.postDelayed(this, 1_000L)
+        }
+    }
 
     private fun removeLegacyConfig(filesDir: File): Boolean {
         return try {
@@ -295,21 +306,18 @@ object XrayCoreManager {
             AppConfigs.V2RAY_STATE == AppConfigs.V2RAY_STATES.V2RAY_CONNECTING
 
     private fun startTimer(context: Context) {
-        countDownTimer?.cancel()
+        val handler = timerHandler ?: Handler(Looper.getMainLooper()).also {
+            timerHandler = it
+        }
+        handler.removeCallbacks(timerRunnable)
+        timerContext = context.applicationContext
         seconds = 0
-        countDownTimer = object : CountDownTimer(Long.MAX_VALUE, 1000) {
-            override fun onTick(millisUntilFinished: Long) {
-                seconds++
-                val config = AppConfigs.V2RAY_CONFIG ?: return
-                sendStatusBroadcast(context, config)
-            }
-            override fun onFinish() = Unit
-        }.start()
+        handler.postDelayed(timerRunnable, 1_000L)
     }
 
     private fun stopTimer() {
-        countDownTimer?.cancel()
-        countDownTimer = null
+        timerHandler?.removeCallbacks(timerRunnable)
+        timerContext = null
         seconds = 0
     }
 
