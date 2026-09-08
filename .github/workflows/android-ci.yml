@@ -83,7 +83,6 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import glob
-          import sys
           import xml.etree.ElementTree as ET
 
           paths = glob.glob('**/test-results/testDebugUnitTest/TEST-*.xml', recursive=True)
@@ -94,6 +93,7 @@ jobs:
               'com.github.tfox.flutter_vless.xray.core.XrayCoreManagerTest': 5,
               'com.github.tfox.flutter_vless.xray.core.CoreConfigPipeTest': 3,
               'com.github.tfox.flutter_vless.VersionProbeTest': 5,
+              'com.github.tfox.flutter_vless.xray.core.RuntimeGenerationTest': 3,
           }
           seen = {}
           for path in paths:
