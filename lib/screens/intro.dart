@@ -1,12 +1,13 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:revoltvpn/logic/app_colors.dart';
 import 'package:revoltvpn/logic/haptic_settings.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/screens/main_screen.dart';
-import 'package:revoltvpn/screens/settings/in_settings/rain.dart';
 import 'package:revoltvpn/screens/settings/in_settings/lightning.dart';
+import 'package:revoltvpn/screens/settings/in_settings/rain.dart';
 
 class IntroScreen extends StatefulWidget {
   const IntroScreen({super.key});
@@ -45,7 +46,9 @@ class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
     final elapsed = Stopwatch()..start();
     final vpn = context.read<VpnConnection>();
 
-    // The overlays and haptic layer read these before MainScreen mounts.
+    // Attach all preference futures immediately, then bound both the engine and
+    // preference layers. A damaged preferences backend must never pin the intro
+    // screen forever.
     final settingsPrefs = Future.wait([
       loadRainPref(),
       loadLightningPref(),
@@ -62,7 +65,10 @@ class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
     }
 
     try {
-      await settingsPrefs;
+      await settingsPrefs.timeout(_bootTimeout);
+    } on TimeoutException {
+      debugPrint('[Boot] Settings load exceeded ${_bootTimeout.inSeconds}s; '
+          'using safe defaults.');
     } catch (e) {
       debugPrint('[Boot] Settings prefs load failed, using defaults: $e');
     }

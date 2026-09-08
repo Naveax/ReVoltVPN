@@ -11,12 +11,48 @@ import 'package:revoltvpn/logic/session_timer.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/screens/intro.dart';
 
+const _startupPreferenceTimeout = Duration(seconds: 5);
+
+Future<void> _initializePreferenceLayer(
+  String name,
+  Future<void> Function() initialize,
+) async {
+  try {
+    await initialize().timeout(_startupPreferenceTimeout);
+  } catch (error, stack) {
+    debugPrint('[Startup] $name initialization failed: $error');
+    debugPrintStack(stackTrace: stack);
+  }
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  await HapticSettings.initialize();
-  await ConnectionSettings.initialize();
-  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  // Install global handlers before any plugin or preference initialization.
+  // Startup failures must not vanish before the application has a chance to
+  // report or recover from them.
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+  };
+  PlatformDispatcher.instance.onError = (error, stack) {
+    debugPrint('[PlatformError] $error');
+    debugPrintStack(stackTrace: stack);
+    return false;
+  };
+
+  await _initializePreferenceLayer('Haptics', HapticSettings.initialize);
+  await _initializePreferenceLayer(
+    'Connection settings',
+    ConnectionSettings.initialize,
+  );
+
+  try {
+    await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp])
+        .timeout(_startupPreferenceTimeout);
+  } catch (error, stack) {
+    debugPrint('[Startup] Orientation setup failed: $error');
+    debugPrintStack(stackTrace: stack);
+  }
 
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
@@ -24,15 +60,6 @@ Future<void> main() async {
     systemNavigationBarColor: Color(0xFF0D1117),
     systemNavigationBarIconBrightness: Brightness.light,
   ));
-
-  FlutterError.onError = (details) {
-    debugPrint('[FlutterError] ${details.exception}');
-  };
-
-  PlatformDispatcher.instance.onError = (error, stack) {
-    debugPrint('[PlatformError] $error\n$stack');
-    return true;
-  };
 
   runApp(const ReVoltApp());
 }

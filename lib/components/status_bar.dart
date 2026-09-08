@@ -14,15 +14,17 @@ class StatusBar extends StatelessWidget {
       builder: (context, vpn, timer, _) {
         final isConnected = vpn.status == VpnStatus.connected;
         final isConnecting = vpn.status == VpnStatus.connecting;
+        final isError = vpn.status == VpnStatus.error;
         final serverHealthy =
-            vpn.serverReachable || (isConnected && timer.hasSyncedOnce);
-        final sessionOrTunnelHealthy = timer.hasSyncedOnce || vpn.serverReachable;
+            !isError && (vpn.serverReachable || (isConnected && timer.hasSyncedOnce));
 
-        final statusLabel = isConnected
-            ? (sessionOrTunnelHealthy ? 'Online' : 'Syncing…')
-            : (isConnecting
-                ? 'Connecting…'
-                : (vpn.serverReachable ? 'Ready' : 'Offline'));
+        final statusLabel = isError
+            ? vpn.statusMessage
+            : isConnected
+                ? (timer.hasSyncedOnce ? 'Online' : 'Syncing…')
+                : isConnecting
+                    ? 'Connecting…'
+                    : (vpn.serverReachable ? 'Ready' : 'Offline');
 
         return Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -96,6 +98,19 @@ class StatusBar extends StatelessWidget {
                   ],
                 ),
               ),
+              if (isError) ...[
+                const SizedBox(height: 6),
+                Text(
+                  vpn.statusMessage,
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textDim,
+                    fontSize: 11,
+                  ),
+                ),
+              ],
             ],
           ),
         );

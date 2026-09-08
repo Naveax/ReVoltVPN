@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-
-import '../lib/logic/network_monitor.dart';
+import 'package:revoltvpn/logic/network_monitor.dart';
 
 void main() {
   test('malformed network metadata falls back without a cast failure', () {

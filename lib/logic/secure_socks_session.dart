@@ -1,10 +1,11 @@
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math';
 
 class SecureSocksSession {
   static const String inboundTag = 'revolt-secure-socks';
   static final Random _random = Random.secure();
+  static const int _minimumPort = 1025;
+  static const int _maximumPort = 65535;
 
   final int port;
   final String username;
@@ -24,18 +25,13 @@ class SecureSocksSession {
       throw const FormatException('VLESS configuration must be a JSON object.');
     }
 
-    final reservation = await ServerSocket.bind(
-      InternetAddress.loopbackIPv4,
-      0,
-      shared: false,
-    );
-    final port = reservation.port;
-    await reservation.close();
-
-    if (port <= 1024 || port > 65535) {
-      throw StateError('Could not allocate a safe local SOCKS5 port.');
-    }
-
+    // Do not probe a port with bind(0) and then release it before Xray starts.
+    // That check/use split creates a real ownership race and also exposes which
+    // port the client intends to use. Xray is the first process to bind the
+    // CSPRNG-selected candidate. Ordinary collision is handled by the bounded
+    // runtime retry in VpnConnection rather than pretending a released socket
+    // is a reservation.
+    final port = _candidatePort();
     final username = _token(16);
     final password = _token(32);
 
@@ -71,7 +67,13 @@ class SecureSocksSession {
     );
   }
 
+  static int _candidatePort() =>
+      _minimumPort + _random.nextInt(_maximumPort - _minimumPort + 1);
+
   static String _token(int byteCount) {
+    if (byteCount <= 0) {
+      throw ArgumentError.value(byteCount, 'byteCount', 'must be positive');
+    }
     final bytes = List<int>.generate(byteCount, (_) => _random.nextInt(256));
     return bytes.map((value) => value.toRadixString(16).padLeft(2, '0')).join();
   }
