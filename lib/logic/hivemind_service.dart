@@ -32,7 +32,7 @@ class HivemindService {
     final deviceId = await CryptoService.getDeviceId();
 
     final callId = ++_currentCallId;
-    final nonce = '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
+    final nonce = '${Random.secure().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
     _expectedNonce = nonce;
     debugPrint('[HivemindService] Call #$callId — nonce: $nonce');
 
