@@ -42,6 +42,16 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
     if (next == null || next == _mode) return;
 
     final vpn = context.read<VpnConnection>();
+    if (vpn.shutdownUnconfirmed) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'VPN shutdown is not confirmed. Retry disconnect before changing mode.',
+          ),
+        ),
+      );
+      return;
+    }
     if (_isTunnelBusy(vpn.status)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -80,6 +90,16 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
     try {
       await timer.disconnect();
       if (!mounted) return;
+      if (vpn.shutdownUnconfirmed || vpn.status != VpnStatus.disconnected) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Android did not confirm the old VPN stopped. Reconnect was cancelled.',
+            ),
+          ),
+        );
+        return;
+      }
       if (await vpn.connect()) {
         if (!mounted) return;
         await timer.start();
