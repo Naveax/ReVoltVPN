@@ -23,11 +23,19 @@ class CryptoService {
 
     final operation = _loadOrCreateDeviceId();
     _deviceIdOperation = operation;
-    operation.whenComplete(() {
+
+    void release() {
       if (identical(_deviceIdOperation, operation)) {
         _deviceIdOperation = null;
       }
-    });
+    }
+
+    // Observe completion without replacing the Future returned to callers and
+    // without creating a second unhandled error chain on storage failure.
+    operation.then<void>(
+      (_) => release(),
+      onError: (Object _, StackTrace __) => release(),
+    );
     return operation;
   }
 
