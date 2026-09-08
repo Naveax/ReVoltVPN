@@ -1,0 +1,55 @@
+name: flutter-strict
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flutter-strict-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  strict:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install pinned Flutter SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk="$RUNNER_TEMP/flutter"
+          git init "$sdk"
+          git -C "$sdk" remote add origin https://github.com/flutter/flutter.git
+          git -C "$sdk" fetch --depth=1 origin 4cf24164269a5ebf0c16a028a00727d0e77bbb05
+          git -C "$sdk" checkout --detach 4cf24164269a5ebf0c16a028a00727d0e77bbb05
+          printf '%s\n' "$sdk/bin" >> "$GITHUB_PATH"
+          "$sdk/bin/flutter" --version
+
+      - name: Resolve locked dependencies
+        run: flutter pub get --enforce-lockfile
+
+      - name: Check Dart formatting
+        run: dart format --output=none --set-exit-if-changed lib
+
+      - name: Analyze Flutter sources
+        run: flutter analyze
+
+      - name: Run tests when present
+        shell: bash
+        run: |
+          set -euo pipefail
+          if find test -type f -name '*_test.dart' -print -quit 2>/dev/null | grep -q .; then
+            flutter test
+          else
+            echo 'No Flutter tests are present yet; analyze/format gates still apply.'
+          fi
