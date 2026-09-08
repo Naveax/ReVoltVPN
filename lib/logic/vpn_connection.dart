@@ -32,6 +32,8 @@ class VpnConnection extends ChangeNotifier {
 
   bool _adoptedRunningRuntime = false;
   bool get adoptedRunningRuntime => _adoptedRunningRuntime;
+  bool _shutdownUnconfirmed = false;
+  bool get shutdownUnconfirmed => _shutdownUnconfirmed;
   bool _serverReachable = false;
   bool get serverReachable => _serverReachable;
   ConnectionMode _activeMode = ConnectionMode.tun;
@@ -176,11 +178,16 @@ class VpnConnection extends ChangeNotifier {
       case VlessConnectionState.connected:
         if (_suppressNativeConnect || _userDisconnecting) return;
         if (_connectEpoch == 0) _adoptedRunningRuntime = true;
+        _shutdownUnconfirmed = false;
         _errorMessage = null;
         _setStatus(VpnStatus.connected, _connectedLabel);
         break;
       case VlessConnectionState.disconnected:
+        // Native generation filtering makes this an authoritative release of
+        // the runtime latch even if a prior stop call timed out in Dart.
+        _shutdownUnconfirmed = false;
         if (_suppressNativeConnect || _userDisconnecting) return;
+        _errorMessage = null;
         _clearRuntimeSnapshot();
         _setStatus(VpnStatus.disconnected, 'Tap to connect');
         break;
@@ -203,6 +210,12 @@ class VpnConnection extends ChangeNotifier {
   }
 
   Future<bool> connect({bool skipAdBypass = false}) async {
+    if (_shutdownUnconfirmed) {
+      _errorMessage =
+          'A previous VPN runtime has not confirmed shutdown. Retry disconnect before starting another session.';
+      _setStatus(VpnStatus.error, 'Shutdown must be confirmed');
+      return false;
+    }
     if (_disposed ||
         _userDisconnecting ||
         _status == VpnStatus.connected ||
@@ -327,6 +340,7 @@ class VpnConnection extends ChangeNotifier {
           }
           if (!_isCurrentConnect(connectEpoch)) return false;
           _lastSecureSocks = secureSocks;
+          _shutdownUnconfirmed = false;
           _errorMessage = null;
           _setStatus(VpnStatus.connected, _connectedLabel);
           return true;
@@ -337,9 +351,11 @@ class VpnConnection extends ChangeNotifier {
           _suppressNativeConnect = true;
           try {
             await _stopRuntime();
+            _shutdownUnconfirmed = false;
           } catch (stopError) {
             debugPrint('[VPN] Runtime cleanup failed after start error: $stopError');
             if (!_isCurrentConnect(connectEpoch)) return false;
+            _shutdownUnconfirmed = true;
             _suppressNativeConnect = false;
             _errorMessage = 'The VPN runtime could not be stopped safely.';
             _setStatus(VpnStatus.error, 'Shutdown failed');
@@ -434,6 +450,7 @@ class VpnConnection extends ChangeNotifier {
     if (kIsWeb) {
       await Future.delayed(const Duration(milliseconds: 500));
       if (_disposed) return false;
+      _shutdownUnconfirmed = false;
       _clearRuntimeSnapshot();
       _setStatus(VpnStatus.disconnected, 'Tap to connect');
       _userDisconnecting = false;
@@ -445,6 +462,7 @@ class VpnConnection extends ChangeNotifier {
     } catch (error) {
       if (_disposed) return false;
       debugPrint('[VPN] VLESS stop error: $error');
+      _shutdownUnconfirmed = true;
       // Do not erase the runtime snapshot. The native bridge failed to prove
       // shutdown, so the safest client state is "uncertain" with credentials
       // and session deadline still available for recovery/retry.
@@ -456,6 +474,7 @@ class VpnConnection extends ChangeNotifier {
     }
 
     if (_disposed) return false;
+    _shutdownUnconfirmed = false;
     _errorMessage = null;
     _clearRuntimeSnapshot();
     _setStatus(VpnStatus.disconnected, 'Tap to connect');
