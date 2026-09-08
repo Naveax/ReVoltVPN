@@ -7,21 +7,12 @@ class LocalSocksTestResult {
   final bool ok;
   final int? latencyMs;
   final String message;
-
-  const LocalSocksTestResult({
-    required this.ok,
-    required this.latencyMs,
-    required this.message,
-  });
+  const LocalSocksTestResult({required this.ok, required this.latencyMs, required this.message});
 }
 
 abstract final class LocalSocksTester {
   LocalSocksTester._();
 
-  /// Fast local readiness probe used while starting the VPN.
-  ///
-  /// This stops after authenticated SOCKS5 negotiation. Startup must not depend
-  /// on an unrelated external host being reachable.
   static Future<LocalSocksTestResult> testListener({
     String host = '127.0.0.1',
     required int port,
@@ -31,16 +22,10 @@ abstract final class LocalSocksTester {
     final stopwatch = Stopwatch()..start();
     Socket? socket;
     _SocketReader? reader;
-
     try {
-      socket = await Socket.connect(
-        host,
-        port,
-        timeout: const Duration(seconds: 1),
-      );
+      socket = await Socket.connect(host, port, timeout: const Duration(seconds: 1));
       socket.setOption(SocketOption.tcpNoDelay, true);
       reader = _SocketReader(socket);
-
       final authenticated = await _authenticate(
         reader,
         socket,
@@ -55,7 +40,6 @@ abstract final class LocalSocksTester {
           message: 'Local SOCKS5 listener rejected authentication.',
         );
       }
-
       stopwatch.stop();
       return LocalSocksTestResult(
         ok: true,
@@ -63,31 +47,17 @@ abstract final class LocalSocksTester {
         message: 'Local SOCKS5 listener is ready.',
       );
     } on TimeoutException {
-      return const LocalSocksTestResult(
-        ok: false,
-        latencyMs: null,
-        message: 'Local SOCKS5 listener timed out.',
-      );
+      return const LocalSocksTestResult(ok: false, latencyMs: null, message: 'Local SOCKS5 listener timed out.');
     } on SocketException {
-      return LocalSocksTestResult(
-        ok: false,
-        latencyMs: null,
-        message: 'Local SOCKS5 is not listening on $host:$port.',
-      );
+      return LocalSocksTestResult(ok: false, latencyMs: null, message: 'Local SOCKS5 is not listening on $host:$port.');
     } catch (_) {
-      return const LocalSocksTestResult(
-        ok: false,
-        latencyMs: null,
-        message: 'Local SOCKS5 listener check failed.',
-      );
+      return const LocalSocksTestResult(ok: false, latencyMs: null, message: 'Local SOCKS5 listener check failed.');
     } finally {
       await reader?.close();
       await socket?.close();
     }
   }
 
-  /// Full user-facing test: authenticated local SOCKS handshake plus an
-  /// outbound TCP CONNECT through the active ReVolt route.
   static Future<LocalSocksTestResult> test({
     String host = '127.0.0.1',
     required int port,
@@ -100,7 +70,6 @@ abstract final class LocalSocksTester {
     final stopwatch = Stopwatch()..start();
     Socket? socket;
     _SocketReader? reader;
-
     Duration remaining() {
       final micros = totalTimeout.inMicroseconds - stopwatch.elapsedMicroseconds;
       if (micros <= 0) throw TimeoutException('SOCKS5 test timed out.', totalTimeout);
@@ -109,92 +78,86 @@ abstract final class LocalSocksTester {
 
     try {
       if (targetPort <= 0 || targetPort > 65535) {
-        return const LocalSocksTestResult(
-          ok: false,
-          latencyMs: null,
-          message: 'SOCKS5 test target is invalid.',
-        );
+        return const LocalSocksTestResult(ok: false, latencyMs: null, message: 'SOCKS5 test target is invalid.');
       }
-
-      socket = await Socket.connect(
-        host,
-        port,
-        timeout: remaining(),
-      );
+      socket = await Socket.connect(host, port, timeout: remaining());
       socket.setOption(SocketOption.tcpNoDelay, true);
       reader = _SocketReader(socket);
+      if (!await _authenticate(reader, socket, username: username, password: password, timeout: remaining())) {
+        return const LocalSocksTestResult(ok: false, latencyMs: null, message: 'Local SOCKS5 listener rejected authentication.');
+      }
+      final hostBytes = utf8.encode(targetHost);
+      if (hostBytes.isEmpty || hostBytes.length > 255) {
+        return const LocalSocksTestResult(ok: false, latencyMs: null, message: 'SOCKS5 test target is invalid.');
+      }
+      socket.add(<int>[0x05, 0x01, 0x00, 0x03, hostBytes.length, ...hostBytes, (targetPort >> 8) & 0xff, targetPort & 0xff]);
+      await socket.flush();
+      final replyHead = await reader.readExactly(4, timeout: remaining());
+      if (replyHead[0] != 0x05 || replyHead[1] != 0x00) {
+        return const LocalSocksTestResult(ok: false, latencyMs: null, message: 'SOCKS5 is listening, but the ReVolt route could not reach the test target.');
+      }
+      await _consumeAddress(reader, replyHead[3], timeout: remaining());
+      stopwatch.stop();
+      return LocalSocksTestResult(ok: true, latencyMs: stopwatch.elapsedMilliseconds, message: 'Local SOCKS5 and the ReVolt outbound are reachable.');
+    } on TimeoutException {
+      return const LocalSocksTestResult(ok: false, latencyMs: null, message: 'Local SOCKS5 test timed out.');
+    } on SocketException {
+      return LocalSocksTestResult(ok: false, latencyMs: null, message: 'Local SOCKS5 is not listening on $host:$port.');
+    } catch (_) {
+      return const LocalSocksTestResult(ok: false, latencyMs: null, message: 'Local SOCKS5 test failed.');
+    } finally {
+      await reader?.close();
+      await socket?.close();
+    }
+  }
 
-      final authenticated = await _authenticate(
+  /// Verifies the local RFC 1928 UDP ASSOCIATE control path without depending
+  /// on an external UDP server. Success proves that the authenticated local
+  /// Xray ingress accepts UDP association; it does not by itself prove an
+  /// end-to-end Discord/WebRTC datagram reached the internet.
+  static Future<LocalSocksTestResult> testUdpAssociate({
+    String host = '127.0.0.1',
+    required int port,
+    required String username,
+    required String password,
+  }) async {
+    final stopwatch = Stopwatch()..start();
+    Socket? socket;
+    _SocketReader? reader;
+    try {
+      socket = await Socket.connect(host, port, timeout: const Duration(seconds: 3));
+      socket.setOption(SocketOption.tcpNoDelay, true);
+      reader = _SocketReader(socket);
+      if (!await _authenticate(
         reader,
         socket,
         username: username,
         password: password,
-        timeout: remaining(),
-      );
-      if (!authenticated) {
-        return const LocalSocksTestResult(
-          ok: false,
-          latencyMs: null,
-          message: 'Local SOCKS5 listener rejected authentication.',
-        );
+        timeout: const Duration(seconds: 3),
+      )) {
+        return const LocalSocksTestResult(ok: false, latencyMs: null, message: 'Local SOCKS5 listener rejected authentication.');
       }
-
-      final hostBytes = utf8.encode(targetHost);
-      if (hostBytes.isEmpty || hostBytes.length > 255) {
-        return const LocalSocksTestResult(
-          ok: false,
-          latencyMs: null,
-          message: 'SOCKS5 test target is invalid.',
-        );
-      }
-
-      socket.add(<int>[
-        0x05,
-        0x01,
-        0x00,
-        0x03,
-        hostBytes.length,
-        ...hostBytes,
-        (targetPort >> 8) & 0xff,
-        targetPort & 0xff,
+      socket.add(const <int>[
+        0x05, 0x03, 0x00, // SOCKS5, UDP ASSOCIATE, reserved
+        0x01, 0x00, 0x00, 0x00, 0x00, // IPv4 0.0.0.0
+        0x00, 0x00, // client UDP port unknown/any
       ]);
       await socket.flush();
-
-      final replyHead = await reader.readExactly(4, timeout: remaining());
+      final replyHead = await reader.readExactly(4, timeout: const Duration(seconds: 3));
       if (replyHead[0] != 0x05 || replyHead[1] != 0x00) {
-        return const LocalSocksTestResult(
-          ok: false,
-          latencyMs: null,
-          message:
-              'SOCKS5 is listening, but the ReVolt route could not reach the test target.',
-        );
+        return const LocalSocksTestResult(ok: false, latencyMs: null, message: 'SOCKS5 UDP ASSOCIATE was rejected.');
       }
-
-      await _consumeAddress(reader, replyHead[3], timeout: remaining());
+      await _consumeAddress(reader, replyHead[3], timeout: const Duration(seconds: 3));
       stopwatch.stop();
       return LocalSocksTestResult(
         ok: true,
         latencyMs: stopwatch.elapsedMilliseconds,
-        message: 'Local SOCKS5 and the ReVolt outbound are reachable.',
+        message: 'Authenticated SOCKS5 UDP ASSOCIATE is available locally.',
       );
     } on TimeoutException {
-      return const LocalSocksTestResult(
-        ok: false,
-        latencyMs: null,
-        message: 'Local SOCKS5 test timed out.',
-      );
-    } on SocketException {
-      return LocalSocksTestResult(
-        ok: false,
-        latencyMs: null,
-        message: 'Local SOCKS5 is not listening on $host:$port.',
-      );
+      return const LocalSocksTestResult(ok: false, latencyMs: null, message: 'SOCKS5 UDP ASSOCIATE timed out.');
     } catch (_) {
-      return const LocalSocksTestResult(
-        ok: false,
-        latencyMs: null,
-        message: 'Local SOCKS5 test failed.',
-      );
+      return const LocalSocksTestResult(ok: false, latencyMs: null, message: 'SOCKS5 UDP ASSOCIATE check failed.');
     } finally {
       await reader?.close();
       await socket?.close();
@@ -210,31 +173,13 @@ abstract final class LocalSocksTester {
   }) async {
     final userBytes = utf8.encode(username);
     final passBytes = utf8.encode(password);
-    if (userBytes.isEmpty ||
-        passBytes.isEmpty ||
-        userBytes.length > 255 ||
-        passBytes.length > 255) {
-      return false;
-    }
-
-    // ReVolt never accepts unauthenticated local SOCKS. Advertising only RFC
-    // 1929 username/password auth makes a future credential-plumbing regression
-    // fail closed instead of silently falling back to method 0x00.
+    if (userBytes.isEmpty || passBytes.isEmpty || userBytes.length > 255 || passBytes.length > 255) return false;
     socket.add(const <int>[0x05, 0x01, 0x02]);
     await socket.flush();
-
     final greeting = await reader.readExactly(2, timeout: timeout);
     if (greeting[0] != 0x05 || greeting[1] != 0x02) return false;
-
-    socket.add(<int>[
-      0x01,
-      userBytes.length,
-      ...userBytes,
-      passBytes.length,
-      ...passBytes,
-    ]);
+    socket.add(<int>[0x01, userBytes.length, ...userBytes, passBytes.length, ...passBytes]);
     await socket.flush();
-
     final authReply = await reader.readExactly(2, timeout: timeout);
     return authReply[0] == 0x01 && authReply[1] == 0x00;
   }
@@ -245,18 +190,16 @@ abstract final class LocalSocksTester {
     required Duration timeout,
   }) async {
     if (addressType == 0x01) {
-      await reader.readExactly(4 + 2, timeout: timeout);
+      await reader.readExactly(6, timeout: timeout);
       return;
     }
     if (addressType == 0x04) {
-      await reader.readExactly(16 + 2, timeout: timeout);
+      await reader.readExactly(18, timeout: timeout);
       return;
     }
     if (addressType == 0x03) {
       final length = (await reader.readExactly(1, timeout: timeout)).first;
-      if (length == 0) {
-        throw const FormatException('Invalid SOCKS5 domain length');
-      }
+      if (length == 0) throw const FormatException('Invalid SOCKS5 domain length');
       await reader.readExactly(length + 2, timeout: timeout);
       return;
     }
@@ -267,7 +210,6 @@ abstract final class LocalSocksTester {
 class _SocketReader {
   final StreamIterator<Uint8List> _iterator;
   final List<int> _buffer = <int>[];
-
   _SocketReader(Socket socket) : _iterator = StreamIterator<Uint8List>(socket);
 
   Future<List<int>> readExactly(
@@ -277,18 +219,11 @@ class _SocketReader {
     final elapsed = Stopwatch()..start();
     while (_buffer.length < count) {
       final remainingMicros = timeout.inMicroseconds - elapsed.elapsedMicroseconds;
-      if (remainingMicros <= 0) {
-        throw TimeoutException('Socket read timed out', timeout);
-      }
-      final hasNext = await _iterator.moveNext().timeout(
-            Duration(microseconds: remainingMicros),
-          );
-      if (!hasNext) {
-        throw const SocketException('Socket closed early');
-      }
+      if (remainingMicros <= 0) throw TimeoutException('Socket read timed out', timeout);
+      final hasNext = await _iterator.moveNext().timeout(Duration(microseconds: remainingMicros));
+      if (!hasNext) throw const SocketException('Socket closed early');
       _buffer.addAll(_iterator.current);
     }
-
     final result = _buffer.sublist(0, count);
     _buffer.removeRange(0, count);
     return result;
