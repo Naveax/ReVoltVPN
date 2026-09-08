@@ -167,7 +167,7 @@ object XrayCoreManager {
         return configJson
     }
 
-    fun startCore(context: Service, config: XrayConfig): Boolean {
+    fun startCore(context: XrayVPNService, config: XrayConfig): Boolean {
         AppConfigs.RUNTIME_READY = false
         AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_CONNECTING
         AppConfigs.V2RAY_CONFIG = config
@@ -204,14 +204,11 @@ object XrayCoreManager {
             pb.directory(configFilesDir)
             pb.redirectErrorStream(true)
             pb.environment()["XRAY_LOCATION_ASSET"] = Utilities.getUserAssetsPath(context)
-            // Reject permissive JSON extensions for machine-generated runtime config.
             pb.environment()["XRAY_JSON_STRICT"] = "true"
 
             val process = pb.start()
             xrayProcess = process
 
-            // Xray officially supports stdin: as a configuration source. Closing
-            // stdin is important because it marks EOF and lets Xray finish parsing.
             process.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
                 writer.write(runtimeConfig)
                 writer.flush()
