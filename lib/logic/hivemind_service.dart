@@ -13,6 +13,7 @@ class HivemindService {
   static String? _pendingNonce;
   static String? _activeSessionNonce;
   static Future<String?>? _activeSessionNonceLoad;
+  static int _activeSessionAuthEpoch = 0;
   static int _currentCallId = 0;
 
   static const FlutterSecureStorage _sessionStorage = FlutterSecureStorage();
@@ -39,16 +40,42 @@ class HivemindService {
     Uri uri, {
     Duration timeout = const Duration(seconds: 5),
     Map<String, String> headers = const <String, String>{},
-  }) async {
+  }) {
     final validatedUri = ControlPlanePolicy.validate(
       requested: uri,
       configuredBase: AppConfig.hivemindApiPublic,
     );
-    final client = http.Client();
     final request = http.Request('GET', validatedUri)
       ..headers.addAll(headers)
       ..headers['User-Agent'] = _ua
       ..followRedirects = false;
+    return _sendControlRequest(request, timeout);
+  }
+
+  static Future<http.Response> _controlPostJson(
+    Uri uri,
+    Map<String, Object?> body, {
+    required Map<String, String> headers,
+    Duration timeout = const Duration(seconds: 3),
+  }) {
+    final validatedUri = ControlPlanePolicy.validate(
+      requested: uri,
+      configuredBase: AppConfig.hivemindApiPublic,
+    );
+    final request = http.Request('POST', validatedUri)
+      ..headers.addAll(headers)
+      ..headers['User-Agent'] = _ua
+      ..headers['Content-Type'] = 'application/json'
+      ..followRedirects = false
+      ..body = jsonEncode(body);
+    return _sendControlRequest(request, timeout);
+  }
+
+  static Future<http.Response> _sendControlRequest(
+    http.Request request,
+    Duration timeout,
+  ) async {
+    final client = http.Client();
 
     Future<http.Response> read() async {
       final streamed = await client.send(request);
@@ -110,7 +137,8 @@ class HivemindService {
     final inFlight = _activeSessionNonceLoad;
     if (inFlight != null) return inFlight;
 
-    final operation = _readActiveSessionNonce();
+    final epoch = _activeSessionAuthEpoch;
+    final operation = _readActiveSessionNonce(epoch);
     _activeSessionNonceLoad = operation;
     try {
       return await operation;
@@ -121,13 +149,15 @@ class HivemindService {
     }
   }
 
-  static Future<String?> _readActiveSessionNonce() async {
+  static Future<String?> _readActiveSessionNonce(int epoch) async {
     final stored = await _sessionStorage.read(key: _activeSessionNonceKey);
+    if (epoch != _activeSessionAuthEpoch) return null;
     if (stored == null) return null;
     if (!SessionAuth.isValidNonce(stored)) {
       await _sessionStorage.delete(key: _activeSessionNonceKey);
       return null;
     }
+    if (epoch != _activeSessionAuthEpoch) return null;
     _activeSessionNonce = stored;
     return stored;
   }
@@ -136,8 +166,17 @@ class HivemindService {
     if (!SessionAuth.isValidNonce(nonce)) {
       throw const FormatException('Invalid active session authorization nonce.');
     }
+    final epoch = ++_activeSessionAuthEpoch;
     await _sessionStorage.write(key: _activeSessionNonceKey, value: nonce);
+    if (epoch != _activeSessionAuthEpoch) return;
     _activeSessionNonce = nonce;
+  }
+
+  static Future<void> clearActiveSessionAuthorization() async {
+    _activeSessionAuthEpoch++;
+    _activeSessionNonce = null;
+    _activeSessionNonceLoad = null;
+    await _sessionStorage.delete(key: _activeSessionNonceKey);
   }
 
   static Future<http.Response> sessionStatus(
@@ -164,6 +203,35 @@ class HivemindService {
       timeout: timeout,
       headers: SessionAuth.headers(nonce),
     );
+  }
+
+  /// Revoke the currently-owned server credential after local/native shutdown
+  /// has already been proven. Network/control-plane failure never turns a local
+  /// disconnect back into a connected state; the nonce is retained for a later
+  /// retry or replacement session unless the server confirms revocation.
+  static Future<bool> revokeActiveSession(
+    String deviceId, {
+    Duration timeout = const Duration(seconds: 3),
+  }) async {
+    final nonce = await _loadActiveSessionNonce();
+    if (nonce == null) return false;
+
+    try {
+      final response = await _controlPostJson(
+        _publicUrl('/session/stop'),
+        <String, Object?>{'device_id': deviceId},
+        headers: SessionAuth.headers(nonce),
+        timeout: timeout,
+      );
+      if (response.statusCode != 200) return false;
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, dynamic> || decoded['ok'] != true) return false;
+      await clearActiveSessionAuthorization();
+      return true;
+    } catch (error) {
+      debugPrint('[Hivemind] session revoke failed: $error');
+      return false;
+    }
   }
 
   static Future<String> fetchConfigDirectly({

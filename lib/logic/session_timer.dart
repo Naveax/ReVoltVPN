@@ -152,7 +152,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
     if (_hasSyncedOnce && _remainingSeconds <= 0) {
-      unawaited(_doDisconnect('Session expired'));
+      unawaited(_doDisconnect('Session expired', revokeServer: false));
       return;
     }
     _tickCount++;
@@ -178,7 +178,10 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> disconnect({String reason = 'User requested'}) => _doDisconnect(reason);
 
-  Future<void> _doDisconnect(String reason) async {
+  Future<void> _doDisconnect(
+    String reason, {
+    bool revokeServer = true,
+  }) async {
     if (_isDisconnecting) return;
     final hadActiveSession = isRunning || _hasSyncedOnce;
     _isDisconnecting = true;
@@ -192,15 +195,32 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
 
     final stopped = await vpnConnection.disconnect();
     if (stopped) {
+      if (hadActiveSession) {
+        try {
+          if (revokeServer) {
+            final deviceId = await CryptoService.getDeviceId();
+            final revoked = await HivemindService.revokeActiveSession(deviceId);
+            if (!revoked) {
+              debugPrint('[Timer] Server session revoke was not confirmed.');
+            }
+          } else {
+            await HivemindService.clearActiveSessionAuthorization();
+          }
+        } catch (error) {
+          // Local/native shutdown is authoritative for device traffic. A remote
+          // control-plane failure must not resurrect the local VPN state.
+          debugPrint('[Timer] Server session cleanup failed: $error');
+        }
+      }
       _resetSessionMetrics();
       _isDisconnecting = false;
       notifyListeners();
       return;
     }
 
-    // Native shutdown was not proven. Preserve the last server-derived session
-    // state and keep the deadline/sync clock alive instead of creating an
-    // invisible tunnel with a dead client-side timer.
+    // Native shutdown was not proven. Preserve both the last server-derived
+    // session state and its authorization nonce: the tunnel may still be alive,
+    // so quota/deadline synchronization must continue fail-closed.
     _isDisconnecting = false;
     if (hadActiveSession && !isRunning) {
       _timer = Timer.periodic(const Duration(seconds: 1), _tick);
@@ -244,7 +264,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
       if (!activeValue) {
-        await _doDisconnect('Server ended session');
+        await _doDisconnect('Server ended session', revokeServer: false);
         return;
       }
       final expiresValue = decoded['expires_in_seconds'];
@@ -270,7 +290,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
       _sinceLastSuccessfulSync = Stopwatch()..start();
 
       if (decoded['cap_exhausted'] == true) {
-        await _doDisconnect('Data cap reached');
+        await _doDisconnect('Data cap reached', revokeServer: false);
         return;
       }
       if (epoch != _sessionEpoch || _isDisconnecting) return;
