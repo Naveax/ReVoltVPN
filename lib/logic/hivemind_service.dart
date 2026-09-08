@@ -9,12 +9,18 @@ import 'package:revoltvpn/logic/crypto_service.dart';
 class HivemindService {
   static String? _expectedNonce;
   static int _currentCallId = 0;
+  static final Random _secureRandom = Random.secure();
 
   static const _ua = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
 
   static Future<http.Response> directGet(Uri uri, {Duration timeout = const Duration(seconds: 5)}) {
     return http.get(uri, headers: {'User-Agent': _ua}).timeout(timeout);
+  }
+
+  static String newNonce() {
+    final bytes = List<int>.generate(16, (_) => _secureRandom.nextInt(256));
+    return bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
   }
 
   static void cancel() {
@@ -32,13 +38,16 @@ class HivemindService {
     final deviceId = await CryptoService.getDeviceId();
 
     final callId = ++_currentCallId;
-    final nonce = '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
+    final nonce = newNonce();
     _expectedNonce = nonce;
     debugPrint('[HivemindService] Call #$callId — nonce: $nonce');
 
     final url = _publicUrl('/session/status?device_id=$deviceId');
 
-    if (!skipAdBypass) {
+    // The signature=test/key_id=test callback is a local debug compatibility path only.
+    // Never emit it from a release/profile build, even if a server was accidentally configured
+    // to accept the legacy bypass.
+    if (!skipAdBypass && kDebugMode) {
       try {
         final customData = jsonEncode({'device_id': deviceId, 'nonce': nonce});
         final fakeUrl = _publicUrl(

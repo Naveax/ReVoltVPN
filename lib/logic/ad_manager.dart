@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
@@ -102,7 +101,7 @@ class AdManager extends ChangeNotifier {
     // The server's ADMOB_BYPASS must be True for this to succeed.
     if (!adsEnabled && kDebugMode) {
       final deviceId = await CryptoService.getDeviceId();
-      final nonce = '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
+      final nonce = HivemindService.newNonce();
       HivemindService.setExpectedNonce(nonce);
       try {
         final customData = jsonEncode({
@@ -124,7 +123,6 @@ class AdManager extends ChangeNotifier {
     if (!adsEnabled) return false;
 
     await ensureSdkInitialized();
-
     if (!_isAdLoaded || _rewardedAd == null) {
       final loaded = await preloadAd();
       if (!loaded || _rewardedAd == null) {
@@ -135,7 +133,7 @@ class AdManager extends ChangeNotifier {
 
     final deviceId = await CryptoService.getDeviceId();
 
-    final nonce = '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
+    final nonce = HivemindService.newNonce();
     HivemindService.setExpectedNonce(nonce);
     debugPrint('[AdManager] Ad nonce: $nonce');
 
