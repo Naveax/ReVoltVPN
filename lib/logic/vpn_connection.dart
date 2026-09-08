@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_vless/flutter_vless.dart';
+import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 
 enum VpnStatus {
@@ -75,6 +76,29 @@ class VpnConnection extends ChangeNotifier {
     _healthTimer =
         Timer.periodic(const Duration(seconds: 30), (_) => _checkHealth());
 
+    // A prior explicit disconnect may have lost the network/process before the server confirmed
+    // credential revocation. Honor that durable intent before attempting startup restoration.
+    if (await CryptoService.isSessionStopPending()) {
+      if (_initialized) {
+        try {
+          await _vless.stopVless().timeout(const Duration(seconds: 5));
+        } catch (e) {
+          debugPrint('[VPN] Pending-revocation local stop failed: $e');
+        }
+      }
+      final resolved = await HivemindService.retryPendingSessionStop();
+      _isStartupRestoration = false;
+      if (resolved) {
+        _errorMessage = null;
+        _setStatus(VpnStatus.disconnected, 'Tap to connect');
+      } else {
+        _errorMessage =
+            'The local VPN is off, but server credential revocation is still pending.';
+        _setStatus(VpnStatus.disconnected, 'Revocation pending');
+      }
+      return;
+    }
+
     try {
       final coreVersion = await _vless.getCoreVersion();
       debugPrint('[VPN] Xray core version: $coreVersion');
@@ -128,6 +152,14 @@ class VpnConnection extends ChangeNotifier {
       return false;
     }
     _cancelled = false;
+
+    // Defense in depth for callers that bypass AdManager: never reconnect while an explicit
+    // previous server revocation remains ambiguous.
+    if (!await HivemindService.retryPendingSessionStop()) {
+      _errorMessage = 'Previous server session revocation is still pending.';
+      _setStatus(VpnStatus.error, 'Revocation pending');
+      return false;
+    }
 
     if (!kIsWeb && !_initialized) {
       _errorMessage = 'VPN service unavailable.';
@@ -207,41 +239,57 @@ class VpnConnection extends ChangeNotifier {
   Future<void> disconnect() async {
     _cancelled = true;
     HivemindService.cancel();
-    if (_status == VpnStatus.disconnected ||
-        _status == VpnStatus.disconnecting) {
-      return;
-    }
+    if (_status == VpnStatus.disconnecting) return;
 
+    final wasLocallyDisconnected = _status == VpnStatus.disconnected;
     _setStatus(VpnStatus.disconnecting, 'Tearing down…');
 
-    if (kIsWeb) {
-      await Future.delayed(const Duration(milliseconds: 500));
-      _setStatus(VpnStatus.disconnected, 'Tap to connect');
-      return;
+    // Persist user intent before touching the local tunnel. If the process dies anywhere below,
+    // the next launch will retry the authenticated server revoke instead of forgetting it.
+    await CryptoService.setSessionStopPending();
+
+    bool localStopFailed = false;
+    if (!kIsWeb && _initialized && !wasLocallyDisconnected) {
+      bool timedOut = false;
+      try {
+        await _vless.stopVless().timeout(
+              const Duration(seconds: 5),
+              onTimeout: () => timedOut = true,
+            );
+      } catch (e) {
+        debugPrint('[VPN] VLESS stop error: $e');
+        localStopFailed = true;
+      }
+
+      if (timedOut) {
+        debugPrint('[VPN] stopVless() timed out after 5 s — '
+            'tunnel may still be active.');
+        localStopFailed = true;
+      }
     }
 
-    bool timedOut = false;
-    try {
-      await _vless.stopVless().timeout(
-            const Duration(seconds: 5),
-            onTimeout: () => timedOut = true,
-          );
-    } catch (e) {
-      debugPrint('[VPN] VLESS stop error: $e');
-      _errorMessage = 'VPN shutdown error.\nPlease restart the app.';
+    // Revoke the server credential even if local shutdown reported an error. Removing the Xray
+    // identity is the safest fallback when the local engine's state is ambiguous.
+    final stopResult = await HivemindService.stopSession(markPending: false);
+    final revocationPending = stopResult == SessionStopResult.retryNeeded;
+
+    _isStartupRestoration = false;
+    if (localStopFailed) {
+      _errorMessage = revocationPending
+          ? 'VPN shutdown was ambiguous and server credential revocation is still pending.'
+          : 'VPN did not shut down cleanly. Please restart the app.';
       _setStatus(VpnStatus.error, 'Shutdown failed');
       return;
     }
 
-    if (timedOut) {
-      debugPrint('[VPN] stopVless() timed out after 5 s — '
-          'tunnel may still be active.');
-      _errorMessage = 'VPN did not shut down cleanly.\n'
-          'Please restart the app.';
-      _setStatus(VpnStatus.error, 'Shutdown failed');
+    if (revocationPending) {
+      _errorMessage =
+          'The local VPN is off, but server credential revocation is still pending.';
+      _setStatus(VpnStatus.disconnected, 'Revocation pending');
       return;
     }
 
+    _errorMessage = null;
     _setStatus(VpnStatus.disconnected, 'Tap to connect');
   }
 
@@ -253,6 +301,14 @@ class VpnConnection extends ChangeNotifier {
 
   Future<void> _checkHealth() async {
     _serverReachable = await HivemindService.checkHealth();
+    if (_serverReachable && await CryptoService.isSessionStopPending()) {
+      final resolved = await HivemindService.retryPendingSessionStop();
+      if (resolved && _status == VpnStatus.disconnected) {
+        _errorMessage = null;
+        _setStatus(VpnStatus.disconnected, 'Tap to connect');
+        return;
+      }
+    }
     notifyListeners();
   }
 

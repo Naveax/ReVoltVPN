@@ -1,0 +1,93 @@
+name: flutter-strict
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flutter-strict-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  strict:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Install pinned Flutter SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk="$RUNNER_TEMP/flutter"
+          # pubspec.lock was generated against the exact SDK package pins shipped by 3.44.9.
+          # Preserve the release tag for Flutter's version detector, but still bind it to one SHA.
+          expected_sha=6b182d2c7585eba26d4edce0f97630effd256c33
+          expected_tag=3.44.9
+          git clone --depth=1 --branch "$expected_tag" --single-branch \
+            https://github.com/flutter/flutter.git "$sdk"
+          actual_sha="$(git -C "$sdk" rev-parse HEAD)"
+          actual_tag="$(git -C "$sdk" describe --tags --exact-match HEAD)"
+          [[ "$actual_sha" == "$expected_sha" ]] || {
+            echo "Flutter tag moved: expected $expected_sha, got $actual_sha"
+            exit 1
+          }
+          [[ "$actual_tag" == "$expected_tag" ]] || {
+            echo "Flutter release identity mismatch: expected $expected_tag, got $actual_tag"
+            exit 1
+          }
+          printf '%s\n' "$sdk/bin" >> "$GITHUB_PATH"
+          "$sdk/bin/flutter" --version
+
+      - name: Resolve locked dependencies
+        run: flutter pub get --enforce-lockfile
+
+      - name: Materialize sanitized CI config
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e lib/logic/app_config.dart
+          cp lib/logic/app_config.example.dart lib/logic/app_config.dart
+
+      - name: Check formatting of changed Dart files
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
+            BASE_SHA="$(git rev-parse HEAD^)"
+          fi
+          git cat-file -e "$BASE_SHA^{commit}"
+          mapfile -d '' changed_dart < <(
+            git diff --name-only -z --diff-filter=ACMR "$BASE_SHA" HEAD -- '*.dart'
+          )
+          if (( ${#changed_dart[@]} == 0 )); then
+            echo 'No Dart files changed.'
+            exit 0
+          fi
+          dart format "${changed_dart[@]}"
+          git diff --exit-code -- "${changed_dart[@]}"
+
+      - name: Analyze Flutter sources
+        run: flutter analyze
+
+      - name: Run tests when present
+        shell: bash
+        run: |
+          set -euo pipefail
+          if find test -type f -name '*_test.dart' -print -quit 2>/dev/null | grep -q .; then
+            flutter test
+          else
+            echo 'No Flutter tests are present yet; analyze/format gates still apply.'
+          fi
