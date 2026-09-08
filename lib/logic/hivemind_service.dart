@@ -38,7 +38,10 @@ class HivemindService {
 
     final url = _publicUrl('/session/status?device_id=$deviceId');
 
-    if (!skipAdBypass) {
+    // The signature=test/key_id=test callback is a local debug compatibility path only.
+    // Never emit it from a release/profile build, even if a server was accidentally configured
+    // to accept the legacy bypass.
+    if (!skipAdBypass && kDebugMode) {
       try {
         final customData = jsonEncode({'device_id': deviceId, 'nonce': nonce});
         final fakeUrl = _publicUrl(
