@@ -153,6 +153,34 @@ jobs:
           ! grep -Fq 'writeText(configJson' "$CORE"
           ! grep -Fq '"-config", File(' "$CORE"
 
+      - name: Verify unsupported always-on stays fail-closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          path = 'local_packages/flutter_vless_android-1.1.5/android/src/main/AndroidManifest.xml'
+          root = ET.parse(path).getroot()
+          ns = '{http://schemas.android.com/apk/res/android}'
+          service_name = 'com.github.tfox.flutter_vless.xray.service.XrayVPNService'
+          services = [
+              node for node in root.findall('./application/service')
+              if node.attrib.get(ns + 'name') == service_name
+          ]
+          if len(services) != 1:
+              raise SystemExit(f'expected exactly one XrayVPNService, got {len(services)}')
+          metadata = [
+              node for node in services[0].findall('meta-data')
+              if node.attrib.get(ns + 'name') == 'android.net.VpnService.SUPPORTS_ALWAYS_ON'
+          ]
+          if len(metadata) != 1 or metadata[0].attrib.get(ns + 'value') != 'false':
+              raise SystemExit(
+                  'SUPPORTS_ALWAYS_ON must remain false until protected bootstrap/lockdown support is implemented'
+              )
+          print('Always-on capability remains explicitly fail-closed.')
+          PY
+
       - name: Cold APK build
         run: flutter build apk --debug
 
