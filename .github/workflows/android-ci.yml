@@ -12,6 +12,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: android-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   android:
     runs-on: ubuntu-24.04
@@ -159,7 +163,7 @@ jobs:
           path: build/app/outputs/flutter-apk/app-debug.apk
 
       - name: Upload release-smoke provenance
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@ea165f8d65b540449e92b4886f43607fa02 # v4
         with:
           name: revoltvpn-release-smoke-provenance
           if-no-files-found: error
