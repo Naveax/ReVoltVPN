@@ -11,13 +11,13 @@ abstract final class AppConfig {
 
   /// Public HTTPS origin for the Rust API. Session possession nonces are bearer credentials,
   /// so the client deliberately refuses plaintext HTTP, cross-origin requests and redirects.
-  static const String hivemindApiPublic = 'https://api.example.invalid'; // ◄── REPLACE
+  static const String hivemindApiPublic =
+      'https://api.example.invalid'; // ◄── REPLACE
 
   // ── Bootstrap (first-connect config fetch) ────────────────────────────
   /// Hardcoded Reality config. App connects with this, fetches the real
   /// per-session VLESS URL through the tunnel, then reconnects.
-  static String get bootstrapVlessUrl =>
-      'vless://$bootstrapUuid@$serverIp:8443'
+  static String get bootstrapVlessUrl => 'vless://$bootstrapUuid@$serverIp:8443'
       '?security=reality&type=xhttp&path=/revolt'
       '&pbk=$realityPbk&sni=www.github.com&sid=$realitySid&fp=chrome'
       '#ReVoltVPN';
