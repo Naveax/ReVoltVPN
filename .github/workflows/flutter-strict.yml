@@ -23,7 +23,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Install pinned Flutter SDK
         shell: bash
@@ -52,12 +52,25 @@ jobs:
       - name: Resolve locked dependencies
         run: flutter pub get --enforce-lockfile
 
-      - name: Check formatting of changed Dart files
+      - name: Materialize sanitized CI config
         shell: bash
         run: |
           set -euo pipefail
+          test ! -e lib/logic/app_config.dart
+          cp lib/logic/app_config.example.dart lib/logic/app_config.dart
+
+      - name: Check formatting of changed Dart files
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
+            BASE_SHA="$(git rev-parse HEAD^)"
+          fi
+          git cat-file -e "$BASE_SHA^{commit}"
           mapfile -d '' changed_dart < <(
-            git diff --name-only -z --diff-filter=ACMR HEAD^ HEAD -- '*.dart'
+            git diff --name-only -z --diff-filter=ACMR "$BASE_SHA" HEAD -- '*.dart'
           )
           if (( ${#changed_dart[@]} == 0 )); then
             echo 'No Dart files changed.'
