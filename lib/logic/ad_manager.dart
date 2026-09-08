@@ -97,12 +97,14 @@ class AdManager extends ChangeNotifier {
   // ── Show ad (or debug bypass) ─────────────────────────────────────
 
   Future<bool> showAd(String adType) async {
-    // Debug bypass: fire fake AdMob callback so support ads work in dev.
-    // The server's ADMOB_BYPASS must be True for this to succeed.
+    // Debug bypass: fire a fake callback only in debug builds. A main reward establishes the
+    // session possession nonce; support rewards have their own nonce and must never replace it.
     if (!adsEnabled && kDebugMode) {
       final deviceId = await CryptoService.getDeviceId();
       final nonce = HivemindService.newNonce();
-      HivemindService.setExpectedNonce(nonce);
+      if (adType == 'main') {
+        await HivemindService.setSessionNonce(nonce);
+      }
       try {
         final customData = jsonEncode({
           'device_id': deviceId,
@@ -132,10 +134,10 @@ class AdManager extends ChangeNotifier {
     }
 
     final deviceId = await CryptoService.getDeviceId();
-
     final nonce = HivemindService.newNonce();
-    HivemindService.setExpectedNonce(nonce);
-    debugPrint('[AdManager] Ad nonce: $nonce');
+    if (adType == 'main') {
+      await HivemindService.setSessionNonce(nonce);
+    }
 
     final ssvOptions = ServerSideVerificationOptions(
       customData: jsonEncode({
