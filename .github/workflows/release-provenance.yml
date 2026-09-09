@@ -59,12 +59,15 @@ jobs:
           STORE_PASSWORD: ${{ secrets.REVOLT_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.REVOLT_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.REVOLT_KEY_PASSWORD }}
+          SIGNING_CERT_SHA256: ${{ secrets.REVOLT_SIGNING_CERT_SHA256 }}
           ADMOB_PROPERTIES_B64: ${{ secrets.REVOLT_ADMOB_PROPERTIES_B64 }}
         run: |
           set -euo pipefail
-          for name in APP_CONFIG_B64 APP_CONFIG_SHA256 KEYSTORE_B64 STORE_PASSWORD KEY_ALIAS KEY_PASSWORD ADMOB_PROPERTIES_B64; do
+          for name in APP_CONFIG_B64 APP_CONFIG_SHA256 KEYSTORE_B64 STORE_PASSWORD KEY_ALIAS KEY_PASSWORD SIGNING_CERT_SHA256 ADMOB_PROPERTIES_B64; do
             test -n "${!name:-}" || { echo "Required production secret missing: $name"; exit 1; }
           done
+          normalized_cert="$(printf '%s' "$SIGNING_CERT_SHA256" | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          [[ "$normalized_cert" =~ ^[0-9a-f]{64}$ ]] || { echo 'REVOLT_SIGNING_CERT_SHA256 must be a SHA-256 certificate fingerprint'; exit 1; }
           printf '%s' "$APP_CONFIG_B64" | base64 --decode > lib/logic/app_config.dart
           test "$(sha256sum lib/logic/app_config.dart | awk '{print $1}')" = "$APP_CONFIG_SHA256"
           printf '%s' "$KEYSTORE_B64" | base64 --decode > android/release.jks
@@ -116,6 +119,7 @@ jobs:
         shell: bash
         env:
           REVOLT_APP_CONFIG_SHA256: ${{ secrets.REVOLT_APP_CONFIG_SHA256 }}
+          REVOLT_SIGNING_CERT_SHA256: ${{ secrets.REVOLT_SIGNING_CERT_SHA256 }}
         run: |
           set -euo pipefail
           APK='build/app/outputs/flutter-apk/app-release.apk'
@@ -125,7 +129,6 @@ jobs:
           python3 - <<'PY'
           import hashlib, json, os, pathlib, subprocess, zipfile
 
-          root = pathlib.Path('.')
           apk = pathlib.Path('build/app/outputs/flutter-apk/app-release.apk')
 
           def digest_bytes(data):
@@ -164,6 +167,14 @@ jobs:
                   break
           if not cert_sha:
               raise SystemExit('APK signer SHA-256 fingerprint missing')
+          actual_cert = cert_sha.replace(':', '').lower()
+          expected_cert = os.environ['REVOLT_SIGNING_CERT_SHA256'].replace(':', '').lower()
+          if len(expected_cert) != 64 or any(c not in '0123456789abcdef' for c in expected_cert):
+              raise SystemExit('Expected signing certificate fingerprint is malformed')
+          if actual_cert != expected_cert:
+              raise SystemExit(
+                  f'APK signing certificate mismatch: expected {expected_cert}, got {actual_cert}'
+              )
 
           flutter_machine = json.loads(output(['flutter', '--version', '--machine']))
           java_version = output(['java', '-version']).splitlines()[0]
@@ -179,7 +190,7 @@ jobs:
               'run_id': os.environ['GITHUB_RUN_ID'],
               'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
               'apk_sha256': digest_file(apk),
-              'signing_certificate_sha256': cert_sha,
+              'signing_certificate_sha256': actual_cert,
               'app_config_sha256': os.environ['REVOLT_APP_CONFIG_SHA256'],
               'pubspec_yaml_sha256': digest_file('pubspec.yaml'),
               'pubspec_lock_sha256': digest_file('pubspec.lock'),
