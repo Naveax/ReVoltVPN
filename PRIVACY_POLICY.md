@@ -10,31 +10,44 @@ When you first open the app, we show a brief summary of this policy before you c
 
 ## What we collect
 
-We collect the minimum required to operate the service:
+We collect service data required to create, authorize, account for, recover, and stop VPN sessions:
 
-- A randomly generated device ID created on your phone. This is not linked to your identity in any way.
-- Your connection duration and data usage for the current session, linked to your device ID. This is used solely to enforce the per-session quota (see below).
+- A randomly generated device ID created on your phone. It is not based on your name, email address, advertising ID, or phone number, but it is a stable pseudonymous identifier used by the service to associate session state with the same installation.
+- Session state linked to that device ID, including session/generation identifiers, temporary VLESS/Xray credential identifiers, session authorization nonce, selected Reality session metadata, creation/update/expiry timestamps, session state, data allowance, and bytes used.
+- Operational state needed for reliable recovery, accounting, replay protection, and fail-closed behavior.
 
 ## What our server sees
 
-To start, check, or refresh your session, the app contacts our API directly rather than through the VPN tunnel. Our server therefore sees the IP address you are connecting from, alongside your device ID, for as long as the app is running. This is a necessary consequence of how sessions are issued and kept alive — it is separate from your browsing traffic, which is carried inside the tunnel and is described below.
+To start, check, refresh, or stop a session, the app contacts our API directly rather than through the VPN tunnel. The network connection carrying those API requests necessarily has a source IP address, and the API requests include the app's pseudonymous device ID where required by the session protocol.
 
-## Session quotas
+The current Rust session database schema does not store a source-IP field in the `sessions` table. Network infrastructure or host-level logging outside that table may still process connection metadata as necessary to operate and secure the service.
 
-Each session lasts up to **2 hours** or **10 GB** of data — whichever comes first. When your session expires or hits the data cap, the tunnel disconnects. You can start a new session by watching another ad. Session records (duration and bytes transferred) are held on our server for the life of your session and removed when it ends.
+This control-plane traffic is separate from browsing traffic carried inside the VPN tunnel.
+
+## Session quotas and persistent session state
+
+Each session lasts up to **2 hours** or **10 GB** of data — whichever comes first. When your session expires or reaches its data cap, the active VPN credential is revoked and the tunnel is expected to disconnect.
+
+The current Rust backend stores session state in a persistent SQLite database so it can enforce quotas, recover safely after process restarts, reconcile Xray state, prevent stale-generation operations, and perform authorized session shutdown. A session record changes state when it becomes revoked, expired, or cap-exhausted; it is **not automatically deleted merely because the active session ended**.
+
+The current implementation does not define a fixed automatic deletion period for those terminal session records. We therefore do not claim that session metadata disappears immediately at disconnect or expiry. Server maintenance and any future retention policy must preserve the safety and anti-replay invariants required by the service while minimizing retained data.
 
 Support ads (the "Support us" button) extend an active session by 30 minutes and add extra data allowance.
 
 ## Operational logs
 
-Server logs are written to the systemd journal (`journalctl -u hivemind`). These logs include truncated device IDs (first 8 characters only), session start/stop events, and error messages. Logs stay on the server and are accessible only to the server operator via local console; retention follows the server's systemd journal settings. We also maintain an aggregate total of all data ever transferred (in GB) for capacity planning — this counter is not tied to any individual device.
+The Rust services write operational events, health/recovery information, aggregate counters, and error messages to the host's systemd journal. These logs are separate from the SQLite session database. Journal retention is controlled by the server's systemd/journald configuration.
 
-## What we do not collect
+The service is not designed to place browsing history, DNS queries, packet contents, or destination-IP histories into these operational logs.
 
-- We do not collect your name, email, or any personal information.
-- We do not log your internet traffic, browsing history, DNS queries, or destination IPs.
-- We do not inspect or store the content of your traffic.
-- We do not sell or share any data with third parties.
+## What we do not collect as VPN traffic history
+
+- We do not require your name or email address to create a VPN session.
+- We do not intentionally record a browsing-history list from traffic passing through the VPN.
+- We do not intentionally store DNS-query history or packet contents as part of the VPN session-accounting system.
+- We do not sell user data.
+
+These statements do not mean that the service stores no operational metadata at all. The session and operational data described above is required for authentication, quota enforcement, recovery, abuse prevention, and service security.
 
 ## Ads & Consent
 
@@ -42,7 +55,9 @@ ReVoltVPN uses Google AdMob to display rewarded video ads. Where required — fo
 
 ## Your traffic
 
-Your internet traffic is routed through our server located in Finland. We do not inspect, log, or store your traffic. We only track total bytes transferred per session for quota enforcement — no packet contents, no destination IPs, no DNS queries.
+Your internet traffic is routed through the configured ReVoltVPN server. ReVoltVPN's session-accounting system tracks aggregate bytes transferred per session for quota enforcement; it does not require packet contents, browsing URLs, or DNS-query history to perform that accounting.
+
+Network and operating-system components necessarily handle source and destination addresses while forwarding packets. This policy distinguishes that transient packet handling from intentionally creating a persistent browsing-history or destination-history dataset.
 
 ## Contact
 
