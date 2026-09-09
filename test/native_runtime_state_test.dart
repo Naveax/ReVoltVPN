@@ -13,8 +13,22 @@ void main() {
 
     expect(state.active, isTrue);
     expect(state.runtimeReady, isTrue);
+    expect(state.ownsGeneration, isTrue);
     expect(state.proxyOnly, isFalse);
     expect(state.runtimeToken, 'runtime-generation-1');
+  });
+
+  test('generation token owns startup even before active flag', () {
+    final state = NativeRuntimeState.fromMap(<Object?, Object?>{
+      'active': false,
+      'runtimeReady': false,
+      'proxyOnly': true,
+      'runtimeToken': 'runtime-generation-starting',
+      'state': 'V2RAY_DISCONNECTED',
+    });
+
+    expect(state.active, isFalse);
+    expect(state.ownsGeneration, isTrue);
   });
 
   test('rejects active runtime without a generation token', () {
