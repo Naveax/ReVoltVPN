@@ -4,55 +4,89 @@
 
 # ReVoltVPN
 
-A free VPN app for Android. Open-source client, transparent infrastructure. Watch an ad, get 2 hours of full-speed traffic — no account or subscription required, and no browsing-traffic logging is intended by the service design.
+ReVoltVPN is an Android VLESS client under active hardening. The current source checkpoint focuses on authenticated local ingress, fail-closed runtime ownership, server-authoritative sessions, explicit control-plane boundaries, and reproducible release evidence. It is **not yet a production-ready release claim**.
 
 ---
 
-## How it works
+## Current connection model
 
-1. Watch a short rewarded ad
-2. Server creates a temporary VLESS session (2 hours / 10 GB)
-3. Your traffic routes through a single server in Finland at full speed
-4. When time or data runs out, session ends — watch another ad to continue
-5. No throttling, no slow lane, no mid-session punishment
+1. The Android client obtains a server-authoritative session through the configured HTTPS control plane.
+2. The server returns temporary VLESS/REALITY/XHTTP session parameters while the tunnel destination remains pinned in the app.
+3. Android starts the hardened Xray/tun2socks runtime and arms the server-derived session deadline.
+4. Session status and stop requests use the current per-generation authorization credential.
+5. Expiry, quota exhaustion, explicit stop, or fail-closed enforcement revoke the active server credential.
 
-No email. No password. No payment. The ad pays for the server.
-
----
-
-## Protocol
-
-- **Transport** — VLESS over XHTTP. The client accepts session credentials and Reality parameters from the control plane while keeping the tunnel destination pinned in the app.
-- **Camouflage** — Xray REALITY is used to make the transport resemble ordinary TLS traffic. Its effectiveness depends on the network and DPI implementation; the client does not claim universal DPI invisibility.
-- **Encryption** — The tunnel uses Xray's VLESS + REALITY transport. ReVolt does not rely on a user-managed certificate/domain for the tunnel endpoint.
-- **Control plane** — Session/status traffic uses a separate configured HTTPS origin. The client rejects cleartext or cross-origin control-plane requests and pins the VLESS tunnel destination independently. The control plane remains a security boundary for session issuance and must not be treated as "DoS only" if compromised.
+Session duration and quota are server-authoritative and are deliberately not advertised here as fixed product constants.
 
 ---
 
-## Stack
+## Protocol and trust boundaries
 
-| Layer | Technology |
-|-------|-----------|
-| App | Flutter (Android) |
-| VPN | VLESS + Xray REALITY + XHTTP |
-| Backend | Hivemind control plane — session management, quotas, stats |
-| Ads | Google AdMob rewarded, verified server-side |
-| Server | Debian, single Hetzner box in Finland |
+- **Transport** — VLESS over XHTTP with Xray REALITY.
+- **Tunnel destination** — pinned independently in the client; control-plane data cannot silently redirect the tunnel to an arbitrary host.
+- **Control plane** — separate configured HTTPS origin. Cleartext, cross-origin, userinfo-bearing, fragmented, and invalid control-plane URLs are rejected by the hardened client path.
+- **Local SOCKS ingress** — hardened source requires an authenticated loopback SOCKS5 listener and validates UDP support/relay binding. Local SOCKS readiness is not considered proof of internet UDP reachability.
+- **Session authorization** — current status/stop traffic uses a per-generation credential. The backend status route deliberately returns a privacy-preserving no-session projection for missing, malformed, or mismatched credentials; stop remains authorization-enforced.
+- **Fail-closed behavior** — ambiguous native shutdown, controller teardown ambiguity, and backend fail-closed state are treated as security failures rather than optimistic success.
 
 ---
 
-## Limitations
+## Current source state
 
-- One server, one location (Finland)
-- 2 vCPU / 4 GB RAM — not built for thousands of concurrent users
-- Android only
-- True Android always-on/lockdown support is not currently advertised; the native service keeps that capability disabled until protected bootstrap and device acceptance are complete
+| Layer | Current implementation |
+|---|---|
+| App | Flutter / Android |
+| Tunnel | VLESS + REALITY + XHTTP |
+| Runtime | Xray + tun2socks |
+| Backend | Rust control plane with durable session/accounting state |
+| Local proxy | Authenticated loopback SOCKS5 |
+| Ads | Integration exists, but rewarded ads are disabled in the current client checkpoint |
+| Always-on / lockdown | Intentionally not advertised; capability remains disabled pending protected bootstrap and device acceptance |
+
+The repository contains Google AdMob SSV integration and legacy compatibility paths, but current production activation semantics remain a release blocker until the ad/callback path and session-authorization trust boundary are finalized and verified end to end.
+
+---
+
+## Verified CI scope
+
+The current hardening branch has passed Android CI through:
+
+- Flutter analyze and tests
+- native Kotlin regression tests and JUnit evidence checks
+- Android lint
+- fail-closed release configuration checks
+- runtime secret-transport checks
+- always-on capability guard
+- Android data/network-security policy checks
+- cold and warm APK builds
+- release R8 smoke build
+- tracked/vendored input immutability checks
+
+CI proves the exercised source/build contracts. It does **not** replace physical-device network tests, production backend deployment validation, signing/provenance acceptance, or published-APK verification.
+
+---
+
+## Still required before production acceptance
+
+- real Android IPv4/IPv6 TCP and UDP roundtrips
+- DNS UDP/TCP and Android Private DNS behavior
+- Wi-Fi/LTE transition and direct-fallback/leak tests
+- Xray/tun2socks crash behavior
+- process/activity/service lifecycle and permission-revoke tests
+- session expiry and quota-exhaustion device tests
+- Discord voice/video, WebRTC, QUIC, and other UDP-heavy application checks
+- production signed APK provenance/attestation
+- backend H13 contract CI/deployment evidence
+- a production-safe session activation flow that does not depend on enabling the legacy AdMob bypass
+- separation or otherwise justified treatment of AdMob callback correlation data versus session authorization credentials
 
 ---
 
 ## Privacy
 
-The client is designed not to create Xray browsing/access logs locally, and its tunnel destination is separate from the HTTPS session control plane. The service still has operational/session metadata needed for quota and reliability handling. See [`PRIVACY_POLICY.md`](PRIVACY_POLICY.md) for the stated data handling and retention behavior; production deployment behavior should be verified against that policy before release claims are treated as audited guarantees.
+The client hardening path disables local Xray access logging and the managed public nginx boundary disables access logging on public API routes. The Rust backend retains durable session/accounting state and operational services may write service-journal events. Rewarded ads are disabled in the current client checkpoint; if Google AdMob is enabled in a future release, Google may process ad and verification data.
+
+See [`PRIVACY_POLICY.md`](PRIVACY_POLICY.md) for the current source-backed disclosure. Production deployment, host retention, Xray/server logging, signing, and artifact provenance must still be verified before stronger privacy claims are treated as audited guarantees.
 
 ---
 

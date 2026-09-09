@@ -1,157 +1,215 @@
-# Validation record — 2026-09-08
+# Validation record — 2026-09-09
 
 Base: `6d8a923475ce66a511b6f7d1c99fd65ec72bcacc`.
 Branch: `work/upstream-3.3.5-verified-hardening`.
-Current checkpoint before this document update: `6543dcb8023a74326ca5e4a10644b5540a71f58f`.
+Last behavior checkpoint before this continuity update: `de1dab978d7d0086f01cc9b32f6121b6c43ce416`.
+Backend H13 branch: `Naveax/revoltvpn-server-rust:work/h13-control-plane-contract`, head `000fc583c71873a5e8c6dfc2afde4d954d7cc220`.
 
 ## Scope discipline
 
 - PR açılmadı, main'e merge/push yapılmadı, release yayımlanmadı.
-- AdMob, consent ve support ödül akışı değiştirilmedi.
+- Production güvenliği için legacy AdMob bypass açılmadı.
+- AdMob SDK/consent/support davranışı keyfi değiştirilmedi.
 - Aynı SHA/workflow/input için queued/waiting/in-progress CI elle yeniden tetiklenmedi.
-- Gerçek cihaz, production backend veya production signing kanıtı olmayan maddeler accepted sayılmadı.
+- Gerçek cihaz, production backend deployment veya production signing kanıtı olmayan maddeler accepted sayılmadı.
 
-## Kaynakta doğrulanan ve düzeltilenler
+## Source-level doğrulanan hardening
 
-- Native ingress tam olarak tek authenticated loopback SOCKS5 listener'a sınırlandı; noauth/HTTP/fazla listener fail-closed.
-- SOCKS UDP sözleşmesi `udp=true` ve UDP relay bind `127.0.0.1` olarak native validator ve regression fixture'larında zorunlu.
+- Native ingress tek authenticated loopback SOCKS5 listener'a sınırlandı; noauth/HTTP/fazla listener fail-closed.
+- SOCKS UDP contract `udp=true` ve loopback UDP relay bind ile validator/regression kapsamına alındı.
 - Kullanılmayan native delay subsystem'i kaldırıldı.
 - NetworkSnapshot malformed metadata cast yolu güvenli fallback'e çevrildi.
-- Per-session Xray config `config.json` yerine bounded stdin/EOF pipe üzerinden aktarılıyor; legacy plaintext config silinemiyorsa start fail-closed.
-- SecureSocksSession bind-check-close sahte rezervasyon penceresi kaldırıldı; Xray ilk gerçek bind sahibi, collision bounded runtime retry ile ele alınıyor.
-- Token kaybında `stopVless` artık aktif runtime yokluğunu varsayarak success dönmüyor; service QUERY_STATE + generation-scoped stop/ack kullanılıyor.
+- Per-session Xray config plaintext `config.json` yerine bounded stdin/EOF pipe üzerinden aktarılıyor; legacy plaintext temizlenemiyorsa start fail-closed.
+- SecureSocksSession bind-check-close sahte rezervasyon penceresi kaldırıldı; Xray ilk gerçek bind sahibi, collision bounded retry ile ele alınıyor.
+- Token kaybında stop artık aktif runtime yokluğunu varsayarak sahte success dönmüyor; QUERY_STATE + generation-scoped stop/ack kullanılıyor.
 - Native status receiver Activity ömründen çıkarılıp engine/application scope'a taşındı.
-- `getCoreVersion` bounded wait/output/process cleanup ile sertleştirildi.
-- Normal connect sırasında SessionTimer'ın erken/çift başlaması engellendi; unconfirmed native stop durumunda son server-derived session state korunuyor.
-- Worker executor'a taşınan Xray startup'ın `CountDownTimer`/Looper regression'ı lazy main-looper Handler ticker ile düzeltildi.
-- Disconnect acknowledgement token'ı caller'ın verdiği generation yerine öncelikle gerçekten sahip olunan runtime generation'ından türetiliyor.
-- Native source build provenance: Xray exact commit'e pinli; tun2socks mutable HEAD/git-pull build'i yasak, exact commit gerekli.
-- Control-plane HTTP ortak katmanı configured HTTPS same-origin dışındaki URI'leri reddediyor; redirect zaten kapalı ve response 256 KiB ile sınırlı.
-- Always-on/lockdown tam desteklenene kadar `SUPPORTS_ALWAYS_ON=false` bilinçli korunuyor; CI yanlışlıkla true yapılmasını reddediyor.
+- Core version probe bounded wait/output/process cleanup ile sertleştirildi.
+- Normal connect sırasında SessionTimer'ın erken/çift başlaması engellendi; unconfirmed native stop durumunda server-derived session state/deadline korunuyor.
+- Worker startup timer/Looper regression'ı main-looper Handler tabanlı ticker ile düzeltildi.
+- Disconnect acknowledgement gerçek sahip olunan runtime generation'ına bağlandı.
+- Xray source exact commit'e pinlendi; tun2socks mutable HEAD/git-pull build'i yasaklandı.
+- Control-plane HTTP configured HTTPS same-origin dışındaki URL'leri reddediyor; redirect kapalı ve response size bounded.
+- Always-on/lockdown desteği tamamlanana kadar capability `false` ve CI guard ile fail-closed.
+- Persisted device UUIDv4 client tarafında canonical lowercase biçime normalize edilip server'ın strict parser contract'ıyla eşlendi.
+- Privacy policy ve first-launch disclosure source/runtime kanıtını aşan sabit quota, immediate deletion, logging ve no-third-party vaatlerinden temizlendi.
 
-## CI kanıtı
+## Güncel CI kanıtı
 
-### Eski ilk failure
+### Run 131 — SHA `733dce0de363560e860af2455d237dc2a8db6869`
 
-Run `34250095998`, SHA `0a6a2ac`:
-- Gradle supply-chain doğrulaması geçti.
-- Flutter kurulumu/dependency resolve/provenance adımları geçti.
-- Analyze başarısız oldu; sonraki commitlerde düzeltildi.
+Android CI `34348054593`: **SUCCESS**.
 
-### Run 34272027097 — SHA 55e619c
+Geçen ana kapılar:
 
-Bu koşu source hardening'in ilk önemli yürütme kanıtını verdi:
+- checkout/toolchain/dependency resolve
+- Gradle supply-chain doğrulaması
+- dependency lock ve vendored runtime provenance
+- Flutter analyze
+- Flutter tests
+- native Kotlin regression tests
+- native JUnit evidence verification/upload
+- Android lint
+- production release config fail-closed check
+- runtime secret transport contract
+- unsupported always-on guard
+- Android app-data/network-security policy
+- cold APK build
+- vendored native source immutability
+- warm APK build
+- release R8 smoke build
+- tracked build-input immutability
+- APK ve lockfile artifact upload
 
-- Gradle 8.14 wrapper doğrulaması: **PASS**.
-- Flutter 3.47.2 kurulumu: **PASS**.
-- Dependency lock: **PASS**.
-- Vendored runtime provenance pre-check: **PASS**.
-- `flutter analyze`: **PASS**, `No issues found!`.
-- `flutter test`: **PASS**, 4/4 test.
-  - malformed NetworkSnapshot fallback.
-  - valid NetworkSnapshot preservation.
-  - release verification fail-closed/reproducible.
-  - authenticated SOCKS IPv4 loopback contract.
-- Native Kotlin compile: **PASS**.
-- `VersionProbeTest`: **5/5 PASS**.
-- `CoreConfigPipeTest`: **3/3 PASS**.
-- XrayCoreManager malformed/invalid/missing/additional ingress negative tests: **PASS**.
-- Native total: 13 tests, 2 failure.
+Bu run device UUID canonicalization değişikliğini tam build/regression hattında doğruladı.
 
-İki failure:
+### Run 132 — SHA `de1dab978d7d0086f01cc9b32f6121b6c43ce416`
 
-1. `buildRuntimeConfigJson_keepsSecureSocksAndSanitizesLogs`
-2. `buildRuntimeConfigJson_normalizesXrayRuntimeAliases`
+Android CI `34349202579`: **SUCCESS**.
 
-Kök neden production kodu değil, test fixture drift'iydi: native validator artık `udp=true` ve `ip=127.0.0.1` zorunlu tutarken iki valid fixture eski kontratı üretmeye devam ediyordu. `2be59fcbf2cd2cf391118e60031a1c5cc0c2bb0c` bu fixture'ları gerçek kontratla eşledi ve `udp=false` / non-loopback UDP bind için negatif regression ekledi.
+Privacy policy + first-launch disclosure değişiklikleri de aynı tam analyze/test/native/lint/APK/R8 hattından geçti. Bu nedenle `de1dab9` mevcut client source/CI checkpoint'idir.
 
-### Yeni test/evidence kapsamı
+Aynı SHA için manuel rerun yapılmadı.
 
-CI artık aşağıdaki JUnit suite'lerini gerçekten yürütmeyi zorunlu kılıyor:
+## H13 client ↔ backend contract doğrulaması
 
-- `XrayCoreManagerTest` >= 5
-- `CoreConfigPipeTest` >= 3
-- `VersionProbeTest` >= 5
-- `RuntimeGenerationTest` >= 3
+Client:
 
-Her suite için failures/errors/skipped sıfır olmalı. JUnit XML ayrıca artifact olarak yükleniyor.
+- `device_id` artık geçerli UUIDv4 ise canonical lowercase string olarak kullanılıyor ve normalize edilmiş değer storage'a geri yazılıyor.
+- status/stop kontrol trafiği per-generation session authorization header'ı kullanıyor.
+- status tarafında no-session projection client için terminal auth failure olarak yorumlanmıyor; backend anti-oracle davranışıyla uyumlu.
+- normal disconnect server revoke yoluna gidiyor; native shutdown kanıtlanmadan credential cleanup başarı varsayılmıyor.
 
-### En yeni CI
+Backend main gerçekliği:
 
-SHA `6543dcb8023a74326ca5e4a10644b5540a71f58f` için Android CI run `34272733143` oluşturuldu. Bu kayıt yazılırken **queued**. Aynı SHA için manuel rerun yapılmadı.
+- `parse_reference_device_id()` canonical lowercase, hyphenated version-4 UUID istiyor.
+- session nonce header tam 32 lowercase hex istiyor.
+- status eksik/malformed/mismatch nonce için privacy-preserving no-session döndürüyor.
+- stop aynı authorization failure için 401 döndürüyor.
+- stop authorization + revoke aynı per-device serialization gate altında; generation N credential'ı yarış halinde N+1'i authorize edemiyor.
+- controller teardown ambiguity global fail-closed enforcement'a gidebiliyor.
+- managed nginx public API access log'larını kapatıyor; query-bearing session/AdMob route'larında error logging de bastırılıyor.
 
-## Regression testleri
+Backend H13 branch düzeltmeleri:
 
-Dart:
+- `7ac3534` — OpenAPI status/stop nonce semantiği runtime ile eşlendi.
+- `c30fb7f` — canonical lowercase UUIDv4 schema + required stop device_id contract.
+- `000fc58` — nonce transport açıklaması mevcut callback/SSV gerçeğiyle uyumlandı.
 
-- Network event malformed/valid metadata.
-- Release verification fail-closed/reproducible.
-- Authenticated loopback SOCKS contract.
-- ControlPlanePolicy: HTTPS same-origin kabul; HTTP, cross-origin, userinfo, fragment ve invalid configured base reddi.
+Backend workflow push'ta yalnız `main`, PR'da yalnız `main` hedefini çalıştırıyor. Kullanıcı istemeden PR açılmadığı için bu H13 branch'in henüz branch CI execution kanıtı yok. Bu nedenle backend H13 tam accepted değildir.
 
-Kotlin:
+## AdMob / session authorization trust-boundary blocker
 
-- Exact-one secure ingress ve malformed ingress matrisi.
-- UDP flag ve loopback UDP relay contract.
+Mevcut activation akışında callback correlation/nonce değeri AdMob `custom_data` içine girebilir. Aynı değer status/stop bearer authorization için de kullanıldığında üçüncü taraf SSV trust boundary ile session secret boundary birleşmiş olur.
+
+Managed nginx logging bu değerin server access log'una yazılmasını önlüyor, fakat üçüncü taraf processing sınırını ortadan kaldırmıyor. Production kabulü için callback correlation token ile session authorization secret ayrılmalı veya eşdeğer derecede güçlü ve açıkça doğrulanmış başka bir tasarım uygulanmalıdır.
+
+Global `SessionWireMetadata` nonce validation'ını körlemesine 32-hex'e daraltmak kabul edilmedi, çünkü frozen legacy AdMob compatibility yolu `123-456` benzeri SupportNonce değerleri kullanabiliyor. Compatibility kırmadan sınır ayrımı yapılmalıdır.
+
+## Production activation blocker
+
+Current source checkpoint'te `AdManager.adsEnabled = false`.
+
+Connect UI:
+
+1. `AdManager.showAd('main')`
+2. `vpn.connect()`
+
+akışını kullanıyor. Ads disabled olduğunda real rewarded main activation yapılmıyor. `vpn.connect()` içindeki legacy fake callback best-effort olup production server'da bypass güvenli varsayılanla kapalı kalmalıdır. Bu nedenle production session issuance akışı henüz release-ready değildir.
+
+**Legacy bypass'ı production'da açmak çözüm olarak kabul edilmez.**
+
+## Regression/evidence kapsamı
+
+Dart tarafında mevcut hardening coverage'i en az şunları kapsıyor:
+
+- malformed/valid NetworkSnapshot.
+- release verification fail-closed/reproducible.
+- authenticated loopback SOCKS contract.
+- control-plane HTTPS same-origin policy ve negatif URL vakaları.
+- device ID canonicalization/legacy-uppercase/malformed/non-v4 davranışı.
+
+Kotlin tarafında:
+
+- exact-one secure ingress ve malformed ingress matrisi.
+- UDP flag + loopback UDP relay contract.
 - CoreConfigPipe exact UTF-8/EOF, oversized input, stalled writer timeout.
-- VersionProbe first-line/EOF/oversize/timeout/interrupt davranışı.
-- Runtime generation acknowledgement ownership precedence.
+- VersionProbe bounded output/timeout/interrupt.
+- RuntimeGeneration ownership/ack precedence.
 
-## Build/provenance kanıtı
+## Build/provenance durumu
 
-Kaynakta hazır:
+Kaynak/pipeline hazır:
 
-- Xray v26.7.11 source commit: `50231eaff98ccc31b5cbd247a721c16e97fe5ec1`.
-- tun2socks source build exact commit zorunluluğu.
-- Gradle wrapper SHA ve distribution SHA doğrulaması.
-- Gradle dependency verification metadata.
-- Manuel production workflow: source SHA, app-config digest, toolchain kimliği, APK SHA256, signing certificate fingerprint, native SO digest'leri ve GitHub attestation üretmek üzere yapılandırıldı.
+- Xray v26.7.11 source commit `50231eaff98ccc31b5cbd247a721c16e97fe5ec1`.
+- tun2socks exact source commit zorunluluğu.
+- Gradle wrapper/distribution doğrulaması.
+- dependency verification metadata.
+- production workflow source SHA, app-config digest, toolchain, APK SHA256, signing cert fingerprint, native SO digests ve attestation üretmek üzere yapılandırıldı.
 
 Henüz kanıtlanmadı:
 
-- Production secrets/keystore ile gerçek signed APK workflow execution.
-- Yayımlanmış APK ile source SHA/attestation tüketici doğrulaması.
+- production secrets/keystore ile gerçek signed APK execution.
+- yayımlanmış APK ile source/config/cert/attestation tüketici doğrulaması.
 
 ## Açık gerçek cihaz kabulü
 
-Henüz Android device/emulator üzerinde aşağıdakiler yürütülmedi:
+Henüz fiziksel Android cihaz/emulator üzerinde tam acceptance yapılmadı:
 
 - TUN IPv4 TCP/UDP roundtrip.
 - TUN IPv6 TCP/UDP roundtrip.
 - DNS UDP/TCP ve Android Private DNS.
-- Wi-Fi ↔ LTE geçişi ve direct fallback/leak kontrolü.
-- Xray crash recovery.
-- tun2socks crash recovery.
+- Wi-Fi ↔ LTE transition ve direct fallback/leak.
+- Xray crash recovery/fail-closed.
+- tun2socks crash recovery/fail-closed.
 - Activity recreation / Flutter engine recreation / VPN service process death.
 - permission revoke.
 - session expiry / quota exhaustion.
-- reboot.
-- Discord voice/video, WebRTC ve QUIC benzeri UDP-heavy uygulamalar.
+- reboot/system-start.
+- Discord voice/video, WebRTC, QUIC ve diğer UDP-heavy application davranışı.
 
-Local SOCKS `UDP ASSOCIATE` başarısı bu e2e testlerin yerine geçmez.
+Local SOCKS `UDP ASSOCIATE` başarısı bu e2e kanıtların yerine geçmez.
 
 ## Always-on / lockdown
 
-Current service manifest açıkça `SUPPORTS_ALWAYS_ON=false` tutuyor. Bu bilinçli fail-closed karardır; mevcut mimaride yalnız flag'i true yapmak güvenli çözüm değildir.
+`SUPPORTS_ALWAYS_ON=false` current güvenli davranıştır. Tam destek için en az:
 
-Tam destek için en az:
-
-- system-start bootstrap,
+- protected system-start bootstrap,
 - expired credential resurrection engeli,
-- Xray/tun2socks outbound socket protection,
+- Xray/tun2socks outbound socket loop protection,
 - lockdown altında control-plane bootstrap,
 - no-direct-fallback,
-- reboot/process-death/device kabulü
+- reboot/process-death/device acceptance
 
 gereklidir.
 
+## Privacy/readiness doğrulaması
+
+`de1dab9` ile source-backed policy şu gerçeklere çekildi:
+
+- session quota sabit ürün vaadi değildir; server-authoritative.
+- terminal session row'un anında silindiği vaat edilmez.
+- managed nginx public access logging kapalıdır.
+- Rust service journal retention production host ayarıyla doğrulanmadan kısa retention iddiası yapılmaz.
+- rewarded ads current checkpoint'te disabled.
+- AdMob gelecekte enabled olursa third-party processing açıkça disclosure edilir.
+- local Xray access logging hardening'i production server/Xray deployment logging kanıtı yerine geçmez.
+
+Production host retention, deployed Xray config ve signed artifact provenance görülmeden daha güçlü privacy/readiness garantileri accepted değildir.
+
 ## Ortam sınırları
 
-- Bu sohbet ortamında fiziksel Android cihaz/emulator çalıştırılmadı.
-- Production backend deployment ve server-side authorization/replay/retention davranışı henüz bu client branch kanıtıyla doğrulanmış değildir.
-- Production signing secrets kullanılmadı.
-- CI/toolchain uyarıları (Gradle/AGP/Kotlin gelecekteki minimum sürümler ve bazı deprecated Android API'ler) bakım borcu olarak kaydedildi; mevcut güvenlik düzeltme serisini kör toolchain upgrade ile genişletmedik.
+- Bu sohbet ortamında fiziksel Android cihaz/emulator yürütülmedi.
+- Production backend host'a deployment yapılmadı veya canlı host state burada kanıtlanmadı.
+- Production signing secret/keystore kullanılmadı.
+- Server H13 branch için PR açılmadığı için rust-strict branch CI oluşmadı.
 
-## Kabul kuralı
+## Kabul özeti
 
-H01–H09 source-level düzeltmelerinin önemli bölümü tamamlandı, fakat en yeni SHA'nın tam analyze/test/native evidence/lint/APK/R8 hattı yeşil görülmeden "CI accepted" sayılmaz. H10/H11/H12/H13/H14 kendi cihaz, production veya dokümantasyon kanıt kapılarına göre açık kalır.
+- H01-H09: source-level hardening ve client CI acceptance büyük ölçüde tamamlandı; cihaz-bağımlı alt kabul maddeleri H12/lifecycle kapılarında açık.
+- H10: açık.
+- H11: açık.
+- H12: açık, gerçek cihaz gerekli.
+- H13: client contract tarafı CI ile ilerledi; backend source patch var, backend branch CI/deployment ve SSV/session-secret sınırı açık.
+- H14: privacy/disclosure CI ile güncellendi; README/continuity bu checkpointte güncelleniyor, production deployment-backed final claim review açık.
+
+Production release kabulü için H10/H11/H12/H13 ve deployment-backed H14 bitmeden "tam güvenli / production-ready" denmez.
