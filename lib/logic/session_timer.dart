@@ -7,6 +7,7 @@ import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/notification_service.dart';
 import 'package:revoltvpn/logic/session_accounting.dart';
+import 'package:revoltvpn/logic/sync_failure_window.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 
 class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
@@ -31,9 +32,11 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   static const FlutterSecureStorage _supportStorage = FlutterSecureStorage();
 
   static const int _maxConsecutiveFailures = 3;
-  static const int _maxOfflineSeconds = 120;
+  static const Duration _maxOfflineDuration = Duration(seconds: 120);
   static const int _pollIntervalSeconds = 60;
-  int _offlineSeconds = 0;
+  final Stopwatch _sessionClock = Stopwatch()..start();
+  final SyncFailureWindow _syncFailureWindow =
+      SyncFailureWindow(limit: _maxOfflineDuration);
 
   int _lastUsedBytes = 0;
   Stopwatch? _sinceLastSuccessfulSync;
@@ -139,18 +142,15 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     _tickCount = 0;
     _hasSyncedOnce = false;
     _consecutiveFailures = 0;
-    _offlineSeconds = 0;
+    _syncFailureWindow.reset();
   }
 
   void _tick(Timer timer) {
     if (_isDisconnecting) return;
     if (_hasSyncedOnce) _reconcileElapsedTime();
-    if (_consecutiveFailures >= _maxConsecutiveFailures) {
-      _offlineSeconds++;
-      if (_offlineSeconds >= _maxOfflineSeconds) {
-        unawaited(_doDisconnect('Server unreachable'));
-        return;
-      }
+    if (_syncFailureWindow.isExpired(_sessionClock.elapsed)) {
+      unawaited(_doDisconnect('Server unreachable'));
+      return;
     }
     if (_hasSyncedOnce && _remainingSeconds <= 0) {
       unawaited(_doDisconnect('Session expired', revokeServer: false));
@@ -302,7 +302,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
       }
       if (epoch != _sessionEpoch || _isDisconnecting) return;
       _consecutiveFailures = 0;
-      _offlineSeconds = 0;
+      _syncFailureWindow.reset();
       _hasSyncedOnce = true;
       notifyListeners();
     } catch (error) {
@@ -320,7 +320,11 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   void _markSyncFailure(int epoch) {
     if (epoch != _sessionEpoch || _isDisconnecting) return;
     _consecutiveFailures++;
-    if (_consecutiveFailures >= _maxConsecutiveFailures) notifyListeners();
+    _syncFailureWindow.recordFailure(_sessionClock.elapsed);
+    if (_consecutiveFailures >= _maxConsecutiveFailures ||
+        _syncFailureWindow.isExpired(_sessionClock.elapsed)) {
+      notifyListeners();
+    }
   }
 
   void _reconcileElapsedTime() {
@@ -335,6 +339,10 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     if (state != AppLifecycleState.resumed || _isDisconnecting) return;
     if (vpnConnection.status != VpnStatus.connected) return;
     _reconcileElapsedTime();
+    if (_syncFailureWindow.isExpired(_sessionClock.elapsed)) {
+      unawaited(_doDisconnect('Server unreachable'));
+      return;
+    }
     if (!isRunning && (vpnConnection.adoptedRunningRuntime || _hasSyncedOnce)) {
       _resumeTicking();
       return;
@@ -360,6 +368,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     vpnConnection.removeListener(_onVpnConnectionChanged);
     _timer?.cancel();
     _sinceLastSuccessfulSync?.stop();
+    _sessionClock.stop();
     super.dispose();
   }
 }
