@@ -46,6 +46,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
     private var pendingPermissionResult: MethodChannel.Result? = null
     private lateinit var context: Context
     private var expectedRuntimeToken: String? = null
+    private var pendingStartResult: MethodChannel.Result? = null
     private var pendingStopResult: MethodChannel.Result? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val stopTimeoutRunnable = Runnable {
@@ -54,10 +55,27 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
         pending.error("STOP_TIMEOUT", "VPN service did not confirm shutdown", null)
     }
 
+    private data class RuntimeStateSnapshot(
+        val active: Boolean,
+        val runtimeToken: String,
+        val runtimeReady: Boolean,
+        val proxyOnly: Boolean,
+        val state: String,
+    ) {
+        fun asMap(): Map<String, Any> = mapOf(
+            "active" to active,
+            "runtimeToken" to runtimeToken,
+            "runtimeReady" to runtimeReady,
+            "proxyOnly" to proxyOnly,
+            "state" to state,
+        )
+    }
+
     companion object {
         private const val TAG = "FlutterVlessPlugin"
         private const val REQUEST_CODE_VPN_PERMISSION = 24
         private const val REQUEST_CODE_POST_NOTIFICATIONS = 1
+        private const val RUNTIME_STATE_QUERY_TIMEOUT_MS = 3_000L
     }
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -73,9 +91,6 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
                 vpnStatusSink = null
             }
         })
-        // Keep the status receiver alive for the whole Flutter-engine lifetime.
-        // Stop acknowledgements and generation adoption must not depend on an
-        // Activity being attached or an EventChannel listener already existing.
         registerReceiver()
     }
 
@@ -83,6 +98,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
         when (call.method) {
             "startVless" -> startVless(call, result)
             "stopVless" -> stopVless(result)
+            "queryRuntimeState" -> queryRuntimeStateForFlutter(result)
             "setSessionDeadline" -> setSessionDeadline(call, result)
             "initializeVless" -> {
                 val iconResourceName = call.argument<String>("notificationIconResourceName")
@@ -104,6 +120,49 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
             result.error("STOP_IN_PROGRESS", "VPN shutdown is still in progress", null)
             return
         }
+        if (pendingStartResult != null) {
+            result.error("START_IN_PROGRESS", "VPN startup preflight is already in progress", null)
+            return
+        }
+
+        pendingStartResult = result
+        queryRuntimeState(
+            onSuccess = { snapshot ->
+                if (pendingStartResult !== result) return@queryRuntimeState
+                when (RuntimeStartGate.decide(snapshot.active, snapshot.runtimeToken)) {
+                    RuntimeStartGate.Decision.ALLOW_START -> {
+                        expectedRuntimeToken = null
+                        dispatchStartVless(call, result)
+                    }
+                    RuntimeStartGate.Decision.ADOPT_EXISTING -> {
+                        expectedRuntimeToken = snapshot.runtimeToken
+                        pendingStartResult = null
+                        result.error(
+                            "RUNTIME_ALREADY_ACTIVE",
+                            "An existing VPN runtime must be adopted or stopped before starting another generation",
+                            snapshot.asMap(),
+                        )
+                    }
+                    RuntimeStartGate.Decision.INVALID_ACTIVE_STATE -> {
+                        pendingStartResult = null
+                        result.error(
+                            "RUNTIME_STATE_INVALID",
+                            "VPN service reported an active runtime without a generation token",
+                            snapshot.asMap(),
+                        )
+                    }
+                }
+            },
+            onError = { code, message ->
+                if (pendingStartResult !== result) return@queryRuntimeState
+                pendingStartResult = null
+                result.error(code, message, null)
+            },
+        )
+    }
+
+    private fun dispatchStartVless(call: MethodCall, result: MethodChannel.Result) {
+        if (pendingStartResult !== result) return
         val config = XrayConfig()
         val runtimeToken = UUID.randomUUID().toString()
         expectedRuntimeToken = runtimeToken
@@ -162,16 +221,98 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
             } else {
                 context.startService(intent)
             }
+            pendingStartResult = null
             result.success(null)
         } catch (error: Exception) {
             if (expectedRuntimeToken == runtimeToken) expectedRuntimeToken = null
+            pendingStartResult = null
             result.error("START_FAILED", error.message ?: "Could not start VPN service", null)
+        }
+    }
+
+    private fun queryRuntimeStateForFlutter(result: MethodChannel.Result) {
+        queryRuntimeState(
+            onSuccess = { snapshot ->
+                if (snapshot.runtimeToken.isNotEmpty()) {
+                    expectedRuntimeToken = snapshot.runtimeToken
+                } else if (pendingStartResult == null && pendingStopResult == null) {
+                    expectedRuntimeToken = null
+                }
+                result.success(snapshot.asMap())
+            },
+            onError = { code, message -> result.error(code, message, null) },
+        )
+    }
+
+    private fun queryRuntimeState(
+        onSuccess: (RuntimeStateSnapshot) -> Unit,
+        onError: (String, String) -> Unit,
+    ) {
+        var completed = false
+        val timeoutRunnable = Runnable {
+            if (completed) return@Runnable
+            completed = true
+            onError(
+                "RUNTIME_STATE_QUERY_TIMEOUT",
+                "VPN service did not answer the runtime-state query",
+            )
+        }
+        val receiver = object : ResultReceiver(mainHandler) {
+            override fun onReceiveResult(resultCode: Int, resultData: Bundle?) {
+                if (completed) return
+                completed = true
+                mainHandler.removeCallbacks(timeoutRunnable)
+                try {
+                    val active = resultData?.getBoolean("active", false) == true
+                    val token = resultData?.getString("runtimeToken").orEmpty()
+                    val ready = resultData?.getBoolean("runtimeReady", false) == true
+                    val proxyOnly = resultData?.getBoolean("proxyOnly", false) == true
+                    val state = resultData?.getString("state").orEmpty()
+                    if (state.isEmpty() || (ready && !active)) {
+                        throw IllegalStateException("Contradictory VPN runtime state")
+                    }
+                    onSuccess(
+                        RuntimeStateSnapshot(
+                            active = active,
+                            runtimeToken = token,
+                            runtimeReady = ready,
+                            proxyOnly = proxyOnly,
+                            state = state,
+                        ),
+                    )
+                } catch (error: Exception) {
+                    onError(
+                        "RUNTIME_STATE_INVALID",
+                        error.message ?: "VPN service returned malformed runtime state",
+                    )
+                }
+            }
+        }
+        val query = Intent(context, XrayVPNService::class.java)
+            .putExtra("COMMAND", AppConfigs.V2RAY_SERVICE_COMMANDS.QUERY_STATE)
+            .putExtra("STATE_RECEIVER", receiver)
+        mainHandler.postDelayed(timeoutRunnable, RUNTIME_STATE_QUERY_TIMEOUT_MS)
+        try {
+            context.startService(query)
+        } catch (error: Exception) {
+            if (!completed) {
+                completed = true
+                mainHandler.removeCallbacks(timeoutRunnable)
+                onError(
+                    "RUNTIME_STATE_QUERY_FAILED",
+                    error.message ?: "Could not query VPN service state",
+                )
+            }
         }
     }
 
     private fun stopVless(result: MethodChannel.Result) {
         if (pendingStopResult != null) {
             result.error("STOP_IN_PROGRESS", "VPN shutdown is already in progress", null)
+            return
+        }
+        if (pendingStartResult != null) {
+            result.error("START_IN_PROGRESS", "VPN startup preflight is still in progress", null)
             return
         }
         val token = expectedRuntimeToken
@@ -185,37 +326,30 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
     private fun queryRuntimeThenStop(result: MethodChannel.Result) {
         pendingStopResult = result
         armStopTimeout()
-        val receiver = object : ResultReceiver(mainHandler) {
-            override fun onReceiveResult(resultCode: Int, resultData: Bundle?) {
-                if (pendingStopResult !== result) return
-                val active = resultData?.getBoolean("active", false) == true
-                if (!active) {
-                    completePendingStopSuccess()
-                    return
+        queryRuntimeState(
+            onSuccess = { snapshot ->
+                if (pendingStopResult !== result) return@queryRuntimeState
+                val token = snapshot.runtimeToken
+                if (token.isNotEmpty()) {
+                    expectedRuntimeToken = token
+                    sendStopIntent(token, result)
+                    return@queryRuntimeState
                 }
-                val token = resultData?.getString("runtimeToken").orEmpty()
-                if (token.isEmpty()) {
+                if (snapshot.active) {
                     completePendingStopError(
                         "STOP_STATE_UNKNOWN",
                         "VPN service reported an active runtime without a generation token",
                     )
-                    return
+                    return@queryRuntimeState
                 }
-                expectedRuntimeToken = token
-                sendStopIntent(token, result)
-            }
-        }
-        val query = Intent(context, XrayVPNService::class.java)
-            .putExtra("COMMAND", AppConfigs.V2RAY_SERVICE_COMMANDS.QUERY_STATE)
-            .putExtra("STATE_RECEIVER", receiver)
-        try {
-            context.startService(query)
-        } catch (error: Exception) {
-            completePendingStopError(
-                "STOP_QUERY_FAILED",
-                error.message ?: "Could not query VPN service state",
-            )
-        }
+                expectedRuntimeToken = null
+                completePendingStopSuccess()
+            },
+            onError = { _, message ->
+                if (pendingStopResult !== result) return@queryRuntimeState
+                completePendingStopError("STOP_QUERY_FAILED", message)
+            },
+        )
     }
 
     private fun dispatchStop(token: String, result: MethodChannel.Result) {
@@ -404,6 +538,12 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         mainHandler.removeCallbacks(stopTimeoutRunnable)
+        pendingStartResult?.error(
+            "ENGINE_DETACHED",
+            "Flutter engine detached during VPN startup preflight",
+            null,
+        )
+        pendingStartResult = null
         pendingStopResult?.error(
             "ENGINE_DETACHED",
             "Flutter engine detached during VPN shutdown",

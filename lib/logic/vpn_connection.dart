@@ -7,6 +7,7 @@ import 'package:revoltvpn/logic/connection_settings.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/local_socks_tester.dart';
+import 'package:revoltvpn/logic/native_runtime_state.dart';
 import 'package:revoltvpn/logic/network_monitor.dart';
 import 'package:revoltvpn/logic/secure_socks_session.dart';
 
@@ -17,6 +18,7 @@ class VpnConnection extends ChangeNotifier {
   static const _settingsTimeout = Duration(seconds: 5);
   static const _engineInitTimeout = Duration(seconds: 8);
   static const _coreProbeTimeout = Duration(seconds: 4);
+  static const _runtimeStateTimeout = Duration(seconds: 4);
   static const _runtimeStopTimeout = Duration(seconds: 8);
   static const _maxRuntimeStartAttempts = 3;
 
@@ -142,6 +144,15 @@ class VpnConnection extends ChangeNotifier {
     }
     if (_disposed) return;
 
+    try {
+      await _adoptNativeRuntimeIfPresent();
+    } catch (error) {
+      // Initialization remains usable, but connect() will repeat this query and
+      // fail closed before creating a server session if state is still unknown.
+      debugPrint('[VPN] Initial native runtime adoption query failed: $error');
+    }
+    if (_disposed) return;
+
     _networkSubscription = NetworkMonitor.changes.listen(
       (snapshot) {
         if (_disposed) return;
@@ -210,6 +221,34 @@ class VpnConnection extends ChangeNotifier {
     }
   }
 
+  Future<NativeRuntimeState> _queryNativeRuntimeState() async {
+    final raw = await _nativeControl
+        .invokeMapMethod<Object?, Object?>('queryRuntimeState')
+        .timeout(_runtimeStateTimeout);
+    if (raw == null) {
+      throw const FormatException('Native runtime state response was empty.');
+    }
+    return NativeRuntimeState.fromMap(raw);
+  }
+
+  Future<bool> _adoptNativeRuntimeIfPresent() async {
+    if (kIsWeb || !_initialized || _disposed) return false;
+    final snapshot = await _queryNativeRuntimeState();
+    if (!snapshot.ownsGeneration) return false;
+
+    _adoptedRunningRuntime = true;
+    _shutdownUnconfirmed = false;
+    _activeMode = snapshot.proxyOnly ? ConnectionMode.proxy : ConnectionMode.tun;
+    _suppressNativeConnect = false;
+    _errorMessage = null;
+    if (snapshot.runtimeReady) {
+      _setStatus(VpnStatus.connected, _connectedLabel);
+    } else {
+      _setStatus(VpnStatus.connecting, 'Restoring existing route…');
+    }
+    return true;
+  }
+
   Future<bool> connect({bool skipAdBypass = false}) async {
     if (_shutdownUnconfirmed) {
       _errorMessage =
@@ -249,6 +288,21 @@ class VpnConnection extends ChangeNotifier {
       _errorMessage = 'VPN service unavailable.';
       _setStatus(VpnStatus.error, 'Service unavailable');
       return false;
+    }
+
+    if (!kIsWeb) {
+      try {
+        if (await _adoptNativeRuntimeIfPresent()) return false;
+      } catch (error) {
+        if (!_isCurrentConnect(connectEpoch)) return false;
+        debugPrint('[VPN] Native runtime preflight failed: $error');
+        _suppressNativeConnect = true;
+        _errorMessage =
+            'Android could not prove that no previous VPN runtime is still active.';
+        _setStatus(VpnStatus.error, 'Runtime state unavailable');
+        return false;
+      }
+      if (!_isCurrentConnect(connectEpoch)) return false;
     }
 
     if (!kIsWeb && _activeMode == ConnectionMode.tun) {
