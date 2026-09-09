@@ -233,7 +233,16 @@ class VpnConnection extends ChangeNotifier {
 
   Future<bool> _adoptNativeRuntimeIfPresent() async {
     if (kIsWeb || !_initialized || _disposed) return false;
+    final adoptionEpoch = _connectEpoch;
     final snapshot = await _queryNativeRuntimeState();
+    if (!nativeRuntimeAdoptionStillCurrent(
+      capturedEpoch: adoptionEpoch,
+      currentEpoch: _connectEpoch,
+      disposed: _disposed,
+      disconnecting: _userDisconnecting,
+    )) {
+      return false;
+    }
     if (!snapshot.ownsGeneration) return false;
 
     _adoptedRunningRuntime = true;

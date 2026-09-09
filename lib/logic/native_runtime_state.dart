@@ -50,3 +50,12 @@ class NativeRuntimeState {
     );
   }
 }
+
+bool nativeRuntimeAdoptionStillCurrent({
+  required int capturedEpoch,
+  required int currentEpoch,
+  required bool disposed,
+  required bool disconnecting,
+}) {
+  return !disposed && !disconnecting && capturedEpoch == currentEpoch;
+}

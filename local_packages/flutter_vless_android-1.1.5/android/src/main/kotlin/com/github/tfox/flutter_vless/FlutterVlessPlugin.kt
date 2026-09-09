@@ -48,6 +48,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
     private var expectedRuntimeToken: String? = null
     private var pendingStartResult: MethodChannel.Result? = null
     private var pendingStopResult: MethodChannel.Result? = null
+    private val runtimeControlGeneration = RuntimeControlGeneration()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val stopTimeoutRunnable = Runnable {
         val pending = pendingStopResult ?: return@Runnable
@@ -116,6 +117,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
     }
 
     private fun startVless(call: MethodCall, result: MethodChannel.Result) {
+        runtimeControlGeneration.advance()
         if (pendingStopResult != null) {
             result.error("STOP_IN_PROGRESS", "VPN shutdown is still in progress", null)
             return
@@ -231,16 +233,45 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
     }
 
     private fun queryRuntimeStateForFlutter(result: MethodChannel.Result) {
+        if (pendingStartResult != null || pendingStopResult != null) {
+            result.error(
+                "RUNTIME_CONTROL_IN_PROGRESS",
+                "VPN runtime control operation is already in progress",
+                null,
+            )
+            return
+        }
+        val controlGeneration = runtimeControlGeneration.capture()
         queryRuntimeState(
             onSuccess = { snapshot ->
+                if (!runtimeControlGeneration.isCurrent(controlGeneration) ||
+                    pendingStartResult != null || pendingStopResult != null
+                ) {
+                    result.error(
+                        "RUNTIME_STATE_SUPERSEDED",
+                        "VPN runtime state query was superseded by a control operation",
+                        null,
+                    )
+                    return@queryRuntimeState
+                }
                 if (snapshot.runtimeToken.isNotEmpty()) {
                     expectedRuntimeToken = snapshot.runtimeToken
-                } else if (pendingStartResult == null && pendingStopResult == null) {
+                } else {
                     expectedRuntimeToken = null
                 }
                 result.success(snapshot.asMap())
             },
-            onError = { code, message -> result.error(code, message, null) },
+            onError = { code, message ->
+                if (!runtimeControlGeneration.isCurrent(controlGeneration)) {
+                    result.error(
+                        "RUNTIME_STATE_SUPERSEDED",
+                        "VPN runtime state query was superseded by a control operation",
+                        null,
+                    )
+                } else {
+                    result.error(code, message, null)
+                }
+            },
         )
     }
 
@@ -307,13 +338,19 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
     }
 
     private fun stopVless(result: MethodChannel.Result) {
+        runtimeControlGeneration.advance()
         if (pendingStopResult != null) {
             result.error("STOP_IN_PROGRESS", "VPN shutdown is already in progress", null)
             return
         }
-        if (pendingStartResult != null) {
-            result.error("START_IN_PROGRESS", "VPN startup preflight is still in progress", null)
-            return
+        val pendingStart = pendingStartResult
+        if (pendingStart != null) {
+            pendingStartResult = null
+            pendingStart.error(
+                "START_CANCELLED",
+                "VPN startup was cancelled because shutdown won the lifecycle race",
+                null,
+            )
         }
         val token = expectedRuntimeToken
         if (token != null) {
@@ -537,6 +574,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        runtimeControlGeneration.advance()
         mainHandler.removeCallbacks(stopTimeoutRunnable)
         pendingStartResult?.error(
             "ENGINE_DETACHED",
