@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:uuid/uuid.dart';
 
@@ -39,11 +40,23 @@ class CryptoService {
     return operation;
   }
 
+  @visibleForTesting
+  static String? canonicalizeDeviceId(String? value) {
+    if (value == null || !_uuidV4.hasMatch(value)) return null;
+    return value.toLowerCase();
+  }
+
   static Future<String> _loadOrCreateDeviceId() async {
     final existing = await _storage.read(key: _deviceIdPref);
-    if (existing != null && _uuidV4.hasMatch(existing)) return existing;
+    final canonical = canonicalizeDeviceId(existing);
+    if (canonical != null) {
+      if (canonical != existing) {
+        await _storage.write(key: _deviceIdPref, value: canonical);
+      }
+      return canonical;
+    }
 
-    final newId = const Uuid().v4();
+    final newId = const Uuid().v4().toLowerCase();
     await _storage.write(key: _deviceIdPref, value: newId);
     return newId;
   }
