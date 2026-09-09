@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_vless/flutter_vless.dart';
 import 'package:revoltvpn/logic/connection_settings.dart';
+import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/local_socks_tester.dart';
 import 'package:revoltvpn/logic/network_monitor.dart';
@@ -369,6 +370,8 @@ class VpnConnection extends ChangeNotifier {
       }
 
       debugPrint('[VPN] Exhausted runtime start attempts: $lastStartError');
+      await _cleanupServerCredentialAfterFailedStart();
+      if (!_isCurrentConnect(connectEpoch)) return false;
       _suppressNativeConnect = true;
       _errorMessage = _activeMode == ConnectionMode.proxy
           ? 'SOCKS5 gateway failed to start after safe retries.'
@@ -378,10 +381,31 @@ class VpnConnection extends ChangeNotifier {
     } catch (error) {
       if (!_isCurrentConnect(connectEpoch)) return false;
       debugPrint('[VPN] Configuration/runtime preparation failed: $error');
+      await _cleanupServerCredentialAfterFailedStart();
+      if (!_isCurrentConnect(connectEpoch)) return false;
       _suppressNativeConnect = true;
       _errorMessage = 'The VPN route could not be prepared safely.';
       _setStatus(VpnStatus.error, 'Connection failed');
       return false;
+    }
+  }
+
+  Future<void> _cleanupServerCredentialAfterFailedStart() async {
+    if (_shutdownUnconfirmed) return;
+    try {
+      final deviceId = await CryptoService.getDeviceId();
+      final cleaned = await HivemindService.revokeActiveSession(
+        deviceId,
+        drainPendingActivation: true,
+      );
+      if (!cleaned) {
+        debugPrint('[VPN] Server credential cleanup was not confirmed.');
+      }
+    } catch (error) {
+      // Every runtime-start failure reaches this helper only after native/local
+      // cleanup was proven. Remote failure therefore keeps the local client
+      // stopped while retaining authorization for a later cleanup attempt.
+      debugPrint('[VPN] Server credential cleanup failed: $error');
     }
   }
 
