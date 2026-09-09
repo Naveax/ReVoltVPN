@@ -5,7 +5,7 @@ import org.junit.Test
 
 class RuntimeStartGateTest {
     @Test
-    fun inactiveRuntimeAllowsStart() {
+    fun inactiveRuntimeWithoutGenerationAllowsStart() {
         assertEquals(
             RuntimeStartGate.Decision.ALLOW_START,
             RuntimeStartGate.decide(active = false, runtimeToken = ""),
@@ -17,6 +17,14 @@ class RuntimeStartGateTest {
         assertEquals(
             RuntimeStartGate.Decision.ADOPT_EXISTING,
             RuntimeStartGate.decide(active = true, runtimeToken = "generation-1"),
+        )
+    }
+
+    @Test
+    fun startingGenerationTokenMustBeAdoptedBeforeActiveFlag() {
+        assertEquals(
+            RuntimeStartGate.Decision.ADOPT_EXISTING,
+            RuntimeStartGate.decide(active = false, runtimeToken = "generation-starting"),
         )
     }
 
