@@ -11,6 +11,17 @@ void main() {
     expect(lease.remainingAfter(const Duration(seconds: 17)), 103);
   });
 
+  test('fractional startup time rounds up fail-closed', () {
+    final lease = HivemindConfigLease(
+      vlessUrl: 'vless://example',
+      expiresInSeconds: 120,
+    );
+
+    expect(lease.remainingAfter(Duration.zero), 120);
+    expect(lease.remainingAfter(const Duration(milliseconds: 1)), 119);
+    expect(lease.remainingAfter(const Duration(milliseconds: 1001)), 118);
+  });
+
   test('initial lease saturates at zero', () {
     final lease = HivemindConfigLease(
       vlessUrl: 'vless://example',
