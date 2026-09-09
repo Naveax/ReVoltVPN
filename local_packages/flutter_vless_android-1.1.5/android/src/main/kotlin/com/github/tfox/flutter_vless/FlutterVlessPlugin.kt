@@ -91,9 +91,6 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
                 vpnStatusSink = null
             }
         })
-        // Keep the status receiver alive for the whole Flutter-engine lifetime.
-        // Stop acknowledgements and generation adoption must not depend on an
-        // Activity being attached or an EventChannel listener already existing.
         registerReceiver()
     }
 
@@ -166,7 +163,6 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
 
     private fun dispatchStartVless(call: MethodCall, result: MethodChannel.Result) {
         if (pendingStartResult !== result) return
-
         val config = XrayConfig()
         val runtimeToken = UUID.randomUUID().toString()
         expectedRuntimeToken = runtimeToken
@@ -237,7 +233,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
     private fun queryRuntimeStateForFlutter(result: MethodChannel.Result) {
         queryRuntimeState(
             onSuccess = { snapshot ->
-                if (snapshot.active) {
+                if (snapshot.runtimeToken.isNotEmpty()) {
                     expectedRuntimeToken = snapshot.runtimeToken
                 } else if (pendingStartResult == null && pendingStopResult == null) {
                     expectedRuntimeToken = null
@@ -333,21 +329,21 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
         queryRuntimeState(
             onSuccess = { snapshot ->
                 if (pendingStopResult !== result) return@queryRuntimeState
-                if (!snapshot.active) {
-                    expectedRuntimeToken = null
-                    completePendingStopSuccess()
+                val token = snapshot.runtimeToken
+                if (token.isNotEmpty()) {
+                    expectedRuntimeToken = token
+                    sendStopIntent(token, result)
                     return@queryRuntimeState
                 }
-                val token = snapshot.runtimeToken
-                if (token.isEmpty()) {
+                if (snapshot.active) {
                     completePendingStopError(
                         "STOP_STATE_UNKNOWN",
                         "VPN service reported an active runtime without a generation token",
                     )
                     return@queryRuntimeState
                 }
-                expectedRuntimeToken = token
-                sendStopIntent(token, result)
+                expectedRuntimeToken = null
+                completePendingStopSuccess()
             },
             onError = { _, message ->
                 if (pendingStopResult !== result) return@queryRuntimeState
