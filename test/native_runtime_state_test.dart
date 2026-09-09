@@ -66,4 +66,37 @@ void main() {
       throwsFormatException,
     );
   });
+
+  test('runtime adoption is rejected after disconnect advances the epoch', () {
+    expect(
+      nativeRuntimeAdoptionStillCurrent(
+        capturedEpoch: 7,
+        currentEpoch: 8,
+        disposed: false,
+        disconnecting: true,
+      ),
+      isFalse,
+    );
+  });
+
+  test('runtime adoption is accepted only in the unchanged live epoch', () {
+    expect(
+      nativeRuntimeAdoptionStillCurrent(
+        capturedEpoch: 7,
+        currentEpoch: 7,
+        disposed: false,
+        disconnecting: false,
+      ),
+      isTrue,
+    );
+    expect(
+      nativeRuntimeAdoptionStillCurrent(
+        capturedEpoch: 7,
+        currentEpoch: 7,
+        disposed: true,
+        disconnecting: false,
+      ),
+      isFalse,
+    );
+  });
 }
