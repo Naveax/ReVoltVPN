@@ -7,17 +7,19 @@ import 'package:http/http.dart' as http;
 import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/control_plane_policy.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
+import 'package:revoltvpn/logic/serialized_operation_queue.dart';
 import 'package:revoltvpn/logic/session_auth.dart';
 
 class HivemindService {
   static String? _pendingNonce;
   static String? _activeSessionNonce;
-  static Future<String?>? _activeSessionNonceLoad;
-  static int _activeSessionAuthEpoch = 0;
   static int _currentCallId = 0;
+  static Completer<void>? _activationCompletion;
 
   static const FlutterSecureStorage _sessionStorage = FlutterSecureStorage();
   static const String _activeSessionNonceKey = 'revolt_active_session_nonce_v1';
+  static final SerializedOperationQueue _sessionStorageQueue =
+      SerializedOperationQueue();
 
   static const _ua = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
@@ -116,12 +118,11 @@ class HivemindService {
     }
   }
 
-  /// Cancel in-flight activation work without destroying authorization for an
-  /// already-running server session. An unconfirmed native STOP still needs
-  /// authenticated quota/status sync to fail closed safely.
+  /// Cancel in-flight activation work without destroying its nonce. The caller
+  /// may need that nonce after the callback settles to revoke a session that was
+  /// minted just before cancellation.
   static void cancel() {
     _currentCallId++;
-    _pendingNonce = null;
   }
 
   /// Compatibility hook used by the existing rewarded-ad path. The active
@@ -134,49 +135,57 @@ class HivemindService {
     final cached = _activeSessionNonce;
     if (cached != null && SessionAuth.isValidNonce(cached)) return cached;
 
-    final inFlight = _activeSessionNonceLoad;
-    if (inFlight != null) return inFlight;
+    return _sessionStorageQueue.run(() async {
+      final memory = _activeSessionNonce;
+      if (memory != null && SessionAuth.isValidNonce(memory)) return memory;
+      if (memory != null) _activeSessionNonce = null;
 
-    final epoch = _activeSessionAuthEpoch;
-    final operation = _readActiveSessionNonce(epoch);
-    _activeSessionNonceLoad = operation;
-    try {
-      return await operation;
-    } finally {
-      if (identical(_activeSessionNonceLoad, operation)) {
-        _activeSessionNonceLoad = null;
+      final stored = await _sessionStorage.read(key: _activeSessionNonceKey);
+      if (stored == null) return null;
+      if (!SessionAuth.isValidNonce(stored)) {
+        await _sessionStorage.delete(key: _activeSessionNonceKey);
+        return null;
       }
-    }
-  }
-
-  static Future<String?> _readActiveSessionNonce(int epoch) async {
-    final stored = await _sessionStorage.read(key: _activeSessionNonceKey);
-    if (epoch != _activeSessionAuthEpoch) return null;
-    if (stored == null) return null;
-    if (!SessionAuth.isValidNonce(stored)) {
-      await _sessionStorage.delete(key: _activeSessionNonceKey);
-      return null;
-    }
-    if (epoch != _activeSessionAuthEpoch) return null;
-    _activeSessionNonce = stored;
-    return stored;
+      _activeSessionNonce = stored;
+      return stored;
+    });
   }
 
   static Future<void> _storeActiveSessionNonce(String nonce) async {
     if (!SessionAuth.isValidNonce(nonce)) {
       throw const FormatException('Invalid active session authorization nonce.');
     }
-    final epoch = ++_activeSessionAuthEpoch;
-    await _sessionStorage.write(key: _activeSessionNonceKey, value: nonce);
-    if (epoch != _activeSessionAuthEpoch) return;
-    _activeSessionNonce = nonce;
+
+    await _sessionStorageQueue.run(() async {
+      await _sessionStorage.write(key: _activeSessionNonceKey, value: nonce);
+      _activeSessionNonce = nonce;
+    });
   }
 
   static Future<void> clearActiveSessionAuthorization() async {
-    _activeSessionAuthEpoch++;
-    _activeSessionNonce = null;
-    _activeSessionNonceLoad = null;
-    await _sessionStorage.delete(key: _activeSessionNonceKey);
+    await _sessionStorageQueue.run(() async {
+      await _sessionStorage.delete(key: _activeSessionNonceKey);
+      _activeSessionNonce = null;
+    });
+  }
+
+  static Future<bool> _clearActiveSessionAuthorizationIfCurrent(
+    String expectedNonce,
+  ) {
+    return _sessionStorageQueue.run(() async {
+      final memory = _activeSessionNonce;
+      if (memory != null && memory != expectedNonce) return false;
+
+      final current = memory ??
+          await _sessionStorage.read(key: _activeSessionNonceKey);
+      if (current != expectedNonce) return false;
+
+      await _sessionStorage.delete(key: _activeSessionNonceKey);
+      if (_activeSessionNonce == expectedNonce || _activeSessionNonce == null) {
+        _activeSessionNonce = null;
+      }
+      return true;
+    });
   }
 
   static Future<http.Response> sessionStatus(
@@ -205,17 +214,59 @@ class HivemindService {
     );
   }
 
-  /// Revoke the currently-owned server credential after local/native shutdown
-  /// has already been proven. Network/control-plane failure never turns a local
-  /// disconnect back into a connected state; the nonce is retained for a later
-  /// retry or replacement session unless the server confirms revocation.
+  /// Revoke every session credential still owned by this connection attempt.
+  /// When requested, cancellation waits for the bounded activation operation to
+  /// quiesce first so a late callback cannot mint a credential after STOP won.
   static Future<bool> revokeActiveSession(
     String deviceId, {
     Duration timeout = const Duration(seconds: 3),
+    bool drainPendingActivation = false,
   }) async {
-    final nonce = await _loadActiveSessionNonce();
-    if (nonce == null) return false;
+    var activationQuiesced = true;
+    if (drainPendingActivation) {
+      try {
+        await _waitForActivationQuiescence(const Duration(seconds: 10));
+      } on TimeoutException catch (error) {
+        activationQuiesced = false;
+        debugPrint('[Hivemind] activation drain timed out: $error');
+      }
+    }
 
+    final pending = _pendingNonce;
+    final active = await _loadActiveSessionNonce();
+    final candidates = <String>[];
+    if (pending != null && SessionAuth.isValidNonce(pending)) {
+      candidates.add(pending);
+    }
+    if (active != null &&
+        SessionAuth.isValidNonce(active) &&
+        !candidates.contains(active)) {
+      candidates.add(active);
+    }
+    if (candidates.isEmpty) return false;
+
+    var cleanedAny = false;
+    for (final nonce in candidates) {
+      final cleaned = await _revokeSessionWithNonce(
+        deviceId,
+        nonce,
+        timeout: timeout,
+        unauthorizedMeansAbsent: activationQuiesced || nonce == active,
+      );
+      if (!cleaned) continue;
+      cleanedAny = true;
+      if (_pendingNonce == nonce) _pendingNonce = null;
+      await _clearActiveSessionAuthorizationIfCurrent(nonce);
+    }
+    return cleanedAny;
+  }
+
+  static Future<bool> _revokeSessionWithNonce(
+    String deviceId,
+    String nonce, {
+    required Duration timeout,
+    required bool unauthorizedMeansAbsent,
+  }) async {
     try {
       final response = await _controlPostJson(
         _publicUrl('/session/stop'),
@@ -223,20 +274,48 @@ class HivemindService {
         headers: SessionAuth.headers(nonce),
         timeout: timeout,
       );
+
+      // A persisted nonce receiving 401 is no longer the server-owned active
+      // generation. A merely-pending nonce is only terminal after activation
+      // quiesced; otherwise a late callback could still mint that generation.
+      if (response.statusCode == 401) return unauthorizedMeansAbsent;
       if (response.statusCode != 200) return false;
       final decoded = jsonDecode(response.body);
-      if (decoded is! Map<String, dynamic> || decoded['ok'] != true) return false;
-      await clearActiveSessionAuthorization();
-      return true;
+      return decoded is Map<String, dynamic> && decoded['ok'] == true;
     } catch (error) {
       debugPrint('[Hivemind] session revoke failed: $error');
       return false;
     }
   }
 
+  static Future<void> _waitForActivationQuiescence(Duration timeout) async {
+    final completion = _activationCompletion;
+    if (completion == null || completion.isCompleted) return;
+    await completion.future.timeout(timeout);
+  }
+
   static Future<String> fetchConfigDirectly({
     void Function(int attempt, int total)? onAttempt,
     bool skipAdBypass = false,
+  }) {
+    final completion = Completer<void>();
+    _activationCompletion = completion;
+    final operation = _fetchConfigDirectly(
+      onAttempt: onAttempt,
+      skipAdBypass: skipAdBypass,
+    );
+
+    return operation.whenComplete(() {
+      if (identical(_activationCompletion, completion)) {
+        _activationCompletion = null;
+      }
+      if (!completion.isCompleted) completion.complete();
+    });
+  }
+
+  static Future<String> _fetchConfigDirectly({
+    void Function(int attempt, int total)? onAttempt,
+    required bool skipAdBypass,
   }) async {
     // Capture the generation before the first await. Otherwise a disconnect
     // that lands while secure storage is resolving the device ID can be lost

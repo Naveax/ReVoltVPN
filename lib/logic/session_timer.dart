@@ -195,22 +195,25 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
 
     final stopped = await vpnConnection.disconnect();
     if (stopped) {
-      if (hadActiveSession) {
-        try {
-          if (revokeServer) {
-            final deviceId = await CryptoService.getDeviceId();
-            final revoked = await HivemindService.revokeActiveSession(deviceId);
-            if (!revoked) {
-              debugPrint('[Timer] Server session revoke was not confirmed.');
-            }
-          } else {
-            await HivemindService.clearActiveSessionAuthorization();
+      try {
+        if (revokeServer) {
+          // Also run for a cancelled CONNECTING state. The server may already
+          // have minted a credential even though the session timer never began.
+          final deviceId = await CryptoService.getDeviceId();
+          final revoked = await HivemindService.revokeActiveSession(
+            deviceId,
+            drainPendingActivation: true,
+          );
+          if (!revoked) {
+            debugPrint('[Timer] Server session revoke was not confirmed.');
           }
-        } catch (error) {
-          // Local/native shutdown is authoritative for device traffic. A remote
-          // control-plane failure must not resurrect the local VPN state.
-          debugPrint('[Timer] Server session cleanup failed: $error');
+        } else if (hadActiveSession) {
+          await HivemindService.clearActiveSessionAuthorization();
         }
+      } catch (error) {
+        // Local/native shutdown is authoritative for device traffic. A remote
+        // control-plane failure must not resurrect the local VPN state.
+        debugPrint('[Timer] Server session cleanup failed: $error');
       }
       _resetSessionMetrics();
       _isDisconnecting = false;
