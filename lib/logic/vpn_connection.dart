@@ -279,9 +279,9 @@ class VpnConnection extends ChangeNotifier {
     }
 
     _setStatus(VpnStatus.connecting, 'Fetching config…');
-    late final String realUrl;
+    late final HivemindConfigLease configLease;
     try {
-      realUrl = await HivemindService.fetchConfigDirectly(
+      configLease = await HivemindService.fetchConfigLeaseDirectly(
         skipAdBypass: skipAdBypass,
         onAttempt: (attempt, total) {
           if (_isCurrentConnect(connectEpoch)) {
@@ -303,8 +303,9 @@ class VpnConnection extends ChangeNotifier {
     }
 
     if (!_isCurrentConnect(connectEpoch)) return false;
+    final leaseClock = Stopwatch()..start();
     try {
-      final parsed = FlutterVless.parse(realUrl);
+      final parsed = FlutterVless.parse(configLease.vlessUrl);
       final baseConfig = parsed.getFullConfiguration();
       final remark = parsed.remark.isNotEmpty ? parsed.remark : 'Revolt VPN';
       final verifyLocalSocks = _activeMode == ConnectionMode.proxy;
@@ -340,6 +341,15 @@ class VpnConnection extends ChangeNotifier {
             }
           }
           if (!_isCurrentConnect(connectEpoch)) return false;
+
+          final initialRemaining = configLease.remainingAfter(leaseClock.elapsed);
+          if (initialRemaining <= 0) {
+            throw StateError('Server session expired during runtime startup');
+          }
+          _setStatus(VpnStatus.connecting, 'Arming session deadline…');
+          await setNativeSessionDeadline(initialRemaining);
+          if (!_isCurrentConnect(connectEpoch)) return false;
+
           _lastSecureSocks = secureSocks;
           _shutdownUnconfirmed = false;
           _errorMessage = null;
@@ -387,6 +397,8 @@ class VpnConnection extends ChangeNotifier {
       _errorMessage = 'The VPN route could not be prepared safely.';
       _setStatus(VpnStatus.error, 'Connection failed');
       return false;
+    } finally {
+      leaseClock.stop();
     }
   }
 

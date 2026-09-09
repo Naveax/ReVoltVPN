@@ -6,6 +6,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/notification_service.dart';
+import 'package:revoltvpn/logic/session_accounting.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 
 class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
@@ -232,12 +233,6 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  int _readNonNegativeInt(dynamic value, int fallback) {
-    if (value is int) return value >= 0 ? value : fallback;
-    if (value is num && value.isFinite && value >= 0) return value.toInt();
-    return fallback;
-  }
-
   Future<void> _syncWithHivemind() async {
     if (_isDisconnecting) return;
     final epoch = _sessionEpoch;
@@ -270,16 +265,21 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
         await _doDisconnect('Server ended session', revokeServer: false);
         return;
       }
-      final expiresValue = decoded['expires_in_seconds'];
-      if (expiresValue is! num || !expiresValue.isFinite || expiresValue < 0) {
-        _markSyncFailure(epoch);
+
+      final accounting = SessionAccounting.fromActiveStatus(decoded);
+      if (accounting.expired) {
+        await _doDisconnect('Session expired', revokeServer: false);
+        return;
+      }
+      if (accounting.dataCapReached) {
+        await _doDisconnect('Data cap reached', revokeServer: false);
         return;
       }
 
       final elapsedMs = _sinceLastSuccessfulSync?.elapsedMilliseconds;
-      _remainingAtLastSync = expiresValue.toInt();
+      _remainingAtLastSync = accounting.expiresInSeconds;
       _remainingSeconds = _remainingAtLastSync;
-      _usedBytes = _readNonNegativeInt(decoded['used_bytes'], _usedBytes);
+      _usedBytes = accounting.usedBytes;
       final deltaBytes = _usedBytes - _lastUsedBytes;
       if (_hasSyncedOnce && elapsedMs != null && elapsedMs > 0) {
         _currentSpeedKBps = deltaBytes > 0
@@ -292,10 +292,6 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
       _sinceLastSuccessfulSync?.stop();
       _sinceLastSuccessfulSync = Stopwatch()..start();
 
-      if (decoded['cap_exhausted'] == true) {
-        await _doDisconnect('Data cap reached', revokeServer: false);
-        return;
-      }
       if (epoch != _sessionEpoch || _isDisconnecting) return;
       try {
         await vpnConnection.setNativeSessionDeadline(_remainingAtLastSync);

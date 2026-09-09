@@ -8,7 +8,39 @@ import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/control_plane_policy.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/serialized_operation_queue.dart';
+import 'package:revoltvpn/logic/session_accounting.dart';
 import 'package:revoltvpn/logic/session_auth.dart';
+
+class HivemindConfigLease {
+  final String vlessUrl;
+  final int expiresInSeconds;
+
+  HivemindConfigLease({
+    required this.vlessUrl,
+    required this.expiresInSeconds,
+  }) {
+    if (vlessUrl.isEmpty) {
+      throw ArgumentError.value(vlessUrl, 'vlessUrl', 'must not be empty');
+    }
+    if (expiresInSeconds <= 0) {
+      throw ArgumentError.value(
+        expiresInSeconds,
+        'expiresInSeconds',
+        'must be positive',
+      );
+    }
+  }
+
+  int remainingAfter(Duration elapsed) {
+    final elapsedMicros = elapsed.inMicroseconds;
+    final elapsedSeconds = elapsedMicros <= 0
+        ? 0
+        : (elapsedMicros + Duration.microsecondsPerSecond - 1) ~/
+            Duration.microsecondsPerSecond;
+    final remaining = expiresInSeconds - elapsedSeconds;
+    return remaining > 0 ? remaining : 0;
+  }
+}
 
 class HivemindService {
   static String? _pendingNonce;
@@ -294,13 +326,27 @@ class HivemindService {
     await completion.future.timeout(timeout);
   }
 
+  /// Compatibility method for callers that only need the VLESS URL.
   static Future<String> fetchConfigDirectly({
+    void Function(int attempt, int total)? onAttempt,
+    bool skipAdBypass = false,
+  }) async {
+    final lease = await fetchConfigLeaseDirectly(
+      onAttempt: onAttempt,
+      skipAdBypass: skipAdBypass,
+    );
+    return lease.vlessUrl;
+  }
+
+  /// Fetch both the VLESS configuration and the server-authoritative initial
+  /// session lease. The latter must be armed natively before startup is accepted.
+  static Future<HivemindConfigLease> fetchConfigLeaseDirectly({
     void Function(int attempt, int total)? onAttempt,
     bool skipAdBypass = false,
   }) {
     final completion = Completer<void>();
     _activationCompletion = completion;
-    final operation = _fetchConfigDirectly(
+    final operation = _fetchConfigLeaseDirectly(
       onAttempt: onAttempt,
       skipAdBypass: skipAdBypass,
     );
@@ -313,7 +359,7 @@ class HivemindService {
     });
   }
 
-  static Future<String> _fetchConfigDirectly({
+  static Future<HivemindConfigLease> _fetchConfigLeaseDirectly({
     void Function(int attempt, int total)? onAttempt,
     required bool skipAdBypass,
   }) async {
@@ -347,7 +393,10 @@ class HivemindService {
           await _storeActiveSessionNonce(nonce);
           _throwIfCancelled(callId);
           _pendingNonce = null;
-          return session.toVlessUrl();
+          return HivemindConfigLease(
+            vlessUrl: session.toVlessUrl(),
+            expiresInSeconds: session.expiresInSeconds,
+          );
         }
       } catch (e) {
         if (_isCancelledError(e)) rethrow;
@@ -436,6 +485,7 @@ class _HivemindSessionConfig {
   final String sni;
   final String fingerprint;
   final String path;
+  final int expiresInSeconds;
 
   const _HivemindSessionConfig({
     required this.uuid,
@@ -446,6 +496,7 @@ class _HivemindSessionConfig {
     required this.sni,
     required this.fingerprint,
     required this.path,
+    required this.expiresInSeconds,
   });
 
   factory _HivemindSessionConfig.fromJson(Map<String, dynamic> json) {
@@ -493,6 +544,11 @@ class _HivemindSessionConfig {
       throw const FormatException('Invalid XHTTP path');
     }
 
+    final accounting = SessionAccounting.fromActiveStatus(json);
+    if (accounting.exhausted) {
+      throw const FormatException('Session lease is already exhausted');
+    }
+
     return _HivemindSessionConfig(
       uuid: uuid,
       host: host,
@@ -502,6 +558,7 @@ class _HivemindSessionConfig {
       sni: sni,
       fingerprint: fingerprint,
       path: path,
+      expiresInSeconds: accounting.expiresInSeconds,
     );
   }
 
