@@ -13,6 +13,8 @@ class NativeRuntimeState {
     required this.state,
   });
 
+  bool get ownsGeneration => runtimeToken.trim().isNotEmpty;
+
   factory NativeRuntimeState.fromMap(Map<Object?, Object?> raw) {
     final active = raw['active'];
     final runtimeReady = raw['runtimeReady'];
@@ -24,7 +26,8 @@ class NativeRuntimeState {
         runtimeReady is! bool ||
         proxyOnly is! bool ||
         runtimeToken is! String ||
-        state is! String) {
+        state is! String ||
+        state.trim().isEmpty) {
       throw const FormatException('Malformed native runtime state.');
     }
     if (active && runtimeToken.trim().isEmpty) {
@@ -32,9 +35,9 @@ class NativeRuntimeState {
         'Active native runtime is missing its generation token.',
       );
     }
-    if (runtimeReady && !active) {
+    if (runtimeReady && runtimeToken.trim().isEmpty) {
       throw const FormatException(
-        'Inactive native runtime cannot report readiness.',
+        'Ready native runtime is missing its generation token.',
       );
     }
 
