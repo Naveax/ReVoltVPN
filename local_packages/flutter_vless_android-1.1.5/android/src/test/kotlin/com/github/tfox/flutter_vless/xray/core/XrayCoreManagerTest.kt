@@ -37,7 +37,7 @@ class XrayCoreManagerTest {
             .getJSONArray("users")
             .getJSONObject(0)
 
-        assertFalse(log.has("access"))
+        assertEquals("none", log.getString("access"))
         assertEquals(File(filesDir, "error.log").absolutePath, log.getString("error"))
         assertEquals("revolt-secure-socks", inbound.getString("tag"))
         assertEquals("password", settings.getString("auth"))
@@ -47,6 +47,28 @@ class XrayCoreManagerTest {
         assertEquals(0, config.LOCAL_HTTP_PORT)
         assertEquals(vlessEncryption, user.getString("encryption"))
         assertEquals("xtls-rprx-vision", user.getString("flow"))
+    }
+
+    @Test
+    fun buildRuntimeConfigJson_keepsExplicitErrorLoggingDisabled() {
+        val config = XrayConfig(
+            V2RAY_FULL_JSON_CONFIG = runtimeConfig(
+                extraLog = """
+                    "log": {
+                      "error": "none"
+                    },
+                """.trimIndent(),
+            )
+        )
+
+        val output = XrayCoreManager.buildRuntimeConfigJson(
+            config,
+            File("build/test-files/runtime-no-logs"),
+        )
+        val log = output.getJSONObject("log")
+
+        assertEquals("none", log.getString("access"))
+        assertEquals("none", log.getString("error"))
     }
 
     @Test

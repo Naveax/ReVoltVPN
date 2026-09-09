@@ -110,13 +110,21 @@ object XrayCoreManager {
     }
 
     private fun sanitizeLogPaths(configJson: JSONObject, filesDir: File) {
-        val log = configJson.optJSONObject("log") ?: return
-        log.remove("access")
+        val log = configJson.optJSONObject("log") ?: JSONObject().also {
+            configJson.put("log", it)
+        }
+
+        // Xray treats a missing access field as stdout logging. Explicitly use
+        // the documented sentinel so the no-access-log policy is real rather
+        // than merely redirecting access records away from a file.
+        log.put("access", "none")
         try {
             File(filesDir, "access.log").delete()
         } catch (_: Exception) {
         }
-        if (log.optString("error").isNotEmpty()) {
+
+        val errorTarget = log.optString("error")
+        if (errorTarget.isNotEmpty() && !errorTarget.equals("none", ignoreCase = true)) {
             log.put("error", File(filesDir, "error.log").absolutePath)
         }
     }

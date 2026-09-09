@@ -37,6 +37,7 @@ class _LightningToggleTileState extends State<LightningToggleTile> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('lightning_effect_enabled', value);
     lightningEnabled.value = value;
+    if (!mounted) return;
     setState(() => _on = value);
   }
 

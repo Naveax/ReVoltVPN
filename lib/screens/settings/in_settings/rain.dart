@@ -37,6 +37,7 @@ class _RainToggleTileState extends State<RainToggleTile> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('rain_effect_enabled', value);
     rainEnabled.value = value;
+    if (!mounted) return;
     setState(() => _on = value);
   }
 
