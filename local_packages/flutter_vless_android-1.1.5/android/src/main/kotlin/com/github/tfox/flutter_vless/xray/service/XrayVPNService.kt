@@ -85,8 +85,11 @@ class XrayVPNService : VpnService() {
         }
 
         if (command != AppConfigs.V2RAY_SERVICE_COMMANDS.START_SERVICE) {
-            stopAll()
-            return START_NOT_STICKY
+            // An unknown or malformed internal command must not become an
+            // implicit kill switch for the currently owned runtime.
+            Log.w(TAG, "Ignoring unknown VPN service command: $command")
+            if (!runtimeAppearsActive()) stopSelfResult(startId)
+            return if (runtimeAppearsActive()) START_REDELIVER_INTENT else START_NOT_STICKY
         }
 
         createNotificationChannel()
@@ -122,8 +125,9 @@ class XrayVPNService : VpnService() {
         currentConfig = config
         val proxyOnly = intent.getBooleanExtra("PROXY_ONLY", false)
         currentProxyOnly = proxyOnly
-        armSessionDeadline(config, BOOTSTRAP_SESSION_SECONDS)
-        if (shuttingDownIntentionally) return START_NOT_STICKY
+        if (!armSessionDeadline(config, BOOTSTRAP_SESSION_SECONDS)) {
+            return START_NOT_STICKY
+        }
 
         runtimeExecutor.execute { startRuntime(config, proxyOnly) }
         return START_REDELIVER_INTENT
@@ -266,9 +270,6 @@ class XrayVPNService : VpnService() {
                 return@Thread
             }
 
-            // Release this generation's claim before starting a fresh process.
-            // If that process exits immediately its monitor can schedule the
-            // next recovery instead of having the event swallowed by this gate.
             tun2socksRecoveryGate.release(token)
             try {
                 if (isRunning && isCurrent(config)) runTun2socks(config)
@@ -369,9 +370,6 @@ class XrayVPNService : VpnService() {
                             XrayCoreManager.markRuntimeReady(this, config)
                         }
 
-                        // A freshly-started core can exit before its callback is
-                        // able to acquire the recovery gate. Release ownership,
-                        // then recheck liveness so such an exit cannot be lost.
                         xrayRecoveryGate.release(token)
                         if (isRunning && isCurrent(config) && !XrayCoreManager.isXrayRunning()) {
                             handleXrayCoreExit(config)
@@ -419,7 +417,7 @@ class XrayVPNService : VpnService() {
         stopSelf()
     }
 
-    private fun armSessionDeadline(config: XrayConfig, remainingSeconds: Long) {
+    private fun armSessionDeadline(config: XrayConfig, remainingSeconds: Long): Boolean {
         val boundedSeconds = remainingSeconds.coerceAtLeast(0L).coerceAtMost(Long.MAX_VALUE / 1000L)
         val delayMs = boundedSeconds * 1000L
         val nowEpochMs = System.currentTimeMillis()
@@ -430,11 +428,12 @@ class XrayVPNService : VpnService() {
             !scheduleSessionExpiryAlarm(config.RUNTIME_TOKEN, epochDeadline)
         ) {
             stopAll(config.RUNTIME_TOKEN)
-            return
+            return false
         }
         deadlineHandler.removeCallbacks(sessionDeadlineRunnable)
         if (delayMs == 0L) deadlineHandler.post(sessionDeadlineRunnable)
         else deadlineHandler.postDelayed(sessionDeadlineRunnable, delayMs)
+        return true
     }
 
     private fun clearSessionDeadline() {
@@ -458,13 +457,79 @@ class XrayVPNService : VpnService() {
         stopAll(token)
     }
 
+    private fun deadlineReceiver(intent: Intent): ResultReceiver? =
+        if (Build.VERSION.SDK_INT >= 33) {
+            intent.getParcelableExtra("DEADLINE_RECEIVER", ResultReceiver::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra("DEADLINE_RECEIVER") as? ResultReceiver
+        }
+
+    private fun replyDeadline(
+        receiver: ResultReceiver?,
+        success: Boolean,
+        code: String = "",
+        message: String = "",
+    ) {
+        if (receiver == null) return
+        val data = Bundle().apply {
+            if (code.isNotEmpty()) putString("code", code)
+            if (message.isNotEmpty()) putString("message", message)
+        }
+        receiver.send(if (success) DEADLINE_RESULT_OK else DEADLINE_RESULT_ERROR, data)
+    }
+
     private fun updateSessionDeadline(intent: Intent) {
-        val config = currentConfig ?: return
-        val token = intent.getStringExtra("RUNTIME_TOKEN").orEmpty()
-        if (token.isEmpty() || token != config.RUNTIME_TOKEN) return
+        val receiver = deadlineReceiver(intent)
+        val config = currentConfig
+        val requestedToken = intent.getStringExtra("RUNTIME_TOKEN").orEmpty()
         val remainingSeconds = intent.getLongExtra("REMAINING_SECONDS", -1L)
-        if (remainingSeconds < 0L) return
-        armSessionDeadline(config, remainingSeconds)
+        when (
+            SessionDeadlineGate.decide(
+                config?.RUNTIME_TOKEN,
+                requestedToken,
+                remainingSeconds,
+            )
+        ) {
+            SessionDeadlineGate.Decision.NO_RUNTIME -> {
+                replyDeadline(receiver, false, "NO_RUNTIME", "VPN runtime is not active")
+                return
+            }
+            SessionDeadlineGate.Decision.TOKEN_MISMATCH -> {
+                replyDeadline(
+                    receiver,
+                    false,
+                    "DEADLINE_TOKEN_MISMATCH",
+                    "Session deadline belongs to a stale VPN generation",
+                )
+                return
+            }
+            SessionDeadlineGate.Decision.INVALID_REMAINING -> {
+                replyDeadline(
+                    receiver,
+                    false,
+                    "INVALID_DEADLINE",
+                    "remainingSeconds must be non-negative",
+                )
+                return
+            }
+            SessionDeadlineGate.Decision.ALLOW -> Unit
+        }
+
+        val activeConfig = config ?: run {
+            replyDeadline(receiver, false, "NO_RUNTIME", "VPN runtime is not active")
+            return
+        }
+        if (!armSessionDeadline(activeConfig, remainingSeconds)) {
+            replyDeadline(
+                receiver,
+                false,
+                "DEADLINE_ARM_FAILED",
+                "VPN service could not persist and arm the session deadline",
+            )
+            return
+        }
+        replyDeadline(receiver, true)
     }
 
     private fun persistDeadline(runtimeToken: String, expiresAtEpochMs: Long): Boolean = try {
@@ -636,5 +701,7 @@ class XrayVPNService : VpnService() {
         private const val PREF_EXPIRES_AT_MS = "expires_at_ms"
         private const val EXTRA_SESSION_EXPIRED = "SESSION_EXPIRED"
         private const val SESSION_EXPIRY_REQUEST_CODE = 1001
+        private const val DEADLINE_RESULT_OK = 0
+        private const val DEADLINE_RESULT_ERROR = 1
     }
 }

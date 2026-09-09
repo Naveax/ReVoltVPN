@@ -48,12 +48,22 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
     private var expectedRuntimeToken: String? = null
     private var pendingStartResult: MethodChannel.Result? = null
     private var pendingStopResult: MethodChannel.Result? = null
+    private var pendingDeadlineResult: MethodChannel.Result? = null
     private val runtimeControlGeneration = RuntimeControlGeneration()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val stopTimeoutRunnable = Runnable {
         val pending = pendingStopResult ?: return@Runnable
         pendingStopResult = null
         pending.error("STOP_TIMEOUT", "VPN service did not confirm shutdown", null)
+    }
+    private val deadlineTimeoutRunnable = Runnable {
+        val pending = pendingDeadlineResult ?: return@Runnable
+        pendingDeadlineResult = null
+        pending.error(
+            "DEADLINE_TIMEOUT",
+            "VPN service did not confirm the session deadline update",
+            null,
+        )
     }
 
     private data class RuntimeStateSnapshot(
@@ -77,6 +87,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
         private const val REQUEST_CODE_VPN_PERMISSION = 24
         private const val REQUEST_CODE_POST_NOTIFICATIONS = 1
         private const val RUNTIME_STATE_QUERY_TIMEOUT_MS = 3_000L
+        private const val DEADLINE_UPDATE_TIMEOUT_MS = 3_000L
     }
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -118,6 +129,10 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
 
     private fun startVless(call: MethodCall, result: MethodChannel.Result) {
         runtimeControlGeneration.advance()
+        cancelPendingDeadline(
+            "DEADLINE_SUPERSEDED",
+            "Session deadline update was superseded by VPN startup",
+        )
         if (pendingStopResult != null) {
             result.error("STOP_IN_PROGRESS", "VPN shutdown is still in progress", null)
             return
@@ -233,7 +248,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
     }
 
     private fun queryRuntimeStateForFlutter(result: MethodChannel.Result) {
-        if (pendingStartResult != null || pendingStopResult != null) {
+        if (pendingStartResult != null || pendingStopResult != null || pendingDeadlineResult != null) {
             result.error(
                 "RUNTIME_CONTROL_IN_PROGRESS",
                 "VPN runtime control operation is already in progress",
@@ -245,7 +260,8 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
         queryRuntimeState(
             onSuccess = { snapshot ->
                 if (!runtimeControlGeneration.isCurrent(controlGeneration) ||
-                    pendingStartResult != null || pendingStopResult != null
+                    pendingStartResult != null || pendingStopResult != null ||
+                    pendingDeadlineResult != null
                 ) {
                     result.error(
                         "RUNTIME_STATE_SUPERSEDED",
@@ -339,6 +355,10 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
 
     private fun stopVless(result: MethodChannel.Result) {
         runtimeControlGeneration.advance()
+        cancelPendingDeadline(
+            "DEADLINE_SUPERSEDED",
+            "Session deadline update was superseded by VPN shutdown",
+        )
         if (pendingStopResult != null) {
             result.error("STOP_IN_PROGRESS", "VPN shutdown is already in progress", null)
             return
@@ -429,7 +449,22 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
         pending.error(code, message, null)
     }
 
+    private fun cancelPendingDeadline(code: String, message: String) {
+        val pending = pendingDeadlineResult ?: return
+        pendingDeadlineResult = null
+        mainHandler.removeCallbacks(deadlineTimeoutRunnable)
+        pending.error(code, message, null)
+    }
+
     private fun setSessionDeadline(call: MethodCall, result: MethodChannel.Result) {
+        if (pendingDeadlineResult != null) {
+            result.error(
+                "DEADLINE_IN_PROGRESS",
+                "A session deadline update is already in progress",
+                null,
+            )
+            return
+        }
         val token = expectedRuntimeToken
         val remainingSeconds = call.argument<Number>("remainingSeconds")?.toLong()
         if (token == null) {
@@ -440,15 +475,52 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
             result.error("INVALID_DEADLINE", "remainingSeconds must be non-negative", null)
             return
         }
+
+        val controlGeneration = runtimeControlGeneration.capture()
+        pendingDeadlineResult = result
+        val receiver = object : ResultReceiver(mainHandler) {
+            override fun onReceiveResult(resultCode: Int, resultData: Bundle?) {
+                if (pendingDeadlineResult !== result) return
+                pendingDeadlineResult = null
+                mainHandler.removeCallbacks(deadlineTimeoutRunnable)
+                if (!runtimeControlGeneration.isCurrent(controlGeneration)) {
+                    result.error(
+                        "DEADLINE_SUPERSEDED",
+                        "Session deadline update was superseded by a VPN control operation",
+                        null,
+                    )
+                    return
+                }
+                if (resultCode == 0) {
+                    result.success(null)
+                    return
+                }
+                val code = resultData?.getString("code").orEmpty()
+                    .ifEmpty { "DEADLINE_REJECTED" }
+                val message = resultData?.getString("message").orEmpty()
+                    .ifEmpty { "VPN service rejected the session deadline update" }
+                result.error(code, message, null)
+            }
+        }
         val intent = Intent(context, XrayVPNService::class.java)
             .putExtra("COMMAND", AppConfigs.V2RAY_SERVICE_COMMANDS.UPDATE_SESSION_DEADLINE)
             .putExtra("RUNTIME_TOKEN", token)
             .putExtra("REMAINING_SECONDS", remainingSeconds)
+            .putExtra("DEADLINE_RECEIVER", receiver)
+        mainHandler.removeCallbacks(deadlineTimeoutRunnable)
+        mainHandler.postDelayed(deadlineTimeoutRunnable, DEADLINE_UPDATE_TIMEOUT_MS)
         try {
             context.startService(intent)
-            result.success(null)
         } catch (error: Exception) {
-            result.error("DEADLINE_FAILED", error.message ?: "Could not update session deadline", null)
+            if (pendingDeadlineResult === result) {
+                pendingDeadlineResult = null
+                mainHandler.removeCallbacks(deadlineTimeoutRunnable)
+                result.error(
+                    "DEADLINE_FAILED",
+                    error.message ?: "Could not update session deadline",
+                    null,
+                )
+            }
         }
     }
 
@@ -576,6 +648,7 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         runtimeControlGeneration.advance()
         mainHandler.removeCallbacks(stopTimeoutRunnable)
+        mainHandler.removeCallbacks(deadlineTimeoutRunnable)
         pendingStartResult?.error(
             "ENGINE_DETACHED",
             "Flutter engine detached during VPN startup preflight",
@@ -588,6 +661,12 @@ class FlutterVlessPlugin : FlutterPlugin, ActivityAware,
             null,
         )
         pendingStopResult = null
+        pendingDeadlineResult?.error(
+            "ENGINE_DETACHED",
+            "Flutter engine detached during session deadline update",
+            null,
+        )
+        pendingDeadlineResult = null
         failPendingPermission(
             "ENGINE_DETACHED",
             "Flutter engine detached during VPN permission request",
