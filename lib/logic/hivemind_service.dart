@@ -222,10 +222,12 @@ class HivemindService {
     Duration timeout = const Duration(seconds: 3),
     bool drainPendingActivation = false,
   }) async {
+    var activationQuiesced = true;
     if (drainPendingActivation) {
       try {
         await _waitForActivationQuiescence(const Duration(seconds: 10));
       } on TimeoutException catch (error) {
+        activationQuiesced = false;
         debugPrint('[Hivemind] activation drain timed out: $error');
       }
     }
@@ -249,6 +251,7 @@ class HivemindService {
         deviceId,
         nonce,
         timeout: timeout,
+        unauthorizedMeansAbsent: activationQuiesced || nonce == active,
       );
       if (!cleaned) continue;
       cleanedAny = true;
@@ -262,6 +265,7 @@ class HivemindService {
     String deviceId,
     String nonce, {
     required Duration timeout,
+    required bool unauthorizedMeansAbsent,
   }) async {
     try {
       final response = await _controlPostJson(
@@ -271,10 +275,10 @@ class HivemindService {
         timeout: timeout,
       );
 
-      // A validated nonce receiving 401 is no longer the server-owned active
-      // generation. Treat it as already absent and drop only that same local
-      // credential; a newer nonce is protected by conditional clear.
-      if (response.statusCode == 401) return true;
+      // A persisted nonce receiving 401 is no longer the server-owned active
+      // generation. A merely-pending nonce is only terminal after activation
+      // quiesced; otherwise a late callback could still mint that generation.
+      if (response.statusCode == 401) return unauthorizedMeansAbsent;
       if (response.statusCode != 200) return false;
       final decoded = jsonDecode(response.body);
       return decoded is Map<String, dynamic> && decoded['ok'] == true;
