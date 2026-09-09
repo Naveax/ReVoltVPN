@@ -226,7 +226,7 @@ object XrayCoreManager {
             return false
         }
 
-        if (!process.isAlive) {
+        if (!ProcessTerminator.isAlive(process)) {
             Log.e(TAG, "Xray process exited during startup")
             AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
             return false
@@ -297,7 +297,9 @@ object XrayCoreManager {
         val notificationManager =
             context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.cancel(NOTIFICATION_ID)
-        sendDisconnectedBroadcast(context, broadcastToken)
+        if (broadcastToken.isNotEmpty()) {
+            sendDisconnectedBroadcast(context, broadcastToken)
+        }
         AppConfigs.V2RAY_CONFIG = null
         return true
     }
@@ -318,7 +320,7 @@ object XrayCoreManager {
     }
 
     fun isXrayRunning(): Boolean =
-        xrayProcess?.isAlive == true ||
+        ProcessTerminator.isAlive(xrayProcess) ||
             AppConfigs.V2RAY_STATE == AppConfigs.V2RAY_STATES.V2RAY_CONNECTED ||
             AppConfigs.V2RAY_STATE == AppConfigs.V2RAY_STATES.V2RAY_CONNECTING
 

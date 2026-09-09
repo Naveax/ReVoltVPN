@@ -11,16 +11,15 @@ private class JavaManagedChildProcess(
     private val process: Process,
 ) : ManagedChildProcess {
     override val isAlive: Boolean
-        get() = process.isAlive
+        get() = ProcessTerminator.isAlive(process)
 
     override fun destroy() {
         process.destroy()
     }
 
     override fun destroyForcibly() {
-        // Process.destroyForcibly() is not present on every Android API level
-        // supported by Flutter. Reflection keeps the call runtime-safe while
-        // retaining a graceful destroy fallback on older libcore versions.
+        // destroyForcibly() was added in Android API 26. Reflection avoids a
+        // verifier/runtime dependency on that method for the runtime's minSdk 23.
         try {
             val method = Process::class.java.getMethod("destroyForcibly")
             method.invoke(process)
@@ -30,23 +29,38 @@ private class JavaManagedChildProcess(
     }
 
     override fun awaitExit(timeoutMillis: Long): Boolean {
-        if (!process.isAlive) return true
-        if (timeoutMillis <= 0L) return !process.isAlive
+        if (!isAlive) return true
+        if (timeoutMillis <= 0L) return !isAlive
 
         val deadlineNanos = System.nanoTime() + timeoutMillis * 1_000_000L
-        while (process.isAlive) {
+        while (isAlive) {
             val remainingNanos = deadlineNanos - System.nanoTime()
             if (remainingNanos <= 0L) break
             val sleepMillis = (remainingNanos / 1_000_000L).coerceIn(1L, 25L)
             Thread.sleep(sleepMillis)
         }
-        return !process.isAlive
+        return !isAlive
     }
 }
 
 internal object ProcessTerminator {
     internal const val DEFAULT_GRACEFUL_WAIT_MS = 400L
     internal const val DEFAULT_FORCEFUL_WAIT_MS = 800L
+
+    /** API-1-compatible liveness probe; Process.isAlive() requires API 26. */
+    fun isAlive(process: Process?): Boolean {
+        if (process == null) return false
+        return try {
+            process.exitValue()
+            false
+        } catch (_: IllegalThreadStateException) {
+            true
+        } catch (_: Exception) {
+            // If the platform cannot prove liveness, fail closed by treating the
+            // child as alive rather than declaring shutdown success.
+            true
+        }
+    }
 
     fun terminate(
         process: Process?,

@@ -94,8 +94,6 @@ class XrayVPNService : VpnService() {
         }
 
         if (command != AppConfigs.V2RAY_SERVICE_COMMANDS.START_SERVICE) {
-            // An unknown or malformed internal command must not become an
-            // implicit kill switch for the currently owned runtime.
             Log.w(TAG, "Ignoring unknown VPN service command: $command")
             if (!runtimeAppearsActive()) stopSelfResult(startId)
             return if (runtimeAppearsActive()) START_REDELIVER_INTENT else START_NOT_STICKY
@@ -129,12 +127,27 @@ class XrayVPNService : VpnService() {
             return START_NOT_STICKY
         }
 
-        if (!cleanup(clearDeadline = true)) {
+        // Never replace an owned generation until every old child has actually
+        // stopped. Its quota deadline remains armed throughout failed cleanup.
+        val previousRuntimeToken = currentConfig?.RUNTIME_TOKEN.orEmpty().ifEmpty {
+            AppConfigs.V2RAY_CONFIG?.RUNTIME_TOKEN.orEmpty()
+        }
+        val cleanupToken = previousRuntimeToken.ifEmpty { config.RUNTIME_TOKEN }
+        if (!cleanup(clearDeadline = false)) {
             Log.e(TAG, "Refusing to start while a previous tun2socks child is still alive")
-            pendingShutdownToken = config.RUNTIME_TOKEN
-            scheduleShutdownRetry(config.RUNTIME_TOKEN, "stale tun2socks survived startup cleanup")
+            scheduleShutdownRetry(cleanupToken, "stale tun2socks survived startup cleanup")
             return START_REDELIVER_INTENT
         }
+        if (XrayCoreManager.isXrayRunning() &&
+            !XrayCoreManager.stopCore(this, previousRuntimeToken)
+        ) {
+            Log.e(TAG, "Refusing to start while a previous Xray child is still alive")
+            scheduleShutdownRetry(cleanupToken, "stale Xray survived startup cleanup")
+            return START_REDELIVER_INTENT
+        }
+
+        clearSessionDeadline()
+        clearShutdownRetry()
         shuttingDownIntentionally = false
         currentConfig = config
         val proxyOnly = intent.getBooleanExtra("PROXY_ONLY", false)
@@ -149,14 +162,11 @@ class XrayVPNService : VpnService() {
 
     private fun startRuntime(config: XrayConfig, proxyOnly: Boolean) {
         if (!isCurrent(config)) return
-        if (XrayCoreManager.isXrayRunning() &&
-            !XrayCoreManager.stopCore(this, config.RUNTIME_TOKEN)
-        ) {
-            Log.e(TAG, "Refusing to start a second Xray child while the previous one is alive")
+        if (XrayCoreManager.isXrayRunning()) {
+            Log.e(TAG, "Refusing duplicate Xray startup after clean preflight")
             if (isCurrent(config)) stopAll(config.RUNTIME_TOKEN)
             return
         }
-        if (!isCurrent(config)) return
         if (!XrayCoreManager.startCore(this, config)) {
             if (isCurrent(config)) stopAll(config.RUNTIME_TOKEN)
             return
@@ -345,7 +355,12 @@ class XrayVPNService : VpnService() {
         val sockFile = File(filesDir, "sock_path").absolutePath
         Thread({
             var tries = 0
-            while (tries < 10 && isRunning && tun2socksProcess === process && process.isAlive) {
+            while (
+                tries < 10 &&
+                isRunning &&
+                tun2socksProcess === process &&
+                ProcessTerminator.isAlive(process)
+            ) {
                 var localSocket: LocalSocket? = null
                 try {
                     Thread.sleep(500)
@@ -391,7 +406,9 @@ class XrayVPNService : VpnService() {
                     Thread.sleep(delayMs)
                     if (!isRunning || !isCurrent(config)) break
                     if (XrayCoreManager.startCore(this, config)) {
-                        if (currentProxyOnly || (mInterface != null && tun2socksProcess?.isAlive == true)) {
+                        if (currentProxyOnly ||
+                            (mInterface != null && ProcessTerminator.isAlive(tun2socksProcess))
+                        ) {
                             XrayCoreManager.markRuntimeReady(this, config)
                         }
 
@@ -412,13 +429,7 @@ class XrayVPNService : VpnService() {
 
     private fun cleanup(clearDeadline: Boolean = true): Boolean {
         isRunning = false
-        if (clearDeadline) {
-            clearSessionDeadline()
-        } else {
-            deadlineHandler.removeCallbacks(sessionDeadlineRunnable)
-            sessionDeadlineElapsed = null
-            sessionDeadlineToken = null
-        }
+        if (clearDeadline) clearSessionDeadline()
         xrayRecoveryGate.reset()
         tun2socksRecoveryGate.reset()
         tun2socksRecoveryAttempt = 0
@@ -462,7 +473,9 @@ class XrayVPNService : VpnService() {
         val runtimeToken = confirmationToken.ifEmpty { currentConfig?.RUNTIME_TOKEN.orEmpty() }
         shuttingDownIntentionally = true
 
-        if (!cleanup(clearDeadline = true)) {
+        // Preserve the quota deadline until both native children are proven
+        // dead. An unconfirmed shutdown must not silently remove its kill timer.
+        if (!cleanup(clearDeadline = false)) {
             shuttingDownIntentionally = false
             scheduleShutdownRetry(runtimeToken, "tun2socks is still alive")
             return
@@ -473,6 +486,7 @@ class XrayVPNService : VpnService() {
             return
         }
 
+        clearSessionDeadline()
         clearShutdownRetry()
         currentConfig = null
         stopForeground(true)
@@ -659,26 +673,38 @@ class XrayVPNService : VpnService() {
         return try {
             val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
             val pendingIntent = sessionExpiryPendingIntent(runtimeToken)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                try {
+
+            // This AlarmManager entry is a process-recovery backup. The active
+            // service's elapsedRealtime Handler is the primary session deadline.
+            // Android 12+ may deny exact-alarm special access; in that case use
+            // an allowed inexact wakeup rather than pretending exactness exists.
+            when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    alarmManager.canScheduleExactAlarms() -> {
                     alarmManager.setExactAndAllowWhileIdle(
                         AlarmManager.RTC_WAKEUP,
                         expiresAtEpochMs,
                         pendingIntent,
                     )
-                } catch (_: SecurityException) {
+                }
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.M -> {
                     alarmManager.setAndAllowWhileIdle(
                         AlarmManager.RTC_WAKEUP,
                         expiresAtEpochMs,
                         pendingIntent,
                     )
                 }
-            } else {
-                alarmManager.setExact(AlarmManager.RTC_WAKEUP, expiresAtEpochMs, pendingIntent)
+                else -> {
+                    alarmManager.setExact(
+                        AlarmManager.RTC_WAKEUP,
+                        expiresAtEpochMs,
+                        pendingIntent,
+                    )
+                }
             }
             true
         } catch (error: Exception) {
-            Log.e(TAG, "Failed to schedule OS session-expiry alarm", error)
+            Log.e(TAG, "Failed to schedule OS session-expiry backup alarm", error)
             false
         }
     }
@@ -711,6 +737,7 @@ class XrayVPNService : VpnService() {
             if (!tunStopped || !xrayStopped) {
                 Log.e(TAG, "Service destroyed before all child-process shutdown could be proven")
             } else {
+                clearSessionDeadline()
                 currentConfig = null
             }
             stopForeground(true)

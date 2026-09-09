@@ -1,5 +1,9 @@
 package com.github.tfox.flutter_vless.xray.utils
 
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.io.OutputStream
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -31,6 +35,35 @@ class ProcessTerminatorTest {
             awaitCalls++
             return !alive
         }
+    }
+
+    private class ExitValueProcess(
+        private var alive: Boolean,
+    ) : Process() {
+        override fun getOutputStream(): OutputStream = ByteArrayOutputStream()
+        override fun getInputStream(): InputStream = ByteArrayInputStream(ByteArray(0))
+        override fun getErrorStream(): InputStream = ByteArrayInputStream(ByteArray(0))
+        override fun waitFor(): Int {
+            alive = false
+            return 0
+        }
+        override fun exitValue(): Int {
+            if (alive) throw IllegalThreadStateException("still running")
+            return 0
+        }
+        override fun destroy() {
+            alive = false
+        }
+    }
+
+    @Test
+    fun `api one exitValue probe distinguishes live and exited process`() {
+        val running = ExitValueProcess(alive = true)
+        val exited = ExitValueProcess(alive = false)
+
+        assertTrue(ProcessTerminator.isAlive(running))
+        assertFalse(ProcessTerminator.isAlive(exited))
+        assertFalse(ProcessTerminator.isAlive(null))
     }
 
     @Test
