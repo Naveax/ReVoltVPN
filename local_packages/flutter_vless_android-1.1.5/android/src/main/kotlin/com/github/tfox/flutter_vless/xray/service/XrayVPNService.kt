@@ -18,6 +18,7 @@ import android.util.Log
 import com.github.tfox.flutter_vless.xray.core.XrayCoreManager
 import com.github.tfox.flutter_vless.xray.dto.XrayConfig
 import com.github.tfox.flutter_vless.xray.utils.AppConfigs
+import com.github.tfox.flutter_vless.xray.utils.ProcessTerminator
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.Executors
@@ -32,6 +33,8 @@ class XrayVPNService : VpnService() {
     @Volatile private var currentProxyOnly = false
     @Volatile private var shuttingDownIntentionally = false
     private var tun2socksRecoveryAttempt = 0
+    private var shutdownRetryAttempt = 0
+    private var pendingShutdownToken = ""
     private val runtimeExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "revolt-vpn-runtime").apply { isDaemon = true }
     }
@@ -40,6 +43,12 @@ class XrayVPNService : VpnService() {
     private var sessionDeadlineElapsed: Long? = null
     private var sessionDeadlineToken: String? = null
     private val sessionDeadlineRunnable = Runnable { enforceSessionDeadline() }
+    private val shutdownRetryRunnable = Runnable {
+        val token = pendingShutdownToken
+        if (token.isEmpty()) return@Runnable
+        shuttingDownIntentionally = false
+        stopAll(token)
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent == null) {
@@ -120,7 +129,12 @@ class XrayVPNService : VpnService() {
             return START_NOT_STICKY
         }
 
-        cleanup(clearDeadline = true)
+        if (!cleanup(clearDeadline = true)) {
+            Log.e(TAG, "Refusing to start while a previous tun2socks child is still alive")
+            pendingShutdownToken = config.RUNTIME_TOKEN
+            scheduleShutdownRetry(config.RUNTIME_TOKEN, "stale tun2socks survived startup cleanup")
+            return START_REDELIVER_INTENT
+        }
         shuttingDownIntentionally = false
         currentConfig = config
         val proxyOnly = intent.getBooleanExtra("PROXY_ONLY", false)
@@ -135,8 +149,12 @@ class XrayVPNService : VpnService() {
 
     private fun startRuntime(config: XrayConfig, proxyOnly: Boolean) {
         if (!isCurrent(config)) return
-        if (XrayCoreManager.isXrayRunning()) {
-            XrayCoreManager.stopCore(this, config.RUNTIME_TOKEN)
+        if (XrayCoreManager.isXrayRunning() &&
+            !XrayCoreManager.stopCore(this, config.RUNTIME_TOKEN)
+        ) {
+            Log.e(TAG, "Refusing to start a second Xray child while the previous one is alive")
+            if (isCurrent(config)) stopAll(config.RUNTIME_TOKEN)
+            return
         }
         if (!isCurrent(config)) return
         if (!XrayCoreManager.startCore(this, config)) {
@@ -304,15 +322,19 @@ class XrayVPNService : VpnService() {
         Thread({
             try {
                 process.inputStream.bufferedReader().use { reader -> reader.forEachLine { _ -> } }
-                process.waitFor()
+            } catch (error: Exception) {
+                Log.e(TAG, "Error reading tun2socks output", error)
+            }
+
+            try {
+                val exitCode = process.waitFor()
+                Log.w(TAG, "tun2socks process exited with code $exitCode")
                 if (isRunning && tun2socksProcess === process && isCurrent(config)) {
                     tun2socksProcess = null
                     scheduleTun2socksRecovery(config, "process exited")
                 }
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
-            } catch (error: Exception) {
-                Log.e(TAG, "Error monitoring tun2socks", error)
             }
         }, "revolt-tun2socks-monitor").start()
         sendFd(process, config)
@@ -345,8 +367,11 @@ class XrayVPNService : VpnService() {
                     try { localSocket?.close() } catch (_: Exception) {}
                 }
             }
-            if (isRunning && tun2socksProcess === process) {
-                try { process.destroy() } catch (_: Exception) {}
+            if (isRunning && tun2socksProcess === process &&
+                !ProcessTerminator.terminate(process)
+            ) {
+                Log.e(TAG, "tun2socks survived FD-handshake failure shutdown")
+                stopAll(config.RUNTIME_TOKEN)
             }
         }, "revolt-tun2socks-fd").start()
     }
@@ -385,7 +410,7 @@ class XrayVPNService : VpnService() {
         }, "revolt-xray-recovery").start()
     }
 
-    private fun cleanup(clearDeadline: Boolean = true) {
+    private fun cleanup(clearDeadline: Boolean = true): Boolean {
         isRunning = false
         if (clearDeadline) {
             clearSessionDeadline()
@@ -399,20 +424,57 @@ class XrayVPNService : VpnService() {
         tun2socksRecoveryAttempt = 0
         currentProxyOnly = false
         AppConfigs.RUNTIME_READY = false
-        try { tun2socksProcess?.destroy() } catch (_: Exception) {}
-        tun2socksProcess = null
+
+        val process = tun2socksProcess
+        val tun2socksStopped = ProcessTerminator.terminate(process)
+        if (tun2socksStopped) {
+            if (tun2socksProcess === process) tun2socksProcess = null
+        } else {
+            Log.e(TAG, "tun2socks child process did not terminate after forced shutdown")
+        }
+
         try { mInterface?.close() } catch (error: Exception) {
             Log.w(TAG, "Failed to close VPN interface during cleanup", error)
         }
         mInterface = null
+        return tun2socksStopped
+    }
+
+    private fun scheduleShutdownRetry(runtimeToken: String, reason: String) {
+        if (runtimeToken.isEmpty()) return
+        pendingShutdownToken = runtimeToken
+        val attempt = ++shutdownRetryAttempt
+        val delayMs =
+            (250L * (1L shl (attempt - 1).coerceIn(0, 4))).coerceAtMost(5_000L)
+        deadlineHandler.removeCallbacks(shutdownRetryRunnable)
+        deadlineHandler.postDelayed(shutdownRetryRunnable, delayMs)
+        Log.e(TAG, "Native shutdown unconfirmed; retry $attempt scheduled in ${delayMs}ms: $reason")
+    }
+
+    private fun clearShutdownRetry() {
+        deadlineHandler.removeCallbacks(shutdownRetryRunnable)
+        shutdownRetryAttempt = 0
+        pendingShutdownToken = ""
     }
 
     private fun stopAll(confirmationToken: String = currentConfig?.RUNTIME_TOKEN.orEmpty()) {
         if (shuttingDownIntentionally) return
+        val runtimeToken = confirmationToken.ifEmpty { currentConfig?.RUNTIME_TOKEN.orEmpty() }
         shuttingDownIntentionally = true
-        cleanup(clearDeadline = true)
+
+        if (!cleanup(clearDeadline = true)) {
+            shuttingDownIntentionally = false
+            scheduleShutdownRetry(runtimeToken, "tun2socks is still alive")
+            return
+        }
+        if (!XrayCoreManager.stopCore(this, runtimeToken)) {
+            shuttingDownIntentionally = false
+            scheduleShutdownRetry(runtimeToken, "Xray is still alive")
+            return
+        }
+
+        clearShutdownRetry()
         currentConfig = null
-        XrayCoreManager.stopCore(this, confirmationToken)
         stopForeground(true)
         stopSelf()
     }
@@ -640,11 +702,17 @@ class XrayVPNService : VpnService() {
     }
 
     override fun onDestroy() {
+        deadlineHandler.removeCallbacks(shutdownRetryRunnable)
+        pendingShutdownToken = ""
         if (!shuttingDownIntentionally) {
             val confirmationToken = currentConfig?.RUNTIME_TOKEN.orEmpty()
-            cleanup(clearDeadline = false)
-            currentConfig = null
-            XrayCoreManager.stopCore(this, confirmationToken)
+            val tunStopped = cleanup(clearDeadline = false)
+            val xrayStopped = XrayCoreManager.stopCore(this, confirmationToken)
+            if (!tunStopped || !xrayStopped) {
+                Log.e(TAG, "Service destroyed before all child-process shutdown could be proven")
+            } else {
+                currentConfig = null
+            }
             stopForeground(true)
         }
         runtimeExecutor.shutdownNow()

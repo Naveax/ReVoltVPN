@@ -18,6 +18,7 @@ import androidx.core.app.NotificationCompat
 import com.github.tfox.flutter_vless.xray.dto.XrayConfig
 import com.github.tfox.flutter_vless.xray.service.XrayVPNService
 import com.github.tfox.flutter_vless.xray.utils.AppConfigs
+import com.github.tfox.flutter_vless.xray.utils.ProcessTerminator
 import com.github.tfox.flutter_vless.xray.utils.Utilities
 import org.json.JSONArray
 import org.json.JSONObject
@@ -114,9 +115,6 @@ object XrayCoreManager {
             configJson.put("log", it)
         }
 
-        // Xray treats a missing access field as stdout logging. Explicitly use
-        // the documented sentinel so the no-access-log policy is real rather
-        // than merely redirecting access records away from a file.
         log.put("access", "none")
         try {
             File(filesDir, "access.log").delete()
@@ -229,11 +227,14 @@ object XrayCoreManager {
             CoreConfigPipe.writeAndClose(process, runtimeConfig)
         } catch (error: Exception) {
             Log.e(TAG, "Failed to deliver Xray config through stdin", error)
-            try {
-                process.destroy()
-            } catch (_: Exception) {
+            if (!ProcessTerminator.terminate(process)) {
+                Log.e(TAG, "Xray process survived failed config delivery")
+                xrayProcess = process
+                AppConfigs.RUNTIME_READY = false
+                AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_CONNECTING
+            } else {
+                AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
             }
-            AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
             return false
         }
 
@@ -255,6 +256,12 @@ object XrayCoreManager {
                 process.inputStream.bufferedReader().use { reader ->
                     reader.forEachLine { _ -> }
                 }
+            } catch (_: java.io.InterruptedIOException) {
+            } catch (error: Exception) {
+                Log.e(TAG, "Error reading Xray output", error)
+            }
+
+            try {
                 val exitCode = process.waitFor()
                 Log.e(TAG, "Xray process exited with code $exitCode")
                 if (xrayProcess === process &&
@@ -272,10 +279,8 @@ object XrayCoreManager {
                         stopCore(context)
                     }
                 }
-            } catch (_: java.io.InterruptedIOException) {
             } catch (_: InterruptedException) {
-            } catch (error: Exception) {
-                Log.e(TAG, "Error reading Xray output", error)
+                Thread.currentThread().interrupt()
             }
         }, "revolt-xray-monitor").start()
 
@@ -285,17 +290,22 @@ object XrayCoreManager {
     fun stopCore(
         context: Service,
         confirmationToken: String? = AppConfigs.V2RAY_CONFIG?.RUNTIME_TOKEN,
-    ) {
+    ): Boolean {
         val broadcastToken = runtimeConfirmationToken(
             AppConfigs.V2RAY_CONFIG?.RUNTIME_TOKEN,
             confirmationToken,
         )
-        try {
-            xrayProcess?.destroy()
-            xrayProcess = null
-        } catch (error: Exception) {
-            Log.e(TAG, "Failed to destroy Xray process", error)
+        val process = xrayProcess
+        if (!ProcessTerminator.terminate(process)) {
+            Log.e(TAG, "Xray child process did not terminate after forced shutdown")
+            AppConfigs.RUNTIME_READY = false
+            AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_CONNECTING
+            stopTimer()
+            AppConfigs.V2RAY_CONFIG?.let { sendStatusBroadcast(context, it) }
+            return false
         }
+        if (xrayProcess === process) xrayProcess = null
+
         AppConfigs.RUNTIME_READY = false
         AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
         stopTimer()
@@ -304,6 +314,7 @@ object XrayCoreManager {
         notificationManager.cancel(NOTIFICATION_ID)
         sendDisconnectedBroadcast(context, broadcastToken)
         AppConfigs.V2RAY_CONFIG = null
+        return true
     }
 
     fun markRuntimeConnecting(context: Context, config: XrayConfig) {
@@ -322,7 +333,8 @@ object XrayCoreManager {
     }
 
     fun isXrayRunning(): Boolean =
-        AppConfigs.V2RAY_STATE == AppConfigs.V2RAY_STATES.V2RAY_CONNECTED ||
+        xrayProcess?.isAlive == true ||
+            AppConfigs.V2RAY_STATE == AppConfigs.V2RAY_STATES.V2RAY_CONNECTED ||
             AppConfigs.V2RAY_STATE == AppConfigs.V2RAY_STATES.V2RAY_CONNECTING
 
     private fun startTimer(context: Context) {
