@@ -64,13 +64,13 @@ class _DisclosureDialog extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             const Text(
-              'Revolt VPN creates a secure VPN tunnel to protect your '
-              'traffic. To enforce your data/time quota, we log your '
-              'connection duration and data usage, linked to a randomly '
-              'generated device ID — not to your identity. We do not log '
-              'or monitor the content of your traffic. We do not share '
-              'your data with third parties. The full policy is in the '
-              'sidebar menu under "Privacy Policy".',
+              'ReVoltVPN uses a randomly generated device ID plus session '
+              'time and total data usage to issue and enforce server-defined '
+              'session limits. The app does not use packet contents for quota '
+              'accounting. Rewarded ads are disabled in this build; if a '
+              'future build enables Google AdMob, Google may process ad and '
+              'verification data, including pseudonymous verification data. '
+              'See "Privacy Policy" in the sidebar for the full details.',
               style: TextStyle(
                 color: AppColors.textMuted,
                 fontSize: 14,
