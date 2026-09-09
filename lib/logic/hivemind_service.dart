@@ -31,7 +31,12 @@ class HivemindConfigLease {
   }
 
   int remainingAfter(Duration elapsed) {
-    final remaining = expiresInSeconds - elapsed.inSeconds;
+    final elapsedMicros = elapsed.inMicroseconds;
+    final elapsedSeconds = elapsedMicros <= 0
+        ? 0
+        : (elapsedMicros + Duration.microsecondsPerSecond - 1) ~/
+            Duration.microsecondsPerSecond;
+    final remaining = expiresInSeconds - elapsedSeconds;
     return remaining > 0 ? remaining : 0;
   }
 }
