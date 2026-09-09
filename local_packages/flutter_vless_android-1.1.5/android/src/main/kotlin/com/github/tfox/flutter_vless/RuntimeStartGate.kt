@@ -8,8 +8,8 @@ internal object RuntimeStartGate {
     }
 
     fun decide(active: Boolean, runtimeToken: String): Decision = when {
-        !active -> Decision.ALLOW_START
-        runtimeToken.isBlank() -> Decision.INVALID_ACTIVE_STATE
-        else -> Decision.ADOPT_EXISTING
+        runtimeToken.isNotBlank() -> Decision.ADOPT_EXISTING
+        active -> Decision.INVALID_ACTIVE_STATE
+        else -> Decision.ALLOW_START
     }
 }
