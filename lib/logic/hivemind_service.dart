@@ -8,6 +8,7 @@ import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/control_plane_policy.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/serialized_operation_queue.dart';
+import 'package:revoltvpn/logic/session_accounting.dart';
 import 'package:revoltvpn/logic/session_auth.dart';
 
 class HivemindConfigLease {
@@ -543,15 +544,9 @@ class _HivemindSessionConfig {
       throw const FormatException('Invalid XHTTP path');
     }
 
-    final expiresInSeconds = _requiredInteger(
-      json,
-      'expires_in_seconds',
-      minimum: 1,
-    );
-    final usedBytes = _requiredInteger(json, 'used_bytes', minimum: 0);
-    final hardCapBytes = _requiredInteger(json, 'hard_cap_bytes', minimum: 1);
-    if (json['cap_exhausted'] != false || usedBytes >= hardCapBytes) {
-      throw const FormatException('Session quota is already exhausted');
+    final accounting = SessionAccounting.fromActiveStatus(json);
+    if (accounting.exhausted) {
+      throw const FormatException('Session lease is already exhausted');
     }
 
     return _HivemindSessionConfig(
@@ -563,7 +558,7 @@ class _HivemindSessionConfig {
       sni: sni,
       fingerprint: fingerprint,
       path: path,
-      expiresInSeconds: expiresInSeconds,
+      expiresInSeconds: accounting.expiresInSeconds,
     );
   }
 
@@ -600,18 +595,6 @@ class _HivemindSessionConfig {
       throw FormatException('Invalid session field: $key');
     }
     return trimmed;
-  }
-
-  static int _requiredInteger(
-    Map<String, dynamic> json,
-    String key, {
-    required int minimum,
-  }) {
-    final value = json[key];
-    if (value is! int || value < minimum) {
-      throw FormatException('Invalid session integer: $key');
-    }
-    return value;
   }
 
   static String _stringOr(Object? value, String fallback) {
