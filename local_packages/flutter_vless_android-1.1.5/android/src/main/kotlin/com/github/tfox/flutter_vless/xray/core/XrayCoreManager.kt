@@ -10,8 +10,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
@@ -29,18 +27,6 @@ object XrayCoreManager {
     private const val NOTIFICATION_ID = 1
     private const val TAG = "XrayCoreManager"
     private var xrayProcess: Process? = null
-    private var timerHandler: Handler? = null
-    private var timerContext: Context? = null
-    private var seconds = 0
-    private val timerRunnable = object : Runnable {
-        override fun run() {
-            val context = timerContext ?: return
-            val config = AppConfigs.V2RAY_CONFIG ?: return
-            seconds++
-            sendStatusBroadcast(context, config)
-            timerHandler?.postDelayed(this, 1_000L)
-        }
-    }
 
     private fun removeLegacyConfig(filesDir: File): Boolean {
         return try {
@@ -115,6 +101,8 @@ object XrayCoreManager {
             configJson.put("log", it)
         }
 
+        // Xray treats a missing access field as stdout logging. Explicitly use
+        // the documented sentinel so the no-access-log policy is real.
         log.put("access", "none")
         try {
             File(filesDir, "access.log").delete()
@@ -247,7 +235,6 @@ object XrayCoreManager {
         xrayProcess = process
         AppConfigs.RUNTIME_READY = false
         AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_CONNECTING
-        startTimer(context)
         showNotification(context, config)
         sendStatusBroadcast(context, config)
 
@@ -300,7 +287,6 @@ object XrayCoreManager {
             Log.e(TAG, "Xray child process did not terminate after forced shutdown")
             AppConfigs.RUNTIME_READY = false
             AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_CONNECTING
-            stopTimer()
             AppConfigs.V2RAY_CONFIG?.let { sendStatusBroadcast(context, it) }
             return false
         }
@@ -308,7 +294,6 @@ object XrayCoreManager {
 
         AppConfigs.RUNTIME_READY = false
         AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
-        stopTimer()
         val notificationManager =
             context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.cancel(NOTIFICATION_ID)
@@ -337,29 +322,13 @@ object XrayCoreManager {
             AppConfigs.V2RAY_STATE == AppConfigs.V2RAY_STATES.V2RAY_CONNECTED ||
             AppConfigs.V2RAY_STATE == AppConfigs.V2RAY_STATES.V2RAY_CONNECTING
 
-    private fun startTimer(context: Context) {
-        val handler = timerHandler ?: Handler(Looper.getMainLooper()).also {
-            timerHandler = it
-        }
-        handler.removeCallbacks(timerRunnable)
-        timerContext = context.applicationContext
-        seconds = 0
-        handler.postDelayed(timerRunnable, 1_000L)
-    }
-
-    private fun stopTimer() {
-        timerHandler?.removeCallbacks(timerRunnable)
-        timerContext = null
-        seconds = 0
-    }
-
     fun sendStatusBroadcast(context: Context, config: XrayConfig) {
         val intent = Intent(AppConfigs.V2RAY_CONNECTION_INFO)
             .setPackage(context.packageName)
             .putExtra("STATE", AppConfigs.V2RAY_STATE)
             .putExtra("RUNTIME_TOKEN", config.RUNTIME_TOKEN)
             .putExtra("RUNTIME_READY", AppConfigs.RUNTIME_READY)
-            .putExtra("DURATION", seconds.toString())
+            .putExtra("DURATION", "0")
             .putExtra("UPLOAD_SPEED", 0L)
             .putExtra("DOWNLOAD_SPEED", 0L)
             .putExtra("UPLOAD_TRAFFIC", 0L)
