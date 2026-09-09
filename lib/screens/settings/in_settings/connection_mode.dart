@@ -17,6 +17,7 @@ class ConnectionModeTile extends StatefulWidget {
 
 class _ConnectionModeTileState extends State<ConnectionModeTile> {
   ConnectionMode _mode = ConnectionSettings.mode;
+  bool _savingMode = false;
   bool _testingLocalSocks = false;
   bool _reconnecting = false;
   LocalSocksTestResult? _lastSocksTest;
@@ -39,7 +40,7 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
   }
 
   Future<void> _changeMode(ConnectionMode? next) async {
-    if (next == null || next == _mode) return;
+    if (_savingMode || next == null || next == _mode) return;
 
     final vpn = context.read<VpnConnection>();
     if (vpn.shutdownUnconfirmed) {
@@ -61,20 +62,30 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
       return;
     }
 
-    final saved = await ConnectionSettings.setMode(next);
-    if (!mounted) return;
-    if (!saved) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not save connection mode.')),
-      );
-      return;
-    }
+    setState(() => _savingMode = true);
+    try {
+      final saved = await ConnectionSettings.setMode(next);
+      if (!mounted) return;
+      if (!saved) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not save connection mode.')),
+        );
+        return;
+      }
 
-    setState(() {
-      _mode = next;
-      _lastSocksTest = null;
-    });
-    widget.onChanged?.call(next);
+      setState(() {
+        _mode = next;
+        _lastSocksTest = null;
+      });
+      widget.onChanged?.call(next);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not save connection mode: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _savingMode = false);
+    }
   }
 
   /// Recovers from an orphaned proxy: tear the runtime down and start a fresh
@@ -134,18 +145,23 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
     }
 
     setState(() => _testingLocalSocks = true);
-    final result = await vpn.testActiveLocalSocks();
-    if (!mounted) return;
+    try {
+      final result = await vpn.testActiveLocalSocks();
+      if (!mounted) return;
 
-    setState(() {
-      _testingLocalSocks = false;
-      _lastSocksTest = result;
-    });
-
-    final latency = result.latencyMs == null ? '' : ' (${result.latencyMs} ms)';
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('${result.message}$latency')),
-    );
+      setState(() => _lastSocksTest = result);
+      final latency = result.latencyMs == null ? '' : ' (${result.latencyMs} ms)';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${result.message}$latency')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Local SOCKS5 test failed: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _testingLocalSocks = false);
+    }
   }
 
   String get _subtitle {
@@ -175,7 +191,7 @@ class _ConnectionModeTileState extends State<ConnectionModeTile> {
             child: DropdownButton<ConnectionMode>(
               value: _mode,
               dropdownColor: AppColors.bgCard,
-              onChanged: _changeMode,
+              onChanged: _savingMode ? null : _changeMode,
               items: const [
                 DropdownMenuItem(
                   value: ConnectionMode.tun,

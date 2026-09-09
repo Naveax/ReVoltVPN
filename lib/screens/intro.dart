@@ -86,7 +86,11 @@ class _IntroScreenState extends State<IntroScreen> with WidgetsBindingObserver {
 
   void _navigateIfReady() {
     if (!mounted || _navigated || !_bootComplete) return;
-    if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused) {
+
+    // Never push the main UI while Android is covering, backgrounding, hiding,
+    // or tearing down the Activity. A resumed lifecycle event will retry the
+    // navigation once the Activity is actually interactive again.
+    if (WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
       return;
     }
     _navigated = true;

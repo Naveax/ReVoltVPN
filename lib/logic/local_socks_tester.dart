@@ -53,8 +53,7 @@ abstract final class LocalSocksTester {
     } catch (_) {
       return const LocalSocksTestResult(ok: false, latencyMs: null, message: 'Local SOCKS5 listener check failed.');
     } finally {
-      await reader?.close();
-      await socket?.close();
+      await _closeQuietly(reader, socket);
     }
   }
 
@@ -106,8 +105,7 @@ abstract final class LocalSocksTester {
     } catch (_) {
       return const LocalSocksTestResult(ok: false, latencyMs: null, message: 'Local SOCKS5 test failed.');
     } finally {
-      await reader?.close();
-      await socket?.close();
+      await _closeQuietly(reader, socket);
     }
   }
 
@@ -159,8 +157,20 @@ abstract final class LocalSocksTester {
     } catch (_) {
       return const LocalSocksTestResult(ok: false, latencyMs: null, message: 'SOCKS5 UDP ASSOCIATE check failed.');
     } finally {
+      await _closeQuietly(reader, socket);
+    }
+  }
+
+  static Future<void> _closeQuietly(_SocketReader? reader, Socket? socket) async {
+    try {
       await reader?.close();
+    } catch (_) {
+      // Cleanup must never replace the actual probe result.
+    }
+    try {
       await socket?.close();
+    } catch (_) {
+      // Socket teardown is best-effort once the probe result is known.
     }
   }
 
