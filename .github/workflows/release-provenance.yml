@@ -16,6 +16,13 @@ jobs:
       - name: Checkout exact source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      - name: Verify checked-out source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+
       - name: Set up Java 17
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
@@ -28,6 +35,20 @@ jobs:
           flutter-version: '3.47.2'
           channel: stable
           cache: false
+
+      - name: Verify build-tool supply chain inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x android/gradlew
+          test -f android/gradlew.bat
+          test -s android/gradle/wrapper/gradle-wrapper.jar
+          test -s android/gradle/verification-metadata.xml
+          test "$(sha256sum android/gradle/wrapper/gradle-wrapper.jar | awk '{print $1}')" = '7d3a4ac4de1c32b59bc6a4eb8ecb8e612ccd0cf1ae1e99f66902da64df296172'
+          grep -qx 'distributionSha256Sum=efe9a3d147d948d7528a9887fa35abcf24ca1a43ad06439996490f77569b02d1' android/gradle/wrapper/gradle-wrapper.properties
+          grep -q '<verify-metadata>true</verify-metadata>' android/gradle/verification-metadata.xml
+          test -s local_packages/flutter_vless_android-1.1.5/UPSTREAM
+          grep -q 'Tag: v1.1.5' local_packages/flutter_vless_android-1.1.5/UPSTREAM
 
       - name: Materialize production-only inputs
         shell: bash
@@ -75,6 +96,22 @@ jobs:
           flutter build apk --release
           test -s build/app/outputs/flutter-apk/app-release.apk
 
+      - name: Verify tracked build inputs stayed immutable
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- \
+            pubspec.yaml \
+            pubspec.lock \
+            local_packages/flutter_vless_android-1.1.5 \
+            android/app/build.gradle.kts \
+            android/app/proguard-rules.pro \
+            android/gradle/verification-metadata.xml \
+            android/gradle/wrapper/gradle-wrapper.properties \
+            android/gradle/wrapper/gradle-wrapper.jar \
+            android/gradlew \
+            android/gradlew.bat
+
       - name: Record artifact provenance manifest
         shell: bash
         env:
@@ -87,13 +124,38 @@ jobs:
           "$APKSIGNER" verify --verbose --print-certs "$APK" > build/signing-cert.txt
           python3 - <<'PY'
           import hashlib, json, os, pathlib, subprocess, zipfile
+
+          root = pathlib.Path('.')
           apk = pathlib.Path('build/app/outputs/flutter-apk/app-release.apk')
-          def digest(data): return hashlib.sha256(data).hexdigest()
+
+          def digest_bytes(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def digest_file(path):
+              return digest_bytes(pathlib.Path(path).read_bytes())
+
+          def output(command):
+              proc = subprocess.run(
+                  command,
+                  check=True,
+                  text=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+              )
+              return proc.stdout.strip()
+
+          source_sha = output(['git', 'rev-parse', 'HEAD'])
+          if source_sha != os.environ['GITHUB_SHA']:
+              raise SystemExit(
+                  f'checked-out source {source_sha} != GITHUB_SHA {os.environ["GITHUB_SHA"]}'
+              )
+
           native = {}
           with zipfile.ZipFile(apk) as zf:
               for name in sorted(zf.namelist()):
                   if name.endswith('.so'):
-                      native[name] = digest(zf.read(name))
+                      native[name] = digest_bytes(zf.read(name))
+
           cert_lines = pathlib.Path('build/signing-cert.txt').read_text().splitlines()
           cert_sha = ''
           for line in cert_lines:
@@ -102,19 +164,52 @@ jobs:
                   break
           if not cert_sha:
               raise SystemExit('APK signer SHA-256 fingerprint missing')
+
+          flutter_machine = json.loads(output(['flutter', '--version', '--machine']))
+          java_version = output(['java', '-version']).splitlines()[0]
+          gradle_version = output(['./android/gradlew', '--version'])
+          upstream_text = pathlib.Path(
+              'local_packages/flutter_vless_android-1.1.5/UPSTREAM'
+          ).read_text().strip()
+
           manifest = {
               'source_repository': os.environ['GITHUB_REPOSITORY'],
-              'source_sha': os.environ['GITHUB_SHA'],
+              'source_sha': source_sha,
               'workflow_ref': os.environ.get('GITHUB_WORKFLOW_REF', ''),
               'run_id': os.environ['GITHUB_RUN_ID'],
               'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
-              'apk_sha256': digest(apk.read_bytes()),
+              'apk_sha256': digest_file(apk),
               'signing_certificate_sha256': cert_sha,
               'app_config_sha256': os.environ['REVOLT_APP_CONFIG_SHA256'],
-              'gradle_wrapper_jar_sha256': digest(pathlib.Path('android/gradle/wrapper/gradle-wrapper.jar').read_bytes()),
+              'pubspec_yaml_sha256': digest_file('pubspec.yaml'),
+              'pubspec_lock_sha256': digest_file('pubspec.lock'),
+              'gradle_wrapper_jar_sha256': digest_file(
+                  'android/gradle/wrapper/gradle-wrapper.jar'
+              ),
+              'gradle_wrapper_properties_sha256': digest_file(
+                  'android/gradle/wrapper/gradle-wrapper.properties'
+              ),
+              'gradle_verification_metadata_sha256': digest_file(
+                  'android/gradle/verification-metadata.xml'
+              ),
+              'vendored_flutter_vless_upstream_sha256': digest_file(
+                  'local_packages/flutter_vless_android-1.1.5/UPSTREAM'
+              ),
+              'vendored_flutter_vless_upstream': upstream_text,
+              'toolchain': {
+                  'flutter_framework_version': flutter_machine.get('frameworkVersion', ''),
+                  'flutter_channel': flutter_machine.get('channel', ''),
+                  'dart_sdk_version': flutter_machine.get('dartSdkVersion', ''),
+                  'java': java_version,
+                  'gradle_version_output': gradle_version,
+                  'runner_os': os.environ.get('RUNNER_OS', ''),
+                  'runner_arch': os.environ.get('RUNNER_ARCH', ''),
+              },
               'native_libraries': native,
           }
-          pathlib.Path('build/provenance.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+          pathlib.Path('build/provenance.json').write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + '\n'
+          )
           PY
           cat build/provenance.json
 
@@ -122,6 +217,11 @@ jobs:
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Attest provenance manifest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: build/provenance.json
 
       - name: Upload attested build inputs and outputs
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
