@@ -224,6 +224,13 @@ class HivemindService {
       return false;
     }
 
+    // Abandonment is irreversible locally even if the network cleanup attempt
+    // fails. Keep ownership evidence in `_pendingMainActivationNonce`, but never
+    // permit this prepared capability to be consumed by a later connect retry.
+    if (_preparedMainSessionNonce == nonce) {
+      _preparedMainSessionNonce = null;
+    }
+
     final deviceId = await CryptoService.getDeviceId();
     final cancelled = await _cancelMainActivationIntentWithNonce(
       deviceId,
@@ -348,10 +355,16 @@ class HivemindService {
     }
 
     final pending = _pendingNonce;
+    final pendingH13 = _pendingMainActivationNonce;
     final active = await _loadActiveSessionNonce();
     final candidates = <String>[];
     if (pending != null && SessionAuth.isValidNonce(pending)) {
       candidates.add(pending);
+    }
+    if (pendingH13 != null &&
+        SessionAuth.isValidNonce(pendingH13) &&
+        !candidates.contains(pendingH13)) {
+      candidates.add(pendingH13);
     }
     if (active != null &&
         SessionAuth.isValidNonce(active) &&
@@ -364,6 +377,9 @@ class HivemindService {
     for (final nonce in candidates) {
       final isPendingH13Activation = _pendingMainActivationNonce == nonce;
       if (isPendingH13Activation) {
+        if (_preparedMainSessionNonce == nonce) {
+          _preparedMainSessionNonce = null;
+        }
         final cancelled = await _cancelMainActivationIntentWithNonce(
           deviceId,
           nonce,
@@ -500,6 +516,14 @@ class HivemindService {
     final callId = ++_currentCallId;
     final deviceId = await CryptoService.getDeviceId();
     _throwIfCancelled(callId);
+
+    // If an earlier H13 capability was already abandoned/consumed for connection
+    // but its server cleanup could not be proven, do not overwrite its ownership
+    // evidence with a fresh generation. The caller must converge cleanup first.
+    if (_pendingMainActivationNonce != null &&
+        _preparedMainSessionNonce == null) {
+      throw StateError('Pending main activation cleanup is unresolved.');
+    }
 
     final preparedNonce = _preparedMainSessionNonce;
     final usingPreparedMainActivation =
