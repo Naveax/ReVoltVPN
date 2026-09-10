@@ -33,27 +33,6 @@ final String protectedRuntimeUrl =
 final File protectedRuntimeDir = new File(gradle.gradleUserHomeDir, "caches/revolt-xray-runtime/${protectedRuntimeVersion}")
 final File protectedRuntimeAar = new File(protectedRuntimeDir, "xray-android-${protectedRuntimeVersion}.aar")
 
-// Present the digest-pinned runtime as an external module instead of a direct
-// local AAR file dependency. Android library modules are not allowed to bundle
-// direct local AAR dependencies, while an external module remains transitive to
-// the consuming application. Restrict this synthetic module to the verified
-// cache directory so Maven Central cannot silently satisfy it instead.
-rootProject.allprojects {
-    repositories {
-        exclusiveContent {
-            forRepository {
-                flatDir {
-                    name = 'revoltProtectedXrayRuntime'
-                    dirs protectedRuntimeDir
-                }
-            }
-            filter {
-                includeModule('dev.tfox.fluttervless', 'xray-android')
-            }
-        }
-    }
-}
-
 def sha256Hex = { File input ->
     MessageDigest digest = MessageDigest.getInstance('SHA-256')
     input.withInputStream { stream ->
@@ -166,8 +145,10 @@ android {
     }
 }
 
-// The protected runtime is populated into the isolated flatDir repository and
-// verified before Android pre-build tasks consume it.
+// The protected runtime AAR only supplies the native Xray executable/assets;
+// this Android library does not compile against classes from it. Keep the
+// digest-pinned download task here, but package the AAR only from the final app
+// module. That avoids the unsupported AAR-inside-AAR graph entirely.
 tasks.configureEach { task ->
     if (task.name == 'preBuild') {
         task.dependsOn(prepareProtectedXrayRuntime)
@@ -178,5 +159,4 @@ dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.code.gson:gson:2.10.1'
-    implementation "dev.tfox.fluttervless:xray-android:${protectedRuntimeVersion}@aar"
 }
