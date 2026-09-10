@@ -51,6 +51,24 @@ jobs:
           channel: stable
           cache: false
 
+      - name: Verify Flutter SDK identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_version='3.47.2'
+          expected_sha='d3b14c876900e553bc736ca19295fc09e3853e8e'
+          version_json="$(flutter --version --machine)"
+          actual_version="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["frameworkVersion"])' <<<"$version_json")"
+          actual_sha="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["frameworkRevision"])' <<<"$version_json")"
+          test "$actual_version" = "$expected_version" || {
+            echo "Flutter version mismatch: expected $expected_version, got $actual_version"
+            exit 1
+          }
+          test "$actual_sha" = "$expected_sha" || {
+            echo "Flutter framework revision mismatch: expected $expected_sha, got $actual_sha"
+            exit 1
+          }
+
       - name: Create CI app config
         run: cp lib/logic/app_config.example.dart lib/logic/app_config.dart
 
@@ -127,6 +145,8 @@ jobs:
           lock_sha="$(sha256sum pubspec.lock | awk '{print $1}')"
           wrapper_sha="$(sha256sum android/gradle/wrapper/gradle-wrapper.jar | awk '{print $1}')"
           runtime_source_sha="$(git rev-parse HEAD:local_packages/flutter_vless_android-1.1.5)"
+          flutter_sha="$(flutter --version --machine | python3 -c 'import json,sys; print(json.load(sys.stdin)["frameworkRevision"])')"
+          test "$flutter_sha" = 'd3b14c876900e553bc736ca19295fc09e3853e8e'
           cat > build/provenance/release-smoke.env <<EOF
           provenance_format=revolt-release-v1
           source_commit=$source_sha
@@ -136,6 +156,7 @@ jobs:
           gradle_wrapper_sha256=$wrapper_sha
           vendored_runtime_tree=$runtime_source_sha
           flutter_version=3.47.2
+          flutter_framework_sha=$flutter_sha
           java_version=17
           signing_profile=ci-debug-key-release-smoke-not-for-distribution
           EOF
@@ -144,6 +165,7 @@ jobs:
       - name: Verify tracked build inputs stayed immutable
         run: |
           git diff --exit-code -- \
+            .github/workflows/android-ci.yml \
             pubspec.yaml \
             pubspec.lock \
             local_packages/flutter_vless_android-1.1.5 \
