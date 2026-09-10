@@ -657,10 +657,19 @@ class XrayVPNService : VpnService() {
             android.app.Notification.Builder(this)
         }
 
+        // VpnService can run in its own process, so never depend on Flutter's
+        // in-memory icon configuration. Resolve the application's monochrome
+        // status drawable from this process and keep a safe platform fallback.
+        val icon = resources.getIdentifier(
+            "notification_status_icon",
+            "drawable",
+            packageName,
+        ).takeIf { it != 0 } ?: android.R.drawable.ic_dialog_info
+
         val notification = builder
             .setContentTitle("Revolt VPN")
             .setContentText(content)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(icon)
             .setOngoing(true)
             .setAutoCancel(false)
             .setOnlyAlertOnce(true)
