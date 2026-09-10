@@ -2,17 +2,23 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/secure_socks_session.dart';
 
 void main() {
   test('release verification stays fail-closed and reproducible', () {
     final gradle = File('android/app/build.gradle.kts').readAsStringSync();
+    final vendoredGradle = File(
+      'local_packages/flutter_vless_android-1.1.5/android/build.gradle',
+    ).readAsStringSync();
     final workflow = File('.github/workflows/android-ci.yml').readAsStringSync();
     final lockfile = File('pubspec.lock').readAsStringSync();
-    final wrapper =
-        File('android/gradle/wrapper/gradle-wrapper.properties').readAsStringSync();
-    final verification =
-        File('android/gradle/verification-metadata.xml').readAsStringSync();
+    final wrapper = File(
+      'android/gradle/wrapper/gradle-wrapper.properties',
+    ).readAsStringSync();
+    final verification = File(
+      'android/gradle/verification-metadata.xml',
+    ).readAsStringSync();
     final proguard = File('android/app/proguard-rules.pro').readAsStringSync();
 
     expect(
@@ -39,6 +45,23 @@ void main() {
     expect(gradle, contains('isShrinkResources = true'));
     expect(gradle, contains('REVOLT_CI_RELEASE_SMOKE'));
     expect(gradle, contains('signingConfigs.getByName("release")'));
+
+    // The protected Xray artifact is downloaded and SHA-256 verified by the
+    // vendored runtime project, but packaged only by the final app. This avoids
+    // the unsupported local-AAR-inside-library-AAR graph that AGP rejects.
+    expect(
+      vendoredGradle,
+      contains(
+        '54785c3c5437473d8f9c8071a6138ae781ed2038e57beb47b6a46de3545c3ad8',
+      ),
+    );
+    expect(vendoredGradle, contains("prepareProtectedXrayRuntime"));
+    expect(vendoredGradle, isNot(contains('implementation files(protectedRuntimeAar)')));
+    expect(gradle, contains('implementation(protectedXrayRuntimeFiles)'));
+    expect(
+      gradle,
+      contains(': flutter_vless_android:prepareProtectedXrayRuntime'.replaceFirst(' ', '')),
+    );
 
     expect(workflow, contains("flutter-version: '3.47.2'"));
     expect(workflow, contains('Verify Gradle supply chain'));
@@ -83,5 +106,28 @@ void main() {
     expect(account['pass'], session.password);
     expect(session.username, isNotEmpty);
     expect(session.password, isNotEmpty);
+  });
+
+  test('session possession nonces are canonical 128-bit values', () {
+    final nonces = List<String>.generate(128, (_) => HivemindService.newNonce());
+    final pattern = RegExp(r'^[0-9a-f]{32}$');
+
+    for (final nonce in nonces) {
+      expect(nonce, matches(pattern));
+    }
+    expect(nonces.toSet(), hasLength(nonces.length));
+  });
+
+  test('control-plane source keeps bearer credentials on a bounded HTTPS origin', () {
+    final source = File('lib/logic/hivemind_service.dart').readAsStringSync();
+
+    expect(source, contains("X-RevoltVPN-Session-Nonce"));
+    expect(source, contains('followRedirects = false'));
+    expect(source, contains('_maxControlResponseBytes = 256 * 1024'));
+    expect(source, contains("base.scheme != 'https'"));
+    expect(source, contains('uri.origin != base.origin'));
+    expect(source, contains("_publicUrl('/session/stop')"));
+    expect(source, contains('CryptoService.setSessionStopPending()'));
+    expect(source, contains('CryptoService.isSessionStopPending()'));
   });
 }
