@@ -78,6 +78,12 @@ void main() {
       contains('d3b14c876900e553bc736ca19295fc09e3853e8e'),
     );
     expect(workflow, contains('flutter_framework_sha='));
+    expect(workflow, contains('flutter pub get --enforce-lockfile'));
+    expect(workflow, contains('for attempt in 1 2 3'));
+    expect(
+      workflow,
+      contains('Locked dependency resolution failed after 3 attempts.'),
+    );
     expect(workflow, contains('Verify Gradle supply chain'));
     expect(workflow, contains('Verify dependency lock is committed'));
     expect(workflow, contains('Verify production release config fails closed'));
