@@ -146,7 +146,7 @@ class AdManager extends ChangeNotifier {
         );
         if (response.statusCode != 200) return false;
         if (adType == 'main') {
-          return HivemindService.confirmAndSetSessionNonce(nonce);
+          return await HivemindService.confirmAndSetSessionNonce(nonce);
         }
         return true;
       } catch (_) {
