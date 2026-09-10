@@ -133,19 +133,32 @@ class AdManager extends ChangeNotifier {
       }
     }
 
-    final deviceId = await CryptoService.getDeviceId();
-
-    final nonce = '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
-    HivemindService.setExpectedNonce(nonce);
-    debugPrint('[AdManager] Ad nonce: $nonce');
-
-    final ssvOptions = ServerSideVerificationOptions(
-      customData: jsonEncode({
+    late final String customData;
+    if (adType == 'main') {
+      try {
+        final activation = await HivemindService.prepareMainActivation();
+        customData = activation.toMainSsvCustomData();
+      } catch (_) {
+        // Never log the preparation response/body because the request contains
+        // the private session authorization secret.
+        debugPrint('[AdManager] Main activation preparation failed.');
+        return false;
+      }
+    } else {
+      // Support reward behavior intentionally stays on the existing compatibility
+      // payload. H13 migrates only the main VPN-session authorization boundary.
+      final deviceId = await CryptoService.getDeviceId();
+      final nonce = '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
+      HivemindService.setExpectedNonce(nonce);
+      debugPrint('[AdManager] Ad nonce: $nonce');
+      customData = jsonEncode({
         'device_id': deviceId,
         'ad_type': adType,
         'nonce': nonce,
-      }),
-    );
+      });
+    }
+
+    final ssvOptions = ServerSideVerificationOptions(customData: customData);
 
     Completer<bool> rewardCompleter = Completer<bool>();
 
