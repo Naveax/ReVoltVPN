@@ -133,19 +133,19 @@ class HivemindService {
     return bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
   }
 
-  /// Cancelled control work must not be able to commit a possession token
-  /// after the cancellation point. This is synchronous so disconnect() closes
-  /// the race before its first secure-storage/network await.
+  /// Cancel only the current control-plane generation. Provider disposal and
+  /// other lifecycle cancellation are not equivalent to a user-requested stop.
   static void cancel() {
     _currentCallId++;
-    _sessionMutationEpoch++;
-    _sessionStopInProgress = true;
   }
 
   /// Record an explicit disconnect before the first await in the caller.
-  /// cancel() advances the mutation epoch synchronously; the durable marker is
-  /// returned so callers can fail closed if secure storage cannot commit it.
+  /// Advancing the mutation epoch synchronously invalidates any credential
+  /// confirmation already in flight, while the durable marker survives a
+  /// process death until server revocation is definitive.
   static Future<void> beginSessionStop() {
+    _sessionMutationEpoch++;
+    _sessionStopInProgress = true;
     cancel();
     return CryptoService.setSessionStopPending();
   }
@@ -299,10 +299,10 @@ class HivemindService {
             }
             return false;
           }
-        } else if (response.statusCode == 401) {
-          // The server has definitively rejected this candidate.
-          return false;
         }
+        // A not-yet-authorized candidate can legitimately return 401 until the
+        // asynchronous Google SSV callback is committed. Keep polling rather
+        // than treating that propagation state as a permanent rejection.
       } catch (_) {}
 
       if (attempt < maxAttempts) {
