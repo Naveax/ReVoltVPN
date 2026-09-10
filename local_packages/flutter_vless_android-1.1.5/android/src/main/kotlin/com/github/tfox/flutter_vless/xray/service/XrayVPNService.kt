@@ -29,6 +29,7 @@ import java.io.File
 class XrayVPNService : VpnService() {
     private var mInterface: ParcelFileDescriptor? = null
     private var tun2socksProcess: Process? = null
+    private var socketProtector: XraySocketProtector? = null
     @Volatile private var isRunning = false
     @Volatile private var recoveringXray = false
     @Volatile private var recoveringTun2socks = false
@@ -150,7 +151,15 @@ class XrayVPNService : VpnService() {
         armSessionDeadline(config, BOOTSTRAP_SESSION_SECONDS)
         if (shuttingDownIntentionally) return START_NOT_STICKY
 
-        if (XrayCoreManager.startCore(this, config)) {
+        val protector = try {
+            replaceSocketProtector(required = !proxyOnly)
+        } catch (e: Exception) {
+            Log.e(TAG, "Could not create protected Xray descriptor broker", e)
+            stopAll(config.RUNTIME_TOKEN)
+            return START_NOT_STICKY
+        }
+
+        if (XrayCoreManager.startCore(this, config, protector)) {
             if (!proxyOnly) {
                 setupVpn(config)
             } else {
@@ -164,6 +173,14 @@ class XrayVPNService : VpnService() {
         }
 
         return START_REDELIVER_INTENT
+    }
+
+    /** Every Xray process generation gets a fresh handshake latch/broker. */
+    private fun replaceSocketProtector(required: Boolean): XraySocketProtector? {
+        socketProtector?.close()
+        socketProtector = null
+        if (!required) return null
+        return XraySocketProtector(this).also { socketProtector = it }
     }
 
     private fun setupVpn(config: XrayConfig) {
@@ -185,12 +202,10 @@ class XrayVPNService : VpnService() {
                 throw IllegalStateException("Per-app VPN bypass is disabled in ReVolt")
             }
 
-            // 3.3.5 still excludes the host UID to keep Xray's own tunnel
-            // socket out of TUN. This is intentionally retained until the
-            // protected-Xray runtime/socket broker backport lands; Android
-            // lockdown compatibility must not be claimed before that point.
-            builder.addDisallowedApplication(packageName)
-
+            // Capture the host UID too. The protected Xray runtime sends only
+            // its real transport sockets through the authenticated descriptor
+            // broker above; excluding the whole application would bypass
+            // Android lockdown and leak unrelated host-process traffic.
             builder.addRoute("0.0.0.0", 0)
             builder.addRoute("::", 0)
             builder.addDnsServer("8.8.8.8")
@@ -388,7 +403,14 @@ class XrayVPNService : VpnService() {
                     Thread.sleep(delayMs)
                     if (!isRunning || currentConfig !== config) break
 
-                    if (XrayCoreManager.startCore(this, config)) {
+                    val protector = try {
+                        replaceSocketProtector(required = !currentProxyOnly)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Could not replace Xray protection broker during recovery", e)
+                        continue
+                    }
+
+                    if (XrayCoreManager.startCore(this, config, protector)) {
                         if (
                             currentProxyOnly ||
                             (mInterface != null && tun2socksProcess?.isAlive == true)
@@ -397,6 +419,11 @@ class XrayVPNService : VpnService() {
                         }
                         return@Thread
                     }
+
+                    // A failed process generation must not leave a verified
+                    // latch that could be reused by the next recovery attempt.
+                    socketProtector?.close()
+                    socketProtector = null
                 }
             } catch (_: InterruptedException) {
             } finally {
@@ -421,6 +448,8 @@ class XrayVPNService : VpnService() {
         AppConfigs.RUNTIME_READY = false
         tun2socksProcess?.destroy()
         tun2socksProcess = null
+        socketProtector?.close()
+        socketProtector = null
         try {
             mInterface?.close()
             mInterface = null
