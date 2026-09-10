@@ -178,6 +178,31 @@ void main() {
     },
   );
 
+  test('protected Xray TUN requires the authenticated descriptor broker', () {
+    const base =
+        'local_packages/flutter_vless_android-1.1.5/android/src/main/kotlin/'
+        'com/github/tfox/flutter_vless/xray';
+    final service = File('$base/service/XrayVPNService.kt').readAsStringSync();
+    final protector =
+        File('$base/service/XraySocketProtector.kt').readAsStringSync();
+    final physicalDns =
+        File('$base/service/XrayPhysicalDns.kt').readAsStringSync();
+    final core = File('$base/core/XrayCoreManager.kt').readAsStringSync();
+
+    expect(service, contains('XraySocketProtector(this)'));
+    expect(service, isNot(contains('builder.addDisallowedApplication(packageName)')));
+    expect(service, contains('replaceSocketProtector(required = !currentProxyOnly)'));
+    expect(core, contains('FLUTTER_VLESS_PROTECT_SOCKET'));
+    expect(core, contains('protector.awaitVerified()'));
+    expect(core, contains('requireProtectedSocketSupport(configJson)'));
+    expect(protector, contains("'H'.code, 'P'.code"));
+    expect(protector, contains("'D'.code"));
+    expect(protector, contains('socket.peerCredentials.uid != Process.myUid()'));
+    expect(protector, contains('XrayPhysicalDns.query(network, query)'));
+    expect(physicalDns, contains('DnsResolver.getInstance().rawQuery'));
+    expect(physicalDns, contains('network.getAllByName(host)'));
+  });
+
   test('native VPN service resolves the app notification icon itself', () {
     final service = File(
       'local_packages/flutter_vless_android-1.1.5/android/src/main/kotlin/'
