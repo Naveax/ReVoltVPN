@@ -15,6 +15,7 @@ import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import com.github.tfox.flutter_vless.xray.dto.XrayConfig
+import com.github.tfox.flutter_vless.xray.service.XraySocketProtector
 import com.github.tfox.flutter_vless.xray.service.XrayVPNService
 import com.github.tfox.flutter_vless.xray.utils.AppConfigs
 import com.github.tfox.flutter_vless.xray.utils.Utilities
@@ -29,13 +30,14 @@ import org.json.JSONObject
  * - runtime config must contain exactly one authenticated loopback SOCKS5 inbound;
  * - no unauthenticated SOCKS/HTTP/API fallback is ever synthesized;
  * - allowInsecure and destination/access log paths are stripped;
- * - per-session configuration is delivered over stdin and is never persisted.
+ * - per-session configuration is delivered over stdin and is never persisted;
+ * - VPN-mode Xray must prove descriptor protection before the TUN is accepted.
  */
 object XrayCoreManager {
     private const val NOTIFICATION_ID = 1
     private const val TAG = "XrayCoreManager"
 
-    private var xrayProcess: Process? = null
+    @Volatile private var xrayProcess: Process? = null
     private var countDownTimer: CountDownTimer? = null
     private var seconds = 0
 
@@ -167,14 +169,67 @@ object XrayCoreManager {
         return configJson
     }
 
-    fun startCore(context: XrayVPNService, config: XrayConfig): Boolean {
+    /**
+     * Reject known runtime paths that create sockets outside the protected
+     * dialer/listener/resolver controller hooks. VPN mode is fail-closed here;
+     * proxy-only mode does not require Android VpnService protection.
+     */
+    internal fun requireProtectedSocketSupport(value: Any?) {
+        when (value) {
+            is JSONObject -> {
+                val keys = value.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val child = value.opt(key)
+                    require(
+                        !(key.equals("type", ignoreCase = true) &&
+                            child is String &&
+                            child.equals("xicmp", ignoreCase = true)),
+                    ) { "xicmp is unavailable in protected VPN mode" }
+                    requireProtectedSocketSupport(child)
+                }
+            }
+            is JSONArray -> {
+                for (index in 0 until value.length()) {
+                    requireProtectedSocketSupport(value.opt(index))
+                }
+            }
+            is String -> require(!value.startsWith("quic+local://", ignoreCase = true)) {
+                "quic+local DNS is unavailable in protected VPN mode; use https+local or tcp+local"
+            }
+        }
+    }
+
+    @Synchronized
+    fun startCore(
+        context: XrayVPNService,
+        config: XrayConfig,
+        protector: XraySocketProtector? = null,
+    ): Boolean {
+        // A fresh generation must never coexist with a stale native process.
+        xrayProcess?.let { stale ->
+            runCatching { stale.destroy() }
+            runCatching { stale.waitFor(2, java.util.concurrent.TimeUnit.SECONDS) }
+            if (stale.isAlive) {
+                runCatching { stale.destroyForcibly() }
+                runCatching { stale.waitFor(2, java.util.concurrent.TimeUnit.SECONDS) }
+            }
+            if (stale.isAlive) {
+                Log.e(TAG, "Refusing to start while stale Xray process is still alive")
+                return false
+            }
+            xrayProcess = null
+        }
+
         AppConfigs.RUNTIME_READY = false
         AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_CONNECTING
         AppConfigs.V2RAY_CONFIG = config
 
         val configFilesDir = context.filesDir
         val runtimeConfig = try {
-            buildRuntimeConfigJson(config, configFilesDir).toString()
+            val configJson = buildRuntimeConfigJson(config, configFilesDir)
+            if (protector != null) requireProtectedSocketSupport(configJson)
+            configJson.toString()
         } catch (e: Exception) {
             Log.e(TAG, "Rejected Xray runtime config", e)
             AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
@@ -205,9 +260,29 @@ object XrayCoreManager {
             pb.redirectErrorStream(true)
             pb.environment()["XRAY_LOCATION_ASSET"] = Utilities.getUserAssetsPath(context)
             pb.environment()["XRAY_JSON_STRICT"] = "true"
+            if (protector != null) {
+                pb.environment()[PROTECT_SOCKET_ENV] = protector.socketName
+            } else {
+                pb.environment().remove(PROTECT_SOCKET_ENV)
+            }
 
             val process = pb.start()
             xrayProcess = process
+
+            // protect1 performs its H descriptor capability handshake from Go
+            // init(), before Xray parses stdin. Refuse to hand over session
+            // credentials/config unless that real-FD protect() proof succeeds.
+            if (protector != null && !protector.awaitVerified()) {
+                Log.e(TAG, "Protected Xray descriptor handshake was not verified")
+                runCatching { process.destroy() }
+                runCatching { process.waitFor(1, java.util.concurrent.TimeUnit.SECONDS) }
+                if (process.isAlive) runCatching { process.destroyForcibly() }
+                if (xrayProcess === process) xrayProcess = null
+                AppConfigs.RUNTIME_READY = false
+                AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
+                AppConfigs.V2RAY_CONFIG = null
+                return false
+            }
 
             process.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
                 writer.write(runtimeConfig)
@@ -218,7 +293,8 @@ object XrayCoreManager {
             if (!process.isAlive) {
                 val output = process.inputStream.bufferedReader().readText()
                 Log.e(TAG, "Xray process exited during startup: $output")
-                xrayProcess = null
+                if (xrayProcess === process) xrayProcess = null
+                AppConfigs.RUNTIME_READY = false
                 AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
                 AppConfigs.V2RAY_CONFIG = null
                 return false
@@ -259,8 +335,9 @@ object XrayCoreManager {
             return true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start Xray process", e)
-            xrayProcess?.destroy()
+            runCatching { xrayProcess?.destroy() }
             xrayProcess = null
+            AppConfigs.RUNTIME_READY = false
             AppConfigs.V2RAY_STATE = AppConfigs.V2RAY_STATES.V2RAY_DISCONNECTED
             AppConfigs.V2RAY_CONFIG = null
             return false
@@ -428,4 +505,6 @@ object XrayCoreManager {
         }
         return ""
     }
+
+    private const val PROTECT_SOCKET_ENV = "FLUTTER_VLESS_PROTECT_SOCKET"
 }
