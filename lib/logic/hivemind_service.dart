@@ -9,6 +9,7 @@ import 'package:revoltvpn/logic/control_plane_policy.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/serialized_operation_queue.dart';
 import 'package:revoltvpn/logic/session_accounting.dart';
+import 'package:revoltvpn/logic/session_activation_intent.dart';
 import 'package:revoltvpn/logic/session_auth.dart';
 
 class HivemindConfigLease {
@@ -44,6 +45,7 @@ class HivemindConfigLease {
 
 class HivemindService {
   static String? _pendingNonce;
+  static String? _preparedMainSessionNonce;
   static String? _activeSessionNonce;
   static int _currentCallId = 0;
   static Completer<void>? _activationCompletion;
@@ -161,6 +163,45 @@ class HivemindService {
   /// session credential is promoted only after an authenticated status response.
   static void setExpectedNonce(String nonce) {
     _pendingNonce = nonce;
+  }
+
+  /// Register the private main-session bearer directly with the ReVoltVPN
+  /// control-plane before displaying a real rewarded ad. The returned public
+  /// activation identifier is safe for AdMob correlation; the generated private
+  /// session secret remains only in this process and in the HTTPS request body.
+  static Future<SessionActivationIntent> prepareMainActivation({
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    final deviceId = await CryptoService.getDeviceId();
+    final sessionSecret = SessionAuth.newNonce();
+    final response = await _controlPostJson(
+      _publicUrl('/session/activation-intents'),
+      <String, Object?>{
+        'device_id': deviceId,
+        'session_secret': sessionSecret,
+      },
+      headers: const <String, String>{},
+      timeout: timeout,
+    );
+
+    if (response.statusCode != 201) {
+      throw StateError(
+        'Main session activation preparation failed (${response.statusCode}).',
+      );
+    }
+
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      throw const FormatException('Invalid activation preparation response.');
+    }
+    final intent = SessionActivationIntent.fromJson(decoded);
+
+    // Only a fully validated successful response may arm the prepared secret.
+    // If the response is lost or malformed, the server-side unbound intent is
+    // safely superseded by a later preparation request or expires on its own.
+    _preparedMainSessionNonce = sessionSecret;
+    _pendingNonce = sessionSecret;
+    return intent;
   }
 
   static Future<String?> _loadActiveSessionNonce() async {
@@ -288,6 +329,9 @@ class HivemindService {
       if (!cleaned) continue;
       cleanedAny = true;
       if (_pendingNonce == nonce) _pendingNonce = null;
+      if (_preparedMainSessionNonce == nonce) {
+        _preparedMainSessionNonce = null;
+      }
       await _clearActiveSessionAuthorizationIfCurrent(nonce);
     }
     return cleanedAny;
@@ -370,10 +414,26 @@ class HivemindService {
     final deviceId = await CryptoService.getDeviceId();
     _throwIfCancelled(callId);
 
-    final nonce = SessionAuth.newNonce();
+    final preparedNonce = _preparedMainSessionNonce;
+    final usingPreparedMainActivation =
+        preparedNonce != null && SessionAuth.isValidNonce(preparedNonce);
+    if (preparedNonce != null && !usingPreparedMainActivation) {
+      _preparedMainSessionNonce = null;
+    }
+    final nonce = usingPreparedMainActivation
+        ? preparedNonce
+        : SessionAuth.newNonce();
+    if (usingPreparedMainActivation) {
+      // Consume the capability marker exactly once. `_pendingNonce` remains
+      // available for authenticated polling/revocation until activation settles.
+      _preparedMainSessionNonce = null;
+    }
     _pendingNonce = nonce;
 
-    if (!skipAdBypass) {
+    // A pre-registered H13 secret must never be reflected into the legacy fake
+    // AdMob callback path. Debug validation keeps its existing bypass only when
+    // this connection attempt generated a fresh local nonce itself.
+    if (!usingPreparedMainActivation && !skipAdBypass) {
       await _runConfiguredBypass(deviceId, nonce);
       _throwIfCancelled(callId);
     }
