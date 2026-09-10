@@ -137,7 +137,8 @@ class AdManager extends ChangeNotifier {
     if (adType == 'main') {
       try {
         final activation = await HivemindService.prepareMainActivation();
-        customData = activation.toMainSsvCustomData();
+        final deviceId = await CryptoService.getDeviceId();
+        customData = activation.toMainSsvCustomData(deviceId);
       } catch (_) {
         // Never log the preparation response/body because the request contains
         // the private session authorization secret.
