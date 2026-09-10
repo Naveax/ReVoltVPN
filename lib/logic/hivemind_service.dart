@@ -46,6 +46,7 @@ class HivemindConfigLease {
 class HivemindService {
   static String? _pendingNonce;
   static String? _preparedMainSessionNonce;
+  static String? _pendingMainActivationNonce;
   static String? _activeSessionNonce;
   static int _currentCallId = 0;
   static Completer<void>? _activationCompletion;
@@ -197,11 +198,52 @@ class HivemindService {
     final intent = SessionActivationIntent.fromJson(decoded);
 
     // Only a fully validated successful response may arm the prepared secret.
-    // If the response is lost or malformed, the server-side unbound intent is
-    // safely superseded by a later preparation request or expires on its own.
+    // `_pendingMainActivationNonce` deliberately survives one-time capability
+    // consumption until callback grant or explicit cancel/stop convergence is
+    // proven, because a late Google callback may still race local disconnect.
     _preparedMainSessionNonce = sessionSecret;
+    _pendingMainActivationNonce = sessionSecret;
     _pendingNonce = sessionSecret;
     return intent;
+  }
+
+  /// Abandon a prepared H13 main activation without leaving a late Google SSV
+  /// callback capable of minting an orphaned server session.
+  ///
+  /// The server serializes cancel and callback handling under the same device
+  /// gate. We therefore cancel the intent first, then issue authenticated stop.
+  /// If callback won the gate, stop removes the resulting session. If cancel won,
+  /// a 401 stop is proof that no later callback can create this generation.
+  static Future<bool> abandonPreparedMainActivation({
+    Duration timeout = const Duration(seconds: 3),
+  }) async {
+    final nonce = _pendingMainActivationNonce;
+    if (nonce == null) return true;
+    if (!SessionAuth.isValidNonce(nonce)) {
+      _clearH13MarkersIfCurrent(nonce);
+      return false;
+    }
+
+    final deviceId = await CryptoService.getDeviceId();
+    final cancelled = await _cancelMainActivationIntentWithNonce(
+      deviceId,
+      nonce,
+      timeout: timeout,
+    );
+    if (!cancelled) return false;
+
+    final stoppedOrAbsent = await _revokeSessionWithNonce(
+      deviceId,
+      nonce,
+      timeout: timeout,
+      unauthorizedMeansAbsent: true,
+    );
+    if (!stoppedOrAbsent) return false;
+
+    _clearH13MarkersIfCurrent(nonce);
+    if (_pendingNonce == nonce) _pendingNonce = null;
+    await _clearActiveSessionAuthorizationIfCurrent(nonce);
+    return true;
   }
 
   static Future<String?> _loadActiveSessionNonce() async {
@@ -320,21 +362,56 @@ class HivemindService {
 
     var cleanedAny = false;
     for (final nonce in candidates) {
+      final isPendingH13Activation = _pendingMainActivationNonce == nonce;
+      if (isPendingH13Activation) {
+        final cancelled = await _cancelMainActivationIntentWithNonce(
+          deviceId,
+          nonce,
+          timeout: timeout,
+        );
+        if (!cancelled) continue;
+      }
+
       final cleaned = await _revokeSessionWithNonce(
         deviceId,
         nonce,
         timeout: timeout,
-        unauthorizedMeansAbsent: activationQuiesced || nonce == active,
+        unauthorizedMeansAbsent: isPendingH13Activation ||
+            activationQuiesced ||
+            nonce == active,
       );
       if (!cleaned) continue;
       cleanedAny = true;
       if (_pendingNonce == nonce) _pendingNonce = null;
-      if (_preparedMainSessionNonce == nonce) {
-        _preparedMainSessionNonce = null;
-      }
+      _clearH13MarkersIfCurrent(nonce);
       await _clearActiveSessionAuthorizationIfCurrent(nonce);
     }
     return cleanedAny;
+  }
+
+  static Future<bool> _cancelMainActivationIntentWithNonce(
+    String deviceId,
+    String nonce, {
+    required Duration timeout,
+  }) async {
+    try {
+      final response = await _controlPostJson(
+        _publicUrl('/session/activation-intents'),
+        <String, Object?>{
+          'device_id': deviceId,
+          'session_secret': nonce,
+          'cancel': true,
+        },
+        headers: const <String, String>{},
+        timeout: timeout,
+      );
+      if (response.statusCode != 200) return false;
+      final decoded = jsonDecode(response.body);
+      return decoded is Map<String, dynamic> && decoded['ok'] == true;
+    } catch (error) {
+      debugPrint('[Hivemind] activation intent cancel failed: $error');
+      return false;
+    }
   }
 
   static Future<bool> _revokeSessionWithNonce(
@@ -353,7 +430,8 @@ class HivemindService {
 
       // A persisted nonce receiving 401 is no longer the server-owned active
       // generation. A merely-pending nonce is only terminal after activation
-      // quiesced; otherwise a late callback could still mint that generation.
+      // quiesced, or after H13 intent cancellation won the shared server gate;
+      // otherwise a late callback could still mint that generation.
       if (response.statusCode == 401) return unauthorizedMeansAbsent;
       if (response.statusCode != 200) return false;
       final decoded = jsonDecode(response.body);
@@ -361,6 +439,15 @@ class HivemindService {
     } catch (error) {
       debugPrint('[Hivemind] session revoke failed: $error');
       return false;
+    }
+  }
+
+  static void _clearH13MarkersIfCurrent(String nonce) {
+    if (_preparedMainSessionNonce == nonce) {
+      _preparedMainSessionNonce = null;
+    }
+    if (_pendingMainActivationNonce == nonce) {
+      _pendingMainActivationNonce = null;
     }
   }
 
@@ -418,14 +505,15 @@ class HivemindService {
     final usingPreparedMainActivation =
         preparedNonce != null && SessionAuth.isValidNonce(preparedNonce);
     if (preparedNonce != null && !usingPreparedMainActivation) {
-      _preparedMainSessionNonce = null;
+      _clearH13MarkersIfCurrent(preparedNonce);
     }
     final nonce = usingPreparedMainActivation
         ? preparedNonce
         : SessionAuth.newNonce();
     if (usingPreparedMainActivation) {
-      // Consume the capability marker exactly once. `_pendingNonce` remains
-      // available for authenticated polling/revocation until activation settles.
+      // Consume only the one-shot capability marker. The H13 intent ownership
+      // marker remains until active status proves callback convergence or cleanup
+      // closes the callback race explicitly.
       _preparedMainSessionNonce = null;
     }
     _pendingNonce = nonce;
@@ -453,6 +541,9 @@ class HivemindService {
           await _storeActiveSessionNonce(nonce);
           _throwIfCancelled(callId);
           _pendingNonce = null;
+          if (_pendingMainActivationNonce == nonce) {
+            _pendingMainActivationNonce = null;
+          }
           return HivemindConfigLease(
             vlessUrl: session.toVlessUrl(),
             expiresInSeconds: session.expiresInSeconds,
