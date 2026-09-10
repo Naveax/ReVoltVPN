@@ -73,7 +73,19 @@ jobs:
         run: cp lib/logic/app_config.example.dart lib/logic/app_config.dart
 
       - name: Resolve dependencies
-        run: flutter pub get
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if flutter pub get --enforce-lockfile; then
+              exit 0
+            fi
+            if [[ "$attempt" -eq 3 ]]; then
+              echo 'Locked dependency resolution failed after 3 attempts.'
+              exit 1
+            fi
+            sleep "$((attempt * 5))"
+          done
 
       - name: Verify dependency lock is committed
         run: git diff --exit-code -- pubspec.lock
