@@ -3,10 +3,14 @@ import 'dart:convert';
 /// Public, short-lived correlation handle returned by the H13 control-plane.
 ///
 /// This object deliberately does not contain the private session authorization
-/// secret. Only [activationId] may cross the AdMob SSV trust boundary.
+/// secret. Only public correlation material may cross the AdMob SSV trust
+/// boundary.
 class SessionActivationIntent {
   static final RegExp _activationIdPattern = RegExp(
     r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+  );
+  static final RegExp _deviceIdPattern = RegExp(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$',
   );
 
   static const int maxLifetimeSeconds = 300;
@@ -39,10 +43,19 @@ class SessionActivationIntent {
     );
   }
 
-  /// Exact main-session SSV payload. No device identifier, nonce or private
-  /// session secret is permitted into third-party custom data.
-  String toMainSsvCustomData() => jsonEncode(<String, String>{
-        'activation_id': activationId,
-        'ad_type': 'main',
-      });
+  /// Exact first-phase H13 main-session SSV compatibility envelope.
+  ///
+  /// The backend still parses the legacy `device_id` / `nonce` shape during
+  /// migration, but `nonce` now carries only the public activation UUID. The
+  /// private 32-hex session secret is never serialized here.
+  String toMainSsvCustomData(String deviceId) {
+    if (!_deviceIdPattern.hasMatch(deviceId)) {
+      throw const FormatException('Invalid device_id.');
+    }
+    return jsonEncode(<String, String>{
+      'device_id': deviceId,
+      'ad_type': 'main',
+      'nonce': activationId,
+    });
+  }
 }
