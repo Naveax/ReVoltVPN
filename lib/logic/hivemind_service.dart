@@ -7,12 +7,27 @@ import 'package:http/http.dart' as http;
 import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 
+enum SessionProbeResult {
+  active,
+  inactive,
+  unavailable,
+}
+
+enum SessionStopResult {
+  stopped,
+  alreadyInactive,
+  retryNeeded,
+}
+
 class HivemindService {
-  static String? _expectedNonce;
+  static String? _sessionNonce;
   static int _currentCallId = 0;
+  static final Random _secureRandom = Random.secure();
+  static Future<SessionStopResult>? _stopInFlight;
 
   static const _ua = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
+  static const _sessionNonceHeader = 'X-RevoltVPN-Session-Nonce';
   static const int _maxControlResponseBytes = 256 * 1024;
   static const _pollBackoff = <Duration>[
     Duration(seconds: 1),
@@ -24,23 +39,56 @@ class HivemindService {
   static Future<http.Response> directGet(
     Uri uri, {
     Duration timeout = const Duration(seconds: 5),
+    Map<String, String>? headers,
   }) {
-    return controlGet(uri, timeout: timeout);
+    return _controlRequest(
+      'GET',
+      uri,
+      timeout: timeout,
+      headers: headers,
+    );
   }
 
-  static Future<http.Response> controlGet(
+  static Future<http.Response> directPost(
     Uri uri, {
+    required String body,
     Duration timeout = const Duration(seconds: 5),
+    Map<String, String>? headers,
+  }) {
+    return _controlRequest(
+      'POST',
+      uri,
+      timeout: timeout,
+      headers: <String, String>{
+        'Content-Type': 'application/json',
+        ...?headers,
+      },
+      body: body,
+    );
+  }
+
+  /// Control-plane requests never follow redirects, never leave the configured
+  /// HTTPS origin, and never buffer an unbounded response body.
+  static Future<http.Response> _controlRequest(
+    String method,
+    Uri uri, {
+    required Duration timeout,
+    Map<String, String>? headers,
+    String? body,
   }) async {
+    _validateApiUri(uri);
+
     final client = http.Client();
-    final request = http.Request('GET', uri)
-      ..headers['User-Agent'] = _ua
-      ..followRedirects = false;
+    final request = http.Request(method, uri)
+      ..followRedirects = false
+      ..headers.addAll(<String, String>{'User-Agent': _ua, ...?headers});
+    if (body != null) request.body = body;
 
     Future<http.Response> read() async {
       final streamed = await client.send(request);
       final declaredLength = streamed.contentLength;
-      if (declaredLength != null && declaredLength > _maxControlResponseBytes) {
+      if (declaredLength != null &&
+          declaredLength > _maxControlResponseBytes) {
         throw const FormatException('Control response is too large.');
       }
 
@@ -76,32 +124,248 @@ class HivemindService {
     }
   }
 
-  static void cancel() {
-    _currentCallId++;
-    _expectedNonce = null;
+  static String newNonce() {
+    final bytes = List<int>.generate(16, (_) => _secureRandom.nextInt(256));
+    return bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
   }
 
-  static void setExpectedNonce(String nonce) {
-    _expectedNonce = nonce;
+  static void cancel() {
+    _currentCallId++;
+  }
+
+  static Future<void> setSessionNonce(String nonce) async {
+    await CryptoService.setSessionNonce(nonce);
+    _sessionNonce = nonce;
+  }
+
+  static Future<String?> getSessionNonce() async {
+    if (_sessionNonce != null) return _sessionNonce;
+    _sessionNonce = await CryptoService.getSessionNonce();
+    return _sessionNonce;
+  }
+
+  static Future<void> clearSessionNonce() async {
+    _sessionNonce = null;
+    await CryptoService.clearSessionNonce();
+    await CryptoService.clearSessionStopPending();
+  }
+
+  static Future<http.Response> authenticatedGet(
+    Uri uri, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    final nonce = await getSessionNonce();
+    if (nonce == null) {
+      throw Exception('Session authorization unavailable.');
+    }
+    return directGet(
+      uri,
+      timeout: timeout,
+      headers: <String, String>{_sessionNonceHeader: nonce},
+    );
+  }
+
+  /// Probe the persisted possession token without minting a replacement.
+  /// Ambiguous network/server failures leave the token untouched so a possibly
+  /// live server generation cannot be replaced with a fresh reward nonce.
+  static Future<SessionProbeResult> probeCurrentSession() async {
+    final nonce = await getSessionNonce();
+    if (nonce == null) return SessionProbeResult.inactive;
+
+    try {
+      final deviceId = await CryptoService.getDeviceId();
+      final response = await directGet(
+        _sessionStatusUrl(deviceId),
+        timeout: const Duration(seconds: 3),
+        headers: <String, String>{_sessionNonceHeader: nonce},
+      );
+
+      if (response.statusCode == 401) {
+        await clearSessionNonce();
+        return SessionProbeResult.inactive;
+      }
+      if (response.statusCode != 200) {
+        return SessionProbeResult.unavailable;
+      }
+
+      final data = jsonDecode(response.body);
+      if (data is! Map<String, dynamic>) {
+        return SessionProbeResult.unavailable;
+      }
+
+      if (data['active'] == true) {
+        final serverNonce = data['nonce'];
+        if (serverNonce != null &&
+            (serverNonce is! String || serverNonce != nonce)) {
+          return SessionProbeResult.unavailable;
+        }
+        return SessionProbeResult.active;
+      }
+
+      await clearSessionNonce();
+      return SessionProbeResult.inactive;
+    } catch (_) {
+      return SessionProbeResult.unavailable;
+    }
+  }
+
+  /// Commit a candidate main-session nonce only after the server projects that
+  /// exact possession token as active.
+  static Future<bool> confirmAndSetSessionNonce(String nonce) async {
+    final deviceId = await CryptoService.getDeviceId();
+    final url = _sessionStatusUrl(deviceId);
+
+    const maxAttempts = 8;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        final response = await directGet(
+          url,
+          timeout: const Duration(seconds: 2),
+          headers: <String, String>{_sessionNonceHeader: nonce},
+        );
+
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          if (data is Map<String, dynamic> && data['active'] == true) {
+            final serverNonce = data['nonce'];
+            if (serverNonce == null ||
+                (serverNonce is String && serverNonce == nonce)) {
+              // Do not resurrect a credential after an explicit user stop was
+              // recorded while SSV confirmation was in flight.
+              if (await CryptoService.isSessionStopPending()) return false;
+              await setSessionNonce(nonce);
+              await CryptoService.clearSessionStopPending();
+              return true;
+            }
+            return false;
+          }
+        } else if (response.statusCode == 401) {
+          // The server has definitively rejected this candidate.
+          return false;
+        }
+      } catch (_) {}
+
+      if (attempt < maxAttempts) {
+        await Future.delayed(const Duration(milliseconds: 750));
+      }
+    }
+
+    return false;
+  }
+
+  /// Revoke the currently-authorized server session. Persist the revocation
+  /// intent before the first network write and clear it only on a definitive
+  /// success/unauthorized result. Ambiguous failure remains fail-closed.
+  static Future<SessionStopResult> stopSession({bool markPending = true}) async {
+    final existing = _stopInFlight;
+    if (existing != null) return existing;
+
+    final operation = _stopSessionInner(markPending: markPending);
+    _stopInFlight = operation;
+    try {
+      return await operation;
+    } finally {
+      if (identical(_stopInFlight, operation)) {
+        _stopInFlight = null;
+      }
+    }
+  }
+
+  static Future<SessionStopResult> _stopSessionInner({
+    required bool markPending,
+  }) async {
+    final nonce = await getSessionNonce();
+    if (nonce == null) {
+      await CryptoService.clearSessionStopPending();
+      return SessionStopResult.alreadyInactive;
+    }
+
+    if (markPending) {
+      await CryptoService.setSessionStopPending();
+    }
+
+    final deviceId = await CryptoService.getDeviceId();
+    final body = jsonEncode(<String, String>{'device_id': deviceId});
+
+    const maxAttempts = 3;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        final response = await directPost(
+          _publicUrl('/session/stop'),
+          body: body,
+          timeout: const Duration(seconds: 4),
+          headers: <String, String>{_sessionNonceHeader: nonce},
+        );
+
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          if (data is Map<String, dynamic> && data['ok'] == true) {
+            await clearSessionNonce();
+            return SessionStopResult.stopped;
+          }
+        } else if (response.statusCode == 401) {
+          await clearSessionNonce();
+          return SessionStopResult.alreadyInactive;
+        }
+      } catch (_) {}
+
+      if (attempt < maxAttempts) {
+        await Future.delayed(Duration(milliseconds: 500 * attempt));
+      }
+    }
+
+    return SessionStopResult.retryNeeded;
+  }
+
+  static Future<bool> retryPendingSessionStop() async {
+    if (!await CryptoService.isSessionStopPending()) return true;
+    final result = await stopSession(markPending: false);
+    return result != SessionStopResult.retryNeeded;
   }
 
   static Future<String> fetchConfigDirectly({
     void Function(int attempt, int total)? onAttempt,
     bool skipAdBypass = false,
   }) async {
-    // Capture the generation before the first await. Otherwise a disconnect
-    // that lands while secure storage is resolving the device ID can be lost
-    // and the cancelled call can resume network work with a fresh generation.
+    // Capture the generation before the first await. A disconnect during
+    // secure-storage access must invalidate the whole operation.
     final callId = ++_currentCallId;
     final deviceId = await CryptoService.getDeviceId();
     _throwIfCancelled(callId);
 
-    final nonce = _newNonce();
-    _expectedNonce = nonce;
+    var nonce = await getSessionNonce();
+    _throwIfCancelled(callId);
 
-    if (!skipAdBypass) {
-      await _runConfiguredBypass(deviceId, nonce);
-      _throwIfCancelled(callId);
+    // Legacy unsigned callback is strictly a debug compatibility path. A
+    // candidate is persisted only after the server confirms it as active.
+    if (nonce == null && !skipAdBypass && kDebugMode) {
+      final candidate = newNonce();
+      try {
+        final customData = jsonEncode(<String, String>{
+          'device_id': deviceId,
+          'ad_type': 'main',
+          'nonce': candidate,
+        });
+        final callback = _publicUrl(
+          '/admob/callback?signature=test&key_id=test&custom_data=${Uri.encodeComponent(customData)}',
+        );
+        final response = await directGet(
+          callback,
+          timeout: const Duration(seconds: 8),
+        );
+        _throwIfCancelled(callId);
+        if (response.statusCode == 200 &&
+            await confirmAndSetSessionNonce(candidate)) {
+          _throwIfCancelled(callId);
+          nonce = candidate;
+        }
+      } catch (e) {
+        if (_isCancelledError(e)) rethrow;
+      }
+    }
+
+    if (nonce == null) {
+      throw Exception('Session authorization unavailable.');
     }
 
     const maxAttempts = 5;
@@ -112,10 +376,7 @@ class HivemindService {
       try {
         final session = await _fetchActiveSession(deviceId, nonce);
         _throwIfCancelled(callId);
-        if (session != null) {
-          _expectedNonce = null;
-          return session.toVlessUrl();
-        }
+        if (session != null) return session.toVlessUrl();
       } catch (e) {
         if (_isCancelledError(e)) rethrow;
         debugPrint('[Hivemind] session attempt $attempt failed');
@@ -132,7 +393,7 @@ class HivemindService {
 
   static Future<bool> checkHealth() async {
     try {
-      final response = await controlGet(
+      final response = await directGet(
         _publicUrl('/health'),
         timeout: const Duration(seconds: 3),
       );
@@ -142,42 +403,27 @@ class HivemindService {
     }
   }
 
-  static String _newNonce() {
-    final random = Random.secure();
-    final high = random.nextInt(0x7FFFFFFF);
-    final low = random.nextInt(0x7FFFFFFF);
-    return '$high-$low-${DateTime.now().microsecondsSinceEpoch}';
-  }
-
-  static Future<void> _runConfiguredBypass(String deviceId, String nonce) async {
-    try {
-      final customData = jsonEncode({'device_id': deviceId, 'nonce': nonce});
-      final callback = _publicUrl(
-        '/admob/callback?signature=test&key_id=test&custom_data=${Uri.encodeComponent(customData)}',
-      );
-      await directGet(callback, timeout: const Duration(seconds: 8));
-    } catch (_) {
-      // Validation bypass behavior is intentionally best-effort in this build.
-    }
-  }
-
   static Future<_HivemindSessionConfig?> _fetchActiveSession(
     String deviceId,
     String nonce,
   ) async {
-    final statusUri = _publicUrl('/session/status').replace(
-      queryParameters: {'device_id': deviceId},
+    final response = await directGet(
+      _sessionStatusUrl(deviceId),
+      headers: <String, String>{_sessionNonceHeader: nonce},
     );
-    final response = await controlGet(statusUri);
+
+    if (response.statusCode == 401) {
+      await clearSessionNonce();
+      throw Exception('Session authorization unavailable.');
+    }
     if (response.statusCode != 200) return null;
 
     final decoded = jsonDecode(response.body);
     if (decoded is! Map<String, dynamic>) return null;
 
     final serverNonce = decoded['nonce'];
-    if (_expectedNonce != nonce ||
-        serverNonce is! String ||
-        serverNonce != nonce) {
+    if (serverNonce != null &&
+        (serverNonce is! String || serverNonce != nonce)) {
       return null;
     }
 
@@ -195,8 +441,53 @@ class HivemindService {
   static bool _isCancelledError(Object error) =>
       error.toString().contains('Cancelled');
 
-  static Uri _publicUrl(String path) =>
-      Uri.parse('${AppConfig.hivemindApiPublic}$path');
+  static Uri _configuredApiBase() {
+    final base = Uri.tryParse(AppConfig.hivemindApiPublic.trim());
+    if (base == null ||
+        base.scheme != 'https' ||
+        !base.hasAuthority ||
+        base.host.isEmpty ||
+        base.userInfo.isNotEmpty ||
+        base.query.isNotEmpty ||
+        base.fragment.isNotEmpty) {
+      throw StateError('hivemindApiPublic must be a canonical HTTPS base URL.');
+    }
+    return base;
+  }
+
+  static void _validateApiUri(Uri uri) {
+    final base = _configuredApiBase();
+    if (uri.scheme != 'https' ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty ||
+        uri.origin != base.origin) {
+      throw ArgumentError.value(
+        uri,
+        'uri',
+        'API requests must remain on the configured HTTPS origin',
+      );
+    }
+  }
+
+  static Uri _publicUrl(String path) {
+    if (!path.startsWith('/') || path.startsWith('//')) {
+      throw ArgumentError.value(path, 'path', 'expected an absolute API path');
+    }
+
+    final base = _configuredApiBase();
+    final baseText = base.toString().endsWith('/')
+        ? base.toString().substring(0, base.toString().length - 1)
+        : base.toString();
+    final uri = Uri.parse('$baseText$path');
+    _validateApiUri(uri);
+    return uri;
+  }
+
+  static Uri _sessionStatusUrl(String deviceId) {
+    return _publicUrl('/session/status').replace(
+      queryParameters: <String, String>{'device_id': deviceId},
+    );
+  }
 }
 
 class _HivemindSessionConfig {
@@ -233,10 +524,8 @@ class _HivemindSessionConfig {
       throw const FormatException('Invalid VLESS UUID');
     }
 
-    // The API may rotate credentials and Reality parameters, but it must never
-    // choose the tunnel destination. Keep that trust anchor compiled into the
-    // app so an API/domain compromise can cause denial of service, not redirect
-    // VPN traffic to an attacker-controlled server.
+    // The control plane may rotate credentials and Reality parameters, but it
+    // cannot choose the tunnel destination. Keep host/port as compiled pins.
     final pinnedHost = _validatedPublicIp(AppConfig.serverIp, 'serverIp');
     final advertisedHost = json['vless_ip'];
     if (advertisedHost != null) {
@@ -251,9 +540,12 @@ class _HivemindSessionConfig {
     final advertisedPort = json['vless_port'];
     if (advertisedPort != null &&
         (advertisedPort is! num || advertisedPort.toInt() != 443)) {
-      throw const FormatException('Session VLESS port does not match compiled pin');
+      throw const FormatException(
+        'Session VLESS port does not match compiled pin',
+      );
     }
     const port = 443;
+
     final sni = _validatedHost(
       _requiredString(json, 'reality_sni', maxLength: 253),
       'reality_sni',
@@ -264,10 +556,18 @@ class _HivemindSessionConfig {
       throw const FormatException('Invalid Reality short ID');
     }
 
-    final fingerprint =
-        _boundedString(json['reality_fp'], AppConfig.realityFp, 32, 'reality_fp');
-    final path =
-        _boundedString(json['xhttp_path'], AppConfig.vlessPath, 2048, 'xhttp_path');
+    final fingerprint = _boundedString(
+      json['reality_fp'],
+      AppConfig.realityFp,
+      32,
+      'reality_fp',
+    );
+    final path = _boundedString(
+      json['xhttp_path'],
+      AppConfig.vlessPath,
+      2048,
+      'xhttp_path',
+    );
     if (!path.startsWith('/')) {
       throw const FormatException('Invalid XHTTP path');
     }
@@ -365,11 +665,14 @@ class _HivemindSessionConfig {
     if (parts.length != 4) return false;
     final octets = <int>[];
     for (final part in parts) {
-      if (part.isEmpty || (part.length > 1 && part.startsWith('0'))) return false;
+      if (part.isEmpty || (part.length > 1 && part.startsWith('0'))) {
+        return false;
+      }
       final parsed = int.tryParse(part);
       if (parsed == null || parsed < 0 || parsed > 255) return false;
       octets.add(parsed);
     }
+
     final a = octets[0];
     final b = octets[1];
     if (a == 0 || a == 10 || a == 127 || a >= 224) return false;
@@ -391,9 +694,15 @@ class _HivemindSessionConfig {
     } on FormatException {
       return false;
     }
+
     if (value == '::' || value == '::1') return false;
     if (value.startsWith('fc') || value.startsWith('fd')) return false;
-    if (value.startsWith('fe8') || value.startsWith('fe9') || value.startsWith('fea') || value.startsWith('feb')) return false;
+    if (value.startsWith('fe8') ||
+        value.startsWith('fe9') ||
+        value.startsWith('fea') ||
+        value.startsWith('feb')) {
+      return false;
+    }
     if (value.startsWith('ff')) return false;
     if (value.startsWith('2001:db8:') || value == '2001:db8::') return false;
     return true;
