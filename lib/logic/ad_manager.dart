@@ -133,13 +133,36 @@ class AdManager extends ChangeNotifier {
       }
     }
 
+    var mainActivationPrepared = false;
+    var mainCancellationStarted = false;
+    Future<void>? mainCleanup;
+
+    Future<void> cleanupPreparedMainActivation() {
+      if (!mainActivationPrepared) return Future<void>.value();
+      return mainCleanup ??= () async {
+        mainCancellationStarted = true;
+        final cleaned = await HivemindService.abandonPreparedMainActivation();
+        if (cleaned) {
+          mainActivationPrepared = false;
+        } else {
+          // Keep the private secret inside HivemindService for a later cleanup
+          // attempt; never print it or the preparation response/body.
+          debugPrint('[AdManager] Main activation cleanup remains pending.');
+        }
+      }();
+    }
+
     late final String customData;
     if (adType == 'main') {
       try {
-        final activation = await HivemindService.prepareMainActivation();
+        // Resolve the public correlation device before creating server-side
+        // intent state. A failure here therefore cannot strand a fresh intent.
         final deviceId = await CryptoService.getDeviceId();
+        final activation = await HivemindService.prepareMainActivation();
+        mainActivationPrepared = true;
         customData = activation.toMainSsvCustomData(deviceId);
       } catch (_) {
+        await cleanupPreparedMainActivation();
         // Never log the preparation response/body because the request contains
         // the private session authorization secret.
         debugPrint('[AdManager] Main activation preparation failed.');
@@ -161,40 +184,57 @@ class AdManager extends ChangeNotifier {
 
     final ssvOptions = ServerSideVerificationOptions(customData: customData);
 
-    Completer<bool> rewardCompleter = Completer<bool>();
+    final rewardCompleter = Completer<bool>();
 
     _rewardedAd!.fullScreenContentCallback = FullScreenContentCallback(
       onAdShowedFullScreenContent: (ad) => debugPrint('[AdManager] Ad showing.'),
-      onAdDismissedFullScreenContent: (ad) {
+      onAdDismissedFullScreenContent: (ad) async {
         debugPrint('[AdManager] Ad dismissed.');
         ad.dispose();
         _isAdLoaded = false;
         _rewardedAd = null;
         preloadAd();
         if (!rewardCompleter.isCompleted) {
-          rewardCompleter.complete(false);
+          await cleanupPreparedMainActivation();
+          if (!rewardCompleter.isCompleted) {
+            rewardCompleter.complete(false);
+          }
         }
       },
-      onAdFailedToShowFullScreenContent: (ad, error) {
+      onAdFailedToShowFullScreenContent: (ad, error) async {
         debugPrint('[AdManager] Ad failed to show: $error');
         ad.dispose();
         _isAdLoaded = false;
         _rewardedAd = null;
         if (!rewardCompleter.isCompleted) {
-          rewardCompleter.complete(false);
+          await cleanupPreparedMainActivation();
+          if (!rewardCompleter.isCompleted) {
+            rewardCompleter.complete(false);
+          }
         }
       },
     );
 
-    _rewardedAd!.setServerSideOptions(ssvOptions);
-    await _rewardedAd!.show(
-      onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {
-        debugPrint('[AdManager] Reward earned: ${reward.amount} ${reward.type}');
-        if (!rewardCompleter.isCompleted) {
-          rewardCompleter.complete(true);
-        }
-      },
-    );
+    try {
+      _rewardedAd!.setServerSideOptions(ssvOptions);
+      await _rewardedAd!.show(
+        onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {
+          debugPrint('[AdManager] Reward earned: ${reward.amount} ${reward.type}');
+          // Once cancellation starts, fail closed even if the SDK delivers a
+          // late local reward callback. Server cleanup owns that generation now.
+          if (mainCancellationStarted) return;
+          mainActivationPrepared = false;
+          if (!rewardCompleter.isCompleted) {
+            rewardCompleter.complete(true);
+          }
+        },
+      );
+    } catch (_) {
+      await cleanupPreparedMainActivation();
+      if (!rewardCompleter.isCompleted) {
+        rewardCompleter.complete(false);
+      }
+    }
 
     return rewardCompleter.future;
   }
