@@ -203,9 +203,8 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> syncNow() async {
     final requestedEpoch = _sessionEpoch;
     while (requestedEpoch == _sessionEpoch && !_isDisconnecting) {
-      final active = _syncEpochInProgress == requestedEpoch
-          ? _syncCompletion
-          : null;
+      final active =
+          _syncEpochInProgress == requestedEpoch ? _syncCompletion : null;
       if (active != null) {
         await active.future;
         continue;
@@ -263,7 +262,7 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
 
       final base = Uri.parse('${AppConfig.hivemindApiPublic}/session/status');
       final url = base.replace(queryParameters: {'device_id': deviceId});
-      final response = await HivemindService.directGet(url);
+      final response = await HivemindService.authenticatedGet(url);
       if (epoch != _sessionEpoch || _isDisconnecting) return;
 
       if (response.statusCode == 200) {
@@ -282,6 +281,10 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
           return;
         }
         if (!activeValue) {
+          // The server definitively reports no live generation for this token.
+          // Clear it before local teardown so a stale credential cannot survive.
+          await HivemindService.clearSessionNonce();
+          if (epoch != _sessionEpoch || _isDisconnecting) return;
           await _doDisconnect('Server ended session');
           return;
         }
@@ -313,6 +316,8 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
         _sinceLastSuccessfulSync = Stopwatch()..start();
 
         if (data['cap_exhausted'] == true) {
+          // Keep the possession token until disconnect() reaches /session/stop;
+          // clearing it here would make authenticated server revocation impossible.
           await _doDisconnect('Data cap reached');
           return;
         }
@@ -330,6 +335,11 @@ class SessionTimer extends ChangeNotifier with WidgetsBindingObserver {
         _offlineSeconds = 0;
         _hasSyncedOnce = true;
         notifyListeners();
+      } else if (response.statusCode == 401) {
+        // 401 is definitive: this possession token is no longer authorized.
+        await HivemindService.clearSessionNonce();
+        if (epoch != _sessionEpoch || _isDisconnecting) return;
+        await _doDisconnect('Session authorization expired');
       } else {
         _markSyncFailure(epoch);
       }
