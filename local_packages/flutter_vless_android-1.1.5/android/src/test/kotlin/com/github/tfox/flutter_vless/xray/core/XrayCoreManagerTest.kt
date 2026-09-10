@@ -2,6 +2,7 @@ package com.github.tfox.flutter_vless.xray.core
 
 import com.github.tfox.flutter_vless.xray.dto.XrayConfig
 import java.io.File
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -165,6 +166,52 @@ class XrayCoreManagerTest {
         assertFalse(stream.has("httpUpgradeSettings"))
         assertFalse(stream.has("splitHTTPSettings"))
         assertFalse(stream.getJSONObject("tlsSettings").has("allowInsecure"))
+    }
+
+    @Test
+    fun requireProtectedSocketSupport_acceptsControllerCompatiblePaths() {
+        XrayCoreManager.requireProtectedSocketSupport(
+            JSONObject(
+                """
+                {
+                  "streamSettings": {"network": "xhttp"},
+                  "dns": {"server": "https+local://dns.example/dns-query"},
+                  "nested": [{"type": "tcp"}]
+                }
+                """.trimIndent(),
+            ),
+        )
+    }
+
+    @Test
+    fun requireProtectedSocketSupport_rejectsXicmp() {
+        assertProtectedPathRejected(
+            JSONObject(
+                """
+                {"routing": {"rule": [{"settings": {"TYPE": "XiCmP"}}]}}
+                """.trimIndent(),
+            ),
+        )
+    }
+
+    @Test
+    fun requireProtectedSocketSupport_rejectsQuicLocalResolver() {
+        assertProtectedPathRejected(
+            JSONObject(
+                """
+                {"dns": {"servers": ["QUIC+LOCAL://dns.example"]}}
+                """.trimIndent(),
+            ),
+        )
+    }
+
+    private fun assertProtectedPathRejected(value: JSONObject) {
+        try {
+            XrayCoreManager.requireProtectedSocketSupport(value)
+            fail("Socket path outside the protected controller must fail closed")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message.orEmpty().isNotEmpty())
+        }
     }
 
     private fun assertRejected(configJson: String) {
