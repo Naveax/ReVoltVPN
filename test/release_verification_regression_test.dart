@@ -55,15 +55,29 @@ void main() {
         '54785c3c5437473d8f9c8071a6138ae781ed2038e57beb47b6a46de3545c3ad8',
       ),
     );
-    expect(vendoredGradle, contains("prepareProtectedXrayRuntime"));
-    expect(vendoredGradle, isNot(contains('implementation files(protectedRuntimeAar)')));
+    expect(vendoredGradle, contains('prepareProtectedXrayRuntime'));
+    expect(
+      vendoredGradle,
+      isNot(contains('implementation files(protectedRuntimeAar)')),
+    );
     expect(gradle, contains('implementation(protectedXrayRuntimeFiles)'));
     expect(
       gradle,
-      contains(': flutter_vless_android:prepareProtectedXrayRuntime'.replaceFirst(' ', '')),
+      contains(
+        ': flutter_vless_android:prepareProtectedXrayRuntime'.replaceFirst(
+          ' ',
+          '',
+        ),
+      ),
     );
 
     expect(workflow, contains("flutter-version: '3.47.2'"));
+    expect(workflow, contains('Verify Flutter SDK identity'));
+    expect(
+      workflow,
+      contains('d3b14c876900e553bc736ca19295fc09e3853e8e'),
+    );
+    expect(workflow, contains('flutter_framework_sha='));
     expect(workflow, contains('Verify Gradle supply chain'));
     expect(workflow, contains('Verify dependency lock is committed'));
     expect(workflow, contains('Verify production release config fails closed'));
@@ -87,10 +101,12 @@ void main() {
   });
 
   test('runtime keeps authenticated SOCKS on the IPv4 loopback', () async {
-    final session = await SecureSocksSession.create(jsonEncode({
-      'inbounds': <Object?>[],
-      'outbounds': <Object?>[],
-    }));
+    final session = await SecureSocksSession.create(
+      jsonEncode({
+        'inbounds': <Object?>[],
+        'outbounds': <Object?>[],
+      }),
+    );
     final config = jsonDecode(session.configJson) as Map<String, dynamic>;
     final inbounds = config['inbounds'] as List<dynamic>;
     final inbound = inbounds.single as Map<String, dynamic>;
@@ -109,7 +125,10 @@ void main() {
   });
 
   test('session possession nonces are canonical 128-bit values', () {
-    final nonces = List<String>.generate(128, (_) => HivemindService.newNonce());
+    final nonces = List<String>.generate(
+      128,
+      (_) => HivemindService.newNonce(),
+    );
     final pattern = RegExp(r'^[0-9a-f]{32}$');
 
     for (final nonce in nonces) {
@@ -118,16 +137,50 @@ void main() {
     expect(nonces.toSet(), hasLength(nonces.length));
   });
 
-  test('control-plane source keeps bearer credentials on a bounded HTTPS origin', () {
-    final source = File('lib/logic/hivemind_service.dart').readAsStringSync();
+  test(
+    'control-plane source keeps bearer credentials bounded and stop-serialized',
+    () {
+      final source = File(
+        'lib/logic/hivemind_service.dart',
+      ).readAsStringSync();
 
-    expect(source, contains("X-RevoltVPN-Session-Nonce"));
-    expect(source, contains('followRedirects = false'));
-    expect(source, contains('_maxControlResponseBytes = 256 * 1024'));
-    expect(source, contains("base.scheme != 'https'"));
-    expect(source, contains('uri.origin != base.origin'));
-    expect(source, contains("_publicUrl('/session/stop')"));
-    expect(source, contains('CryptoService.setSessionStopPending()'));
-    expect(source, contains('CryptoService.isSessionStopPending()'));
+      expect(source, contains('X-RevoltVPN-Session-Nonce'));
+      expect(source, contains('followRedirects = false'));
+      expect(source, contains('_maxControlResponseBytes = 256 * 1024'));
+      expect(source, contains("base.scheme != 'https'"));
+      expect(source, contains('uri.origin != base.origin'));
+      expect(source, contains("_publicUrl('/session/stop')"));
+      expect(source, contains('CryptoService.setSessionStopPending()'));
+      expect(source, contains('CryptoService.isSessionStopPending()'));
+
+      // Any cancellation/disconnect advances the synchronous credential epoch;
+      // stop then waits for a server-confirmed nonce write before revoking it.
+      expect(source, contains('_sessionMutationEpoch++'));
+      expect(source, contains('_sessionStopInProgress = true'));
+      expect(source, contains('_confirmationInFlight'));
+      expect(source, contains('await confirmation'));
+      expect(source, contains('mutationEpoch != _sessionMutationEpoch'));
+    },
+  );
+
+  test('native VPN service resolves the app notification icon itself', () {
+    final service = File(
+      'local_packages/flutter_vless_android-1.1.5/android/src/main/kotlin/'
+      'com/github/tfox/flutter_vless/xray/service/XrayVPNService.kt',
+    ).readAsStringSync();
+    final icon = File(
+      'android/app/src/main/res/drawable/notification_status_icon.xml',
+    );
+
+    expect(icon.existsSync(), isTrue);
+    expect(
+      service,
+      contains(
+        'resources.getIdentifier(\n'
+        '            "notification_status_icon",',
+      ),
+    );
+    expect(service, contains('.setSmallIcon(icon)'));
+    expect(service, contains('android.R.drawable.ic_dialog_info'));
   });
 }
