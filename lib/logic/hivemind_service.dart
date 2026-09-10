@@ -22,7 +22,11 @@ enum SessionStopResult {
 class HivemindService {
   static String? _sessionNonce;
   static int _currentCallId = 0;
+  static int _sessionMutationEpoch = 0;
+  static bool _sessionStopInProgress = false;
   static final Random _secureRandom = Random.secure();
+  static Future<bool>? _confirmationInFlight;
+  static String? _confirmationNonce;
   static Future<SessionStopResult>? _stopInFlight;
 
   static const _ua = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 '
@@ -133,6 +137,17 @@ class HivemindService {
     _currentCallId++;
   }
 
+  /// Record an explicit disconnect before the first await in the caller.
+  /// Incrementing the mutation epoch synchronously invalidates any credential
+  /// confirmation that was already in flight. The durable marker is returned
+  /// as a Future so the caller can fail closed if secure storage cannot commit.
+  static Future<void> beginSessionStop() {
+    _sessionMutationEpoch++;
+    _sessionStopInProgress = true;
+    cancel();
+    return CryptoService.setSessionStopPending();
+  }
+
   static Future<void> setSessionNonce(String nonce) async {
     await CryptoService.setSessionNonce(nonce);
     _sessionNonce = nonce;
@@ -169,6 +184,8 @@ class HivemindService {
   /// Ambiguous network/server failures leave the token untouched so a possibly
   /// live server generation cannot be replaced with a fresh reward nonce.
   static Future<SessionProbeResult> probeCurrentSession() async {
+    if (_sessionStopInProgress) return SessionProbeResult.unavailable;
+
     final nonce = await getSessionNonce();
     if (nonce == null) return SessionProbeResult.inactive;
 
@@ -210,8 +227,35 @@ class HivemindService {
   }
 
   /// Commit a candidate main-session nonce only after the server projects that
-  /// exact possession token as active.
-  static Future<bool> confirmAndSetSessionNonce(String nonce) async {
+  /// exact possession token as active. Only one candidate may be confirmed at
+  /// a time. A different concurrent candidate fails closed instead of racing.
+  static Future<bool> confirmAndSetSessionNonce(String nonce) {
+    if (_sessionStopInProgress) return Future<bool>.value(false);
+
+    final existing = _confirmationInFlight;
+    if (existing != null) {
+      return _confirmationNonce == nonce
+          ? existing
+          : Future<bool>.value(false);
+    }
+
+    final mutationEpoch = _sessionMutationEpoch;
+    final operation = _confirmAndSetSessionNonceInner(nonce, mutationEpoch);
+    _confirmationNonce = nonce;
+    _confirmationInFlight = operation;
+
+    return operation.whenComplete(() {
+      if (identical(_confirmationInFlight, operation)) {
+        _confirmationInFlight = null;
+        _confirmationNonce = null;
+      }
+    });
+  }
+
+  static Future<bool> _confirmAndSetSessionNonceInner(
+    String nonce,
+    int mutationEpoch,
+  ) async {
     final deviceId = await CryptoService.getDeviceId();
     final url = _sessionStatusUrl(deviceId);
 
@@ -230,11 +274,25 @@ class HivemindService {
             final serverNonce = data['nonce'];
             if (serverNonce == null ||
                 (serverNonce is String && serverNonce == nonce)) {
-              // Do not resurrect a credential after an explicit user stop was
-              // recorded while SSV confirmation was in flight.
-              if (await CryptoService.isSessionStopPending()) return false;
+              // Persist a server-confirmed candidate even if a stop arrived
+              // during the storage write. stopSession() waits for this
+              // confirmation and then uses the persisted nonce to revoke the
+              // exact server generation. It is never exposed as connectable
+              // when the mutation epoch changed.
               await setSessionNonce(nonce);
-              await CryptoService.clearSessionStopPending();
+
+              if (mutationEpoch != _sessionMutationEpoch ||
+                  _sessionStopInProgress) {
+                return false;
+              }
+
+              final pendingStop =
+                  await CryptoService.isSessionStopPending();
+              if (mutationEpoch != _sessionMutationEpoch ||
+                  _sessionStopInProgress ||
+                  pendingStop) {
+                return false;
+              }
               return true;
             }
             return false;
@@ -253,35 +311,46 @@ class HivemindService {
     return false;
   }
 
-  /// Revoke the currently-authorized server session. Persist the revocation
-  /// intent before the first network write and clear it only on a definitive
-  /// success/unauthorized result. Ambiguous failure remains fail-closed.
-  static Future<SessionStopResult> stopSession({bool markPending = true}) async {
+  /// Revoke the currently-authorized server session. When markPending is true,
+  /// the mutation epoch advances synchronously before any network/storage await.
+  /// Every stop waits for a previously-started SSV confirmation before reading
+  /// the credential, closing the commit-vs-disconnect race.
+  static Future<SessionStopResult> stopSession({bool markPending = true}) {
+    final pendingWrite = markPending ? beginSessionStop() : null;
+
     final existing = _stopInFlight;
     if (existing != null) return existing;
 
-    final operation = _stopSessionInner(markPending: markPending);
+    final operation = _stopSessionInner(pendingWrite: pendingWrite);
     _stopInFlight = operation;
-    try {
-      return await operation;
-    } finally {
+    return operation.whenComplete(() {
       if (identical(_stopInFlight, operation)) {
         _stopInFlight = null;
       }
-    }
+    });
   }
 
   static Future<SessionStopResult> _stopSessionInner({
-    required bool markPending,
+    Future<void>? pendingWrite,
   }) async {
+    if (pendingWrite != null) await pendingWrite;
+
+    // If a server-confirmed nonce is currently being committed, wait for the
+    // commit to finish before selecting the credential to revoke.
+    final confirmation = _confirmationInFlight;
+    if (confirmation != null) {
+      try {
+        await confirmation;
+      } catch (_) {
+        // The stop path still owns fail-closed cleanup/retry below.
+      }
+    }
+
     final nonce = await getSessionNonce();
     if (nonce == null) {
       await CryptoService.clearSessionStopPending();
+      _sessionStopInProgress = false;
       return SessionStopResult.alreadyInactive;
-    }
-
-    if (markPending) {
-      await CryptoService.setSessionStopPending();
     }
 
     final deviceId = await CryptoService.getDeviceId();
@@ -301,10 +370,12 @@ class HivemindService {
           final data = jsonDecode(response.body);
           if (data is Map<String, dynamic> && data['ok'] == true) {
             await clearSessionNonce();
+            _sessionStopInProgress = false;
             return SessionStopResult.stopped;
           }
         } else if (response.statusCode == 401) {
           await clearSessionNonce();
+          _sessionStopInProgress = false;
           return SessionStopResult.alreadyInactive;
         }
       } catch (_) {}
@@ -314,11 +385,17 @@ class HivemindService {
       }
     }
 
+    _sessionStopInProgress = true;
     return SessionStopResult.retryNeeded;
   }
 
   static Future<bool> retryPendingSessionStop() async {
-    if (!await CryptoService.isSessionStopPending()) return true;
+    if (!await CryptoService.isSessionStopPending()) {
+      _sessionStopInProgress = false;
+      return true;
+    }
+
+    _sessionStopInProgress = true;
     final result = await stopSession(markPending: false);
     return result != SessionStopResult.retryNeeded;
   }
