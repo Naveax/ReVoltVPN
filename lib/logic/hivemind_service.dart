@@ -133,17 +133,19 @@ class HivemindService {
     return bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
   }
 
+  /// Cancelled control work must not be able to commit a possession token
+  /// after the cancellation point. This is synchronous so disconnect() closes
+  /// the race before its first secure-storage/network await.
   static void cancel() {
     _currentCallId++;
+    _sessionMutationEpoch++;
+    _sessionStopInProgress = true;
   }
 
   /// Record an explicit disconnect before the first await in the caller.
-  /// Incrementing the mutation epoch synchronously invalidates any credential
-  /// confirmation that was already in flight. The durable marker is returned
-  /// as a Future so the caller can fail closed if secure storage cannot commit.
+  /// cancel() advances the mutation epoch synchronously; the durable marker is
+  /// returned so callers can fail closed if secure storage cannot commit it.
   static Future<void> beginSessionStop() {
-    _sessionMutationEpoch++;
-    _sessionStopInProgress = true;
     cancel();
     return CryptoService.setSessionStopPending();
   }
