@@ -143,6 +143,9 @@ void main() {
       final source = File(
         'lib/logic/hivemind_service.dart',
       ).readAsStringSync();
+      final vpnSource = File(
+        'lib/logic/vpn_connection.dart',
+      ).readAsStringSync();
 
       expect(source, contains('X-RevoltVPN-Session-Nonce'));
       expect(source, contains('followRedirects = false'));
@@ -153,13 +156,19 @@ void main() {
       expect(source, contains('CryptoService.setSessionStopPending()'));
       expect(source, contains('CryptoService.isSessionStopPending()'));
 
-      // Any cancellation/disconnect advances the synchronous credential epoch;
+      // An explicit disconnect advances the synchronous credential epoch;
       // stop then waits for a server-confirmed nonce write before revoking it.
       expect(source, contains('_sessionMutationEpoch++'));
       expect(source, contains('_sessionStopInProgress = true'));
       expect(source, contains('_confirmationInFlight'));
       expect(source, contains('await confirmation'));
       expect(source, contains('mutationEpoch != _sessionMutationEpoch'));
+      expect(vpnSource, contains('HivemindService.beginSessionStop()'));
+
+      final stopIntent = vpnSource.indexOf('HivemindService.beginSessionStop()');
+      final localStop = vpnSource.indexOf('await _vless.stopVless()', stopIntent);
+      expect(stopIntent, greaterThanOrEqualTo(0));
+      expect(localStop, greaterThan(stopIntent));
     },
   );
 
