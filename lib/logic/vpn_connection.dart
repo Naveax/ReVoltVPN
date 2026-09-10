@@ -462,7 +462,14 @@ class VpnConnection extends ChangeNotifier {
     _connectEpoch++;
     _suppressNativeConnect = true;
     _userDisconnecting = true;
-    HivemindService.cancel();
+
+    // Mark the server credential generation as stopping synchronously, before
+    // any await can let an in-flight SSV confirmation commit as connectable.
+    // The returned write is awaited below before the local tunnel is touched.
+    final pendingRevocationWrite = kIsWeb
+        ? null
+        : HivemindService.beginSessionStop();
+    if (kIsWeb) HivemindService.cancel();
 
     _setStatus(VpnStatus.disconnecting, 'Tearing down…');
 
@@ -478,7 +485,7 @@ class VpnConnection extends ChangeNotifier {
     // Persist user intent before touching the local tunnel. If the process dies
     // below, startup will retry the authenticated server revoke.
     try {
-      await CryptoService.setSessionStopPending();
+      await pendingRevocationWrite!;
     } catch (e) {
       if (_disposed) return;
       debugPrint('[VPN] Could not persist session revocation intent: $e');
