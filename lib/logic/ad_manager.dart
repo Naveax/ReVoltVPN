@@ -192,7 +192,7 @@ class AdManager extends ChangeNotifier {
         );
         if (response.statusCode != 200) return false;
         if (adType == 'main') {
-          return _confirmMainCandidate(nonce);
+          return await _confirmMainCandidate(nonce);
         }
         return true;
       } catch (_) {
