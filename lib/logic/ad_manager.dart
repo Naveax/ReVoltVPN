@@ -21,6 +21,7 @@ class AdManager extends ChangeNotifier {
 
   Completer<bool>? _loadCompleter;
   Future<bool>? _showInFlight;
+  String? _showInFlightType;
 
   static String get _adUnitId => AppConfig.adUnitId;
 
@@ -97,18 +98,26 @@ class AdManager extends ChangeNotifier {
 
   /// Rewarded-ad state is intentionally single-flight. Two concurrent main
   /// flows could otherwise stage different possession candidates for the same
-  /// device before either Google SSV callback arrives.
+  /// device before either Google SSV callback arrives. A duplicate request for
+  /// the same reward intent shares the operation; a different intent fails
+  /// closed instead of inheriting another ad's result.
   Future<bool> showAd(String adType) {
     final existing = _showInFlight;
-    if (existing != null) return existing;
+    if (existing != null) {
+      return _showInFlightType == adType
+          ? existing
+          : Future<bool>.value(false);
+    }
 
     late final Future<bool> tracked;
     tracked = _showAdInner(adType).whenComplete(() {
       if (identical(_showInFlight, tracked)) {
         _showInFlight = null;
+        _showInFlightType = null;
       }
     });
     _showInFlight = tracked;
+    _showInFlightType = adType;
     return tracked;
   }
 
