@@ -525,7 +525,7 @@ class HivemindService {
   static Future<bool> checkHealth() async {
     try {
       final response = await directGet(
-        _publicUrl('/health'),
+        _publicUrl('/v2/health'),
         timeout: const Duration(seconds: 3),
       );
       return response.statusCode == 200;
