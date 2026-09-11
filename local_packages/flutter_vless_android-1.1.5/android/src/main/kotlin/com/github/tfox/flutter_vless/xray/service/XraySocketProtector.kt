@@ -12,6 +12,7 @@ import android.system.Os
 import java.io.Closeable
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.io.FileDescriptor
 import java.util.Collections
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
@@ -109,7 +110,7 @@ class XraySocketProtector(
     private fun handleProtectionCommand(
         socket: LocalSocket,
         command: Int,
-        descriptors: Array<java.io.FileDescriptor>,
+        descriptors: Array<out FileDescriptor>,
     ) {
         val accepted = descriptors.size == 1 &&
             ParcelFileDescriptor.dup(descriptors[0]).use { duplicate ->
@@ -125,7 +126,7 @@ class XraySocketProtector(
 
     private fun handleDnsCommand(
         socket: LocalSocket,
-        descriptors: Array<java.io.FileDescriptor>,
+        descriptors: Array<out FileDescriptor>,
     ) {
         // DNS is a byte-stream RPC. It must never smuggle descriptors into the
         // broker's resolver path.
