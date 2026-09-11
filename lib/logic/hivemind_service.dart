@@ -21,6 +21,7 @@ enum SessionStopResult {
 
 class HivemindService {
   static String? _sessionNonce;
+  static String? _invalidatedSessionNonce;
   static int _currentCallId = 0;
   static int _sessionMutationEpoch = 0;
   static bool _sessionStopInProgress = false;
@@ -152,19 +153,42 @@ class HivemindService {
 
   static Future<void> setSessionNonce(String nonce) async {
     await CryptoService.setSessionNonce(nonce);
+    _invalidatedSessionNonce = null;
     _sessionNonce = nonce;
   }
 
   static Future<String?> getSessionNonce() async {
     if (_sessionNonce != null) return _sessionNonce;
-    _sessionNonce = await CryptoService.getSessionNonce();
-    return _sessionNonce;
+    final persisted = await CryptoService.getSessionNonce();
+    if (persisted == null || persisted == _invalidatedSessionNonce) return null;
+    _sessionNonce = persisted;
+    return persisted;
   }
 
+  /// Definitive cleanup is reserved for the authenticated stop path. Passive
+  /// status observations never erase durable credentials or the revocation
+  /// marker because an older response may race a newly-started disconnect.
   static Future<void> clearSessionNonce() async {
     _sessionNonce = null;
+    _invalidatedSessionNonce = null;
     await CryptoService.clearSessionNonce();
     await CryptoService.clearSessionStopPending();
+  }
+
+  static bool _sessionMutationIsCurrent(int mutationEpoch) {
+    return mutationEpoch == _sessionMutationEpoch && !_sessionStopInProgress;
+  }
+
+  static bool _invalidateObservedSessionNonce(
+    String nonce,
+    int mutationEpoch,
+  ) {
+    if (!_sessionMutationIsCurrent(mutationEpoch) || _sessionNonce != nonce) {
+      return false;
+    }
+    _sessionNonce = null;
+    _invalidatedSessionNonce = nonce;
+    return true;
   }
 
   static Future<http.Response> authenticatedGet(
@@ -183,12 +207,16 @@ class HivemindService {
   }
 
   /// Probe the persisted possession token without minting a replacement.
-  /// Ambiguous network/server failures leave the token untouched so a possibly
-  /// live server generation cannot be replaced with a fresh reward nonce.
+  /// Ambiguous network/server failures leave the durable token untouched so a
+  /// possibly live server generation can still be revoked after a disconnect.
   static Future<SessionProbeResult> probeCurrentSession() async {
     if (_sessionStopInProgress) return SessionProbeResult.unavailable;
 
+    final mutationEpoch = _sessionMutationEpoch;
     final nonce = await getSessionNonce();
+    if (!_sessionMutationIsCurrent(mutationEpoch)) {
+      return SessionProbeResult.unavailable;
+    }
     if (nonce == null) return SessionProbeResult.inactive;
 
     try {
@@ -199,9 +227,14 @@ class HivemindService {
         headers: <String, String>{_sessionNonceHeader: nonce},
       );
 
+      if (!_sessionMutationIsCurrent(mutationEpoch)) {
+        return SessionProbeResult.unavailable;
+      }
+
       if (response.statusCode == 401) {
-        await clearSessionNonce();
-        return SessionProbeResult.inactive;
+        return _invalidateObservedSessionNonce(nonce, mutationEpoch)
+            ? SessionProbeResult.inactive
+            : SessionProbeResult.unavailable;
       }
       if (response.statusCode != 200) {
         return SessionProbeResult.unavailable;
@@ -218,11 +251,15 @@ class HivemindService {
             (serverNonce is! String || serverNonce != nonce)) {
           return SessionProbeResult.unavailable;
         }
-        return SessionProbeResult.active;
+        return _sessionMutationIsCurrent(mutationEpoch) &&
+                _sessionNonce == nonce
+            ? SessionProbeResult.active
+            : SessionProbeResult.unavailable;
       }
 
-      await clearSessionNonce();
-      return SessionProbeResult.inactive;
+      return _invalidateObservedSessionNonce(nonce, mutationEpoch)
+          ? SessionProbeResult.inactive
+          : SessionProbeResult.unavailable;
     } catch (_) {
       return SessionProbeResult.unavailable;
     }
@@ -453,7 +490,12 @@ class HivemindService {
       onAttempt?.call(attempt, maxAttempts);
 
       try {
-        final session = await _fetchActiveSession(deviceId, nonce);
+        final mutationEpoch = _sessionMutationEpoch;
+        final session = await _fetchActiveSession(
+          deviceId,
+          nonce,
+          mutationEpoch,
+        );
         _throwIfCancelled(callId);
         if (session != null) return session.toVlessUrl();
       } catch (e) {
@@ -485,14 +527,21 @@ class HivemindService {
   static Future<_HivemindSessionConfig?> _fetchActiveSession(
     String deviceId,
     String nonce,
+    int mutationEpoch,
   ) async {
     final response = await directGet(
       _sessionStatusUrl(deviceId),
       headers: <String, String>{_sessionNonceHeader: nonce},
     );
 
+    if (!_sessionMutationIsCurrent(mutationEpoch)) {
+      throw Exception('Cancelled');
+    }
+
     if (response.statusCode == 401) {
-      await clearSessionNonce();
+      if (!_invalidateObservedSessionNonce(nonce, mutationEpoch)) {
+        throw Exception('Cancelled');
+      }
       throw Exception('Session authorization unavailable.');
     }
     if (response.statusCode != 200) return null;
@@ -510,6 +559,9 @@ class HivemindService {
       return null;
     }
 
+    if (!_sessionMutationIsCurrent(mutationEpoch) || _sessionNonce != nonce) {
+      throw Exception('Cancelled');
+    }
     return _HivemindSessionConfig.fromJson(decoded);
   }
 
