@@ -4,12 +4,17 @@ on:
   push:
     branches:
       - main
+      - hardening/**
   pull_request:
     branches:
       - main
 
 permissions:
   contents: read
+
+concurrency:
+  group: android-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   android:
@@ -46,11 +51,41 @@ jobs:
           channel: stable
           cache: false
 
+      - name: Verify Flutter SDK identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_version='3.47.2'
+          expected_sha='d3b14c876900e553bc736ca19295fc09e3853e8e'
+          version_json="$(flutter --version --machine)"
+          actual_version="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["frameworkVersion"])' <<<"$version_json")"
+          actual_sha="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["frameworkRevision"])' <<<"$version_json")"
+          test "$actual_version" = "$expected_version" || {
+            echo "Flutter version mismatch: expected $expected_version, got $actual_version"
+            exit 1
+          }
+          test "$actual_sha" = "$expected_sha" || {
+            echo "Flutter framework revision mismatch: expected $expected_sha, got $actual_sha"
+            exit 1
+          }
+
       - name: Create CI app config
         run: cp lib/logic/app_config.example.dart lib/logic/app_config.dart
 
       - name: Resolve dependencies
-        run: flutter pub get
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if flutter pub get --enforce-lockfile; then
+              exit 0
+            fi
+            if [[ "$attempt" -eq 3 ]]; then
+              echo 'Locked dependency resolution failed after 3 attempts.'
+              exit 1
+            fi
+            sleep "$((attempt * 5))"
+          done
 
       - name: Verify dependency lock is committed
         run: git diff --exit-code -- pubspec.lock
@@ -69,8 +104,12 @@ jobs:
       - name: Analyze
         run: flutter analyze
 
-      - name: Test
+      - name: Test Dart and Flutter regressions
         run: flutter test
+
+      - name: Test vendored Kotlin security regressions
+        working-directory: android
+        run: ./gradlew :flutter_vless_android:testDebugUnitTest --no-daemon
 
       - name: Android lint
         working-directory: android
@@ -106,9 +145,39 @@ jobs:
           test -f build/app/outputs/flutter-apk/app-release.apk
           test -f build/app/outputs/mapping/release/mapping.txt
 
+      - name: Record release-smoke source provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/provenance
+          apk='build/app/outputs/flutter-apk/app-release.apk'
+          source_sha="$(git rev-parse HEAD)"
+          source_tree="$(git rev-parse HEAD^{tree})"
+          apk_sha="$(sha256sum "$apk" | awk '{print $1}')"
+          lock_sha="$(sha256sum pubspec.lock | awk '{print $1}')"
+          wrapper_sha="$(sha256sum android/gradle/wrapper/gradle-wrapper.jar | awk '{print $1}')"
+          runtime_source_sha="$(git rev-parse HEAD:local_packages/flutter_vless_android-1.1.5)"
+          flutter_sha="$(flutter --version --machine | python3 -c 'import json,sys; print(json.load(sys.stdin)["frameworkRevision"])')"
+          test "$flutter_sha" = 'd3b14c876900e553bc736ca19295fc09e3853e8e'
+          cat > build/provenance/release-smoke.env <<EOF
+          provenance_format=revolt-release-v1
+          source_commit=$source_sha
+          source_tree=$source_tree
+          apk_sha256=$apk_sha
+          pubspec_lock_sha256=$lock_sha
+          gradle_wrapper_sha256=$wrapper_sha
+          vendored_runtime_tree=$runtime_source_sha
+          flutter_version=3.47.2
+          flutter_framework_sha=$flutter_sha
+          java_version=17
+          signing_profile=ci-debug-key-release-smoke-not-for-distribution
+          EOF
+          test -s build/provenance/release-smoke.env
+
       - name: Verify tracked build inputs stayed immutable
         run: |
           git diff --exit-code -- \
+            .github/workflows/android-ci.yml \
             pubspec.yaml \
             pubspec.lock \
             local_packages/flutter_vless_android-1.1.5 \
@@ -126,6 +195,13 @@ jobs:
           name: revoltvpn-debug-apk
           if-no-files-found: error
           path: build/app/outputs/flutter-apk/app-debug.apk
+
+      - name: Upload release-smoke provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: revoltvpn-release-smoke-provenance
+          if-no-files-found: error
+          path: build/provenance/release-smoke.env
 
       - name: Upload resolved lockfile
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -2,3 +2,10 @@ Upstream: https://github.com/XIIIFOX/flutter_vless
 Tag: v1.1.5
 Android package: flutter_vless_android 1.1.5
 ReVolt hardening is pre-applied to this vendored package.
+
+Protected Xray runtime integration backport:
+Source repository: https://github.com/XIIIFOX/flutter_vless
+Source commit: ea49e0e5102655239fb8c6058cd8f609804add1e
+Runtime release: xray-android-v26.7.28-protect1
+Runtime AAR SHA-256: 54785c3c5437473d8f9c8071a6138ae781ed2038e57beb47b6a46de3545c3ad8
+Backported contract: authenticated real-descriptor protect broker, physical-Network DNS bridge, mandatory H capability handshake, and protected-mode rejection of unsupported socket paths.

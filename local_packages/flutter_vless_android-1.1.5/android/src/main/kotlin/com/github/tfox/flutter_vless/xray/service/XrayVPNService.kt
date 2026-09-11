@@ -22,15 +22,14 @@ import java.io.File
 /**
  * Android VPN Service implementation.
  *
- * This service owns the TUN interface and keeps runtime state generation-scoped.
- * Session deadlines are enforced both by an in-process monotonic timer and by
- * AlarmManager, while only the non-secret token/deadline pair is persisted.
- * Per-session VLESS/SOCKS credentials remain memory-only.
+ * The service owns the authoritative runtime generation. UI-process state is
+ * advisory only; QUERY_RUNTIME allows a recreated Flutter engine to adopt the
+ * active generation before issuing a scoped STOP.
  */
 class XrayVPNService : VpnService() {
-
     private var mInterface: ParcelFileDescriptor? = null
     private var tun2socksProcess: Process? = null
+    private var socketProtector: XraySocketProtector? = null
     @Volatile private var isRunning = false
     @Volatile private var recoveringXray = false
     @Volatile private var recoveringTun2socks = false
@@ -44,17 +43,12 @@ class XrayVPNService : VpnService() {
     private var sessionDeadlineToken: String? = null
     private val sessionDeadlineRunnable = Runnable { enforceSessionDeadline() }
 
-    override fun onCreate() {
-        super.onCreate()
-    }
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent == null) {
             if (isRunning && currentConfig != null) return START_REDELIVER_INTENT
 
-            // Session credentials intentionally stay memory-only. If Android
-            // cannot redeliver the original START intent, fail closed instead
-            // of rebuilding a tunnel from sensitive material stored on disk.
+            // Credentials remain memory-only. If Android starts a fresh service
+            // process without the original generation, remain fail-closed.
             clearPersistedDeadline()
             cancelSessionExpiryAlarm()
             stopSelf()
@@ -73,10 +67,29 @@ class XrayVPNService : VpnService() {
             intent.getSerializableExtra("COMMAND") as? AppConfigs.V2RAY_SERVICE_COMMANDS
         }
 
+        if (command == AppConfigs.V2RAY_SERVICE_COMMANDS.QUERY_RUNTIME) {
+            val queryId = intent.getStringExtra("QUERY_ID").orEmpty()
+            if (queryId.isEmpty()) {
+                Log.w(TAG, "Ignoring QUERY_RUNTIME without query id")
+                if (!isRunning) stopSelf()
+                return if (isRunning) START_REDELIVER_INTENT else START_NOT_STICKY
+            }
+
+            val active = currentConfig
+            if (isRunning && active != null) {
+                XrayCoreManager.sendStatusBroadcast(this, active, queryId)
+            } else {
+                XrayCoreManager.sendNoRuntimeBroadcast(this, queryId)
+                stopSelf()
+            }
+            return if (isRunning) START_REDELIVER_INTENT else START_NOT_STICKY
+        }
+
         if (command == AppConfigs.V2RAY_SERVICE_COMMANDS.STOP_SERVICE) {
             val requestedToken = intent.getStringExtra("RUNTIME_TOKEN").orEmpty()
             val activeToken = currentConfig?.RUNTIME_TOKEN.orEmpty()
-            if (requestedToken.isEmpty() ||
+            if (
+                requestedToken.isEmpty() ||
                 (activeToken.isNotEmpty() && requestedToken != activeToken)
             ) {
                 Log.w(TAG, "Ignoring STOP_SERVICE without matching runtime generation")
@@ -107,59 +120,73 @@ class XrayVPNService : VpnService() {
             return START_NOT_STICKY
         }
 
-        if (command == AppConfigs.V2RAY_SERVICE_COMMANDS.START_SERVICE) {
-            val config = if (Build.VERSION.SDK_INT >= 33) {
-                intent.getSerializableExtra("V2RAY_CONFIG", XrayConfig::class.java)
+        if (command != AppConfigs.V2RAY_SERVICE_COMMANDS.START_SERVICE) {
+            stopAll()
+            return START_NOT_STICKY
+        }
+
+        val config = if (Build.VERSION.SDK_INT >= 33) {
+            intent.getSerializableExtra("V2RAY_CONFIG", XrayConfig::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getSerializableExtra("V2RAY_CONFIG") as? XrayConfig
+        }
+
+        if (config == null) {
+            Log.e(TAG, "START_SERVICE missing V2RAY_CONFIG")
+            stopAll()
+            return START_NOT_STICKY
+        }
+
+        if (XrayCoreManager.isXrayRunning()) {
+            Log.w(TAG, "Stopping stale Xray core before restart")
+            XrayCoreManager.stopCore(this)
+        }
+        cleanup(clearDeadline = true)
+        shuttingDownIntentionally = false
+        currentConfig = config
+
+        val proxyOnly = intent.getBooleanExtra("PROXY_ONLY", false)
+        currentProxyOnly = proxyOnly
+        armSessionDeadline(config, BOOTSTRAP_SESSION_SECONDS)
+        if (shuttingDownIntentionally) return START_NOT_STICKY
+
+        val protector = try {
+            replaceSocketProtector(required = !proxyOnly)
+        } catch (e: Exception) {
+            Log.e(TAG, "Could not create protected Xray descriptor broker", e)
+            stopAll(config.RUNTIME_TOKEN)
+            return START_NOT_STICKY
+        }
+
+        if (XrayCoreManager.startCore(this, config, protector)) {
+            if (!proxyOnly) {
+                setupVpn(config)
             } else {
-                @Suppress("DEPRECATION")
-                intent.getSerializableExtra("V2RAY_CONFIG") as? XrayConfig
-            }
-
-            if (config != null) {
-                if (XrayCoreManager.isXrayRunning()) {
-                    Log.w(TAG, "Stopping stale Xray core before restart")
-                    XrayCoreManager.stopCore(this)
-                }
-                cleanup(clearDeadline = true)
-                shuttingDownIntentionally = false
-                currentConfig = config
-
-                val proxyOnly = intent.getBooleanExtra("PROXY_ONLY", false)
-                currentProxyOnly = proxyOnly
-                armSessionDeadline(config, BOOTSTRAP_SESSION_SECONDS)
-                if (shuttingDownIntentionally) return START_NOT_STICKY
-
-                if (XrayCoreManager.startCore(this, config)) {
-                    if (!proxyOnly) {
-                        setupVpn(config)
-                    } else {
-                        isRunning = true
-                        Log.d(TAG, "Starting in PROXY_ONLY mode")
-                        XrayCoreManager.markRuntimeReady(this, config)
-                    }
-                } else {
-                    stopAll(config.RUNTIME_TOKEN)
-                    return START_NOT_STICKY
-                }
-            } else {
-                Log.e(TAG, "START_SERVICE missing V2RAY_CONFIG")
-                stopAll()
-                return START_NOT_STICKY
+                isRunning = true
+                Log.d(TAG, "Starting authenticated PROXY_ONLY mode")
+                XrayCoreManager.markRuntimeReady(this, config)
             }
         } else {
-            stopAll()
+            stopAll(config.RUNTIME_TOKEN)
             return START_NOT_STICKY
         }
 
         return START_REDELIVER_INTENT
     }
 
+    /** Every Xray process generation gets a fresh handshake latch/broker. */
+    private fun replaceSocketProtector(required: Boolean): XraySocketProtector? {
+        socketProtector?.close()
+        socketProtector = null
+        if (!required) return null
+        return XraySocketProtector(this).also { socketProtector = it }
+    }
+
     private fun setupVpn(config: XrayConfig) {
         try {
-            if (mInterface != null) {
-                mInterface?.close()
-                mInterface = null
-            }
+            mInterface?.close()
+            mInterface = null
 
             val builder = Builder()
             builder.setSession(config.REMARK)
@@ -174,27 +201,20 @@ class XrayVPNService : VpnService() {
             if (config.BLOCKED_APPS.isNotEmpty()) {
                 throw IllegalStateException("Per-app VPN bypass is disabled in ReVolt")
             }
-            try {
-                builder.addDisallowedApplication(packageName)
-            } catch (e: Exception) {
-                throw IllegalStateException("Failed to exclude ReVolt from its own VPN", e)
-            }
 
+            // Capture the host UID too. The protected Xray runtime sends only
+            // its real transport sockets through the authenticated descriptor
+            // broker above; excluding the whole application would bypass
+            // Android lockdown and leak unrelated host-process traffic.
             builder.addRoute("0.0.0.0", 0)
             builder.addRoute("::", 0)
-
-            try {
-                builder.addDnsServer("8.8.8.8")
-                builder.addDnsServer("1.1.1.1")
-            } catch (e: Exception) {
-                throw IllegalStateException("Failed to configure VPN DNS", e)
-            }
+            builder.addDnsServer("8.8.8.8")
+            builder.addDnsServer("1.1.1.1")
 
             mInterface = builder.establish()
                 ?: throw IllegalStateException("Android refused to establish VPN interface")
             isRunning = true
             runTun2socks(config)
-
         } catch (e: Exception) {
             Log.e(TAG, "Failed to setup VPN", e)
             stopAll()
@@ -214,25 +234,30 @@ class XrayVPNService : VpnService() {
             null
         } ?: return null
 
-        for (i in 0 until inbounds.length()) {
-            val inbound = inbounds.optJSONObject(i) ?: continue
-            if (inbound.optString("tag") != "revolt-secure-socks") continue
-            if (inbound.optString("protocol") != "socks" ||
-                inbound.optString("listen") != "127.0.0.1"
-            ) return null
+        if (inbounds.length() != 1) return null
+        val inbound = inbounds.optJSONObject(0) ?: return null
+        if (
+            inbound.optString("tag") != "revolt-secure-socks" ||
+            inbound.optString("protocol") != "socks" ||
+            inbound.optString("listen") != "127.0.0.1"
+        ) return null
 
-            val settings = inbound.optJSONObject("settings") ?: return null
-            if (settings.optString("auth") != "password") return null
-            val user = settings.optJSONArray("users")?.optJSONObject(0) ?: return null
-            val port = inbound.optInt("port", -1)
-            val username = user.optString("user")
-            val password = user.optString("pass")
-            if (port <= 1024 || port > 65535 || username.isEmpty() || password.isEmpty()) {
-                return null
-            }
-            return SecureSocksCredentials(port, username, password)
+        val settings = inbound.optJSONObject("settings") ?: return null
+        if (
+            settings.optString("auth") != "password" ||
+            !settings.optBoolean("udp", false) ||
+            settings.optString("ip") != "127.0.0.1"
+        ) return null
+        val users = settings.optJSONArray("users") ?: return null
+        if (users.length() != 1) return null
+        val user = users.optJSONObject(0) ?: return null
+        val port = inbound.optInt("port", -1)
+        val username = user.optString("user")
+        val password = user.optString("pass")
+        if (port < 49152 || port > 65535 || username.isEmpty() || password.isEmpty()) {
+            return null
         }
-        return null
+        return SecureSocksCredentials(port, username, password)
     }
 
     private fun scheduleTun2socksRecovery(config: XrayConfig, reason: String) {
@@ -260,6 +285,14 @@ class XrayVPNService : VpnService() {
     }
 
     private fun runTun2socks(config: XrayConfig) {
+        val secure = secureSocksCredentials(config)
+        if (secure == null) {
+            Log.e(TAG, "Authenticated ReVolt SOCKS5 inbound missing during tun2socks start")
+            stopAll(config.RUNTIME_TOKEN)
+            return
+        }
+        config.LOCAL_SOCKS5_PORT = secure.port
+
         val tun2socksPath = File(applicationInfo.nativeLibraryDir, "libtun2socks.so").absolutePath
         val socketFile = File(filesDir, "sock_path")
         if (socketFile.exists() && !socketFile.delete()) {
@@ -267,19 +300,13 @@ class XrayVPNService : VpnService() {
         }
         val sockPath = socketFile.absolutePath
 
-        val secure = secureSocksCredentials(config)
-            ?: throw IllegalStateException("Authenticated ReVolt SOCKS5 inbound missing")
-        config.LOCAL_SOCKS5_PORT = secure.port
-
         val cmd = arrayListOf(
             tun2socksPath,
             "-sock-path", sockPath,
             "-proxy", "socks5://${secure.username}:${secure.password}@127.0.0.1:${secure.port}",
             "-mtu", "1500",
-            "-loglevel", "debug"
+            "-loglevel", "warning",
         )
-
-        Log.d(TAG, "Starting tun2socks with authenticated loopback SOCKS5")
 
         try {
             val pb = ProcessBuilder(cmd)
@@ -293,7 +320,6 @@ class XrayVPNService : VpnService() {
                     process.inputStream.bufferedReader().use { reader ->
                         reader.forEachLine { _ -> }
                     }
-
                     process.waitFor()
                     if (isRunning && tun2socksProcess === process && currentConfig === config) {
                         Log.e(TAG, "tun2socks exited unexpectedly; keeping TUN fail-closed")
@@ -301,16 +327,13 @@ class XrayVPNService : VpnService() {
                         scheduleTun2socksRecovery(config, "process exited")
                     }
                 } catch (_: java.io.InterruptedIOException) {
-                    // Expected when stopping
                 } catch (_: InterruptedException) {
-                    // Expected when stopping
                 } catch (e: Exception) {
                     Log.e(TAG, "Error reading tun2socks output", e)
                 }
             }.start()
 
             sendFd(process, config)
-
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start tun2socks; keeping TUN fail-closed", e)
             scheduleTun2socksRecovery(config, "start failure")
@@ -328,7 +351,9 @@ class XrayVPNService : VpnService() {
                 try {
                     Thread.sleep(500)
                     localSocket = LocalSocket()
-                    localSocket.connect(LocalSocketAddress(sockFile, LocalSocketAddress.Namespace.FILESYSTEM))
+                    localSocket.connect(
+                        LocalSocketAddress(sockFile, LocalSocketAddress.Namespace.FILESYSTEM),
+                    )
                     val out = localSocket.outputStream
                     localSocket.setFileDescriptorsForSend(arrayOf(fd))
                     out.write(32)
@@ -378,16 +403,29 @@ class XrayVPNService : VpnService() {
                     Thread.sleep(delayMs)
                     if (!isRunning || currentConfig !== config) break
 
-                    if (XrayCoreManager.startCore(this, config)) {
-                        Log.w(TAG, "Xray core recovered without dropping TUN")
-                        if (currentProxyOnly || (mInterface != null && tun2socksProcess?.isAlive == true)) {
+                    val protector = try {
+                        replaceSocketProtector(required = !currentProxyOnly)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Could not replace Xray protection broker during recovery", e)
+                        continue
+                    }
+
+                    if (XrayCoreManager.startCore(this, config, protector)) {
+                        if (
+                            currentProxyOnly ||
+                            (mInterface != null && tun2socksProcess?.isAlive == true)
+                        ) {
                             XrayCoreManager.markRuntimeReady(this, config)
                         }
                         return@Thread
                     }
+
+                    // A failed process generation must not leave a verified
+                    // latch that could be reused by the next recovery attempt.
+                    socketProtector?.close()
+                    socketProtector = null
                 }
             } catch (_: InterruptedException) {
-                // Expected when stopping
             } finally {
                 recoveringXray = false
             }
@@ -410,6 +448,8 @@ class XrayVPNService : VpnService() {
         AppConfigs.RUNTIME_READY = false
         tun2socksProcess?.destroy()
         tun2socksProcess = null
+        socketProtector?.close()
+        socketProtector = null
         try {
             mInterface?.close()
             mInterface = null
@@ -431,19 +471,16 @@ class XrayVPNService : VpnService() {
     private fun armSessionDeadline(config: XrayConfig, remainingSeconds: Long) {
         val boundedSeconds = remainingSeconds
             .coerceAtLeast(0L)
-            .coerceAtMost(Long.MAX_VALUE / 1000L)
+            .coerceAtMost(MAX_SESSION_DEADLINE_SECONDS)
         val delayMs = boundedSeconds * 1000L
         val nowEpochMs = System.currentTimeMillis()
-        val epochDeadline = if (Long.MAX_VALUE - nowEpochMs < delayMs) {
-            Long.MAX_VALUE
-        } else {
-            nowEpochMs + delayMs
-        }
+        val epochDeadline = nowEpochMs + delayMs
 
         sessionDeadlineToken = config.RUNTIME_TOKEN
         sessionDeadlineElapsed = SystemClock.elapsedRealtime() + delayMs
 
-        if (!persistDeadline(config.RUNTIME_TOKEN, epochDeadline) ||
+        if (
+            !persistDeadline(config.RUNTIME_TOKEN, epochDeadline) ||
             !scheduleSessionExpiryAlarm(config.RUNTIME_TOKEN, epochDeadline)
         ) {
             Log.e(TAG, "Could not arm OS-level session expiry; stopping fail-closed")
@@ -486,8 +523,8 @@ class XrayVPNService : VpnService() {
             return
         }
         val remainingSeconds = intent.getLongExtra("REMAINING_SECONDS", -1L)
-        if (remainingSeconds < 0L) {
-            Log.w(TAG, "Ignoring invalid negative session deadline")
+        if (remainingSeconds !in 0..MAX_SESSION_DEADLINE_SECONDS) {
+            Log.w(TAG, "Ignoring out-of-range session deadline")
             return
         }
         armSessionDeadline(config, remainingSeconds)
@@ -547,9 +584,6 @@ class XrayVPNService : VpnService() {
                 if (activeToken == storedToken) stopAll(storedToken) else stopSelf()
                 return
             }
-            // An alarm can wake a fresh service process after clock changes.
-            // If there is no live runtime in this process, do not leave a
-            // background service instance hanging around just to hold a timer.
             if (currentConfig == null) stopSelf()
             return
         }
@@ -581,7 +615,6 @@ class XrayVPNService : VpnService() {
                         pendingIntent,
                     )
                 } catch (_: SecurityException) {
-                    Log.w(TAG, "Exact alarm unavailable; using inexact idle-capable expiry alarm")
                     alarmManager.setAndAllowWhileIdle(
                         AlarmManager.RTC_WAKEUP,
                         expiresAtEpochMs,
@@ -634,12 +667,10 @@ class XrayVPNService : VpnService() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channelId = "REVOLT_VPN_SERVICE"
-            val channelName = "VPN Service"
             val channel = android.app.NotificationChannel(
-                channelId,
-                channelName,
-                android.app.NotificationManager.IMPORTANCE_LOW
+                "REVOLT_VPN_SERVICE",
+                "VPN Service",
+                android.app.NotificationManager.IMPORTANCE_LOW,
             )
             val manager = getSystemService(android.app.NotificationManager::class.java)
             manager?.createNotificationChannel(channel)
@@ -655,16 +686,24 @@ class XrayVPNService : VpnService() {
             android.app.Notification.Builder(this)
         }
 
-        val icon = resources.getIdentifier("notification_icon", "drawable", packageName)
-            .takeIf { it != 0 } ?: android.R.drawable.ic_dialog_info
+        // VpnService can run in its own process, so never depend on Flutter's
+        // in-memory icon configuration. Resolve the application's monochrome
+        // status drawable from this process and keep a safe platform fallback.
+        val icon = resources.getIdentifier(
+            "notification_status_icon",
+            "drawable",
+            packageName,
+        ).takeIf { it != 0 } ?: android.R.drawable.ic_dialog_info
 
         val notification = builder
-            .setContentTitle("VPN Service")
+            .setContentTitle("Revolt VPN")
             .setContentText(content)
             .setSmallIcon(icon)
             .setOngoing(true)
             .setAutoCancel(false)
             .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setVisibility(android.app.Notification.VISIBILITY_PRIVATE)
             .build()
 
         notification.flags = notification.flags or
@@ -677,6 +716,7 @@ class XrayVPNService : VpnService() {
         private const val TAG = "XrayVPNService"
         private const val FOREGROUND_SERVICE_TYPE_SPECIAL_USE = 0x40000000
         private const val BOOTSTRAP_SESSION_SECONDS = 120L
+        private const val MAX_SESSION_DEADLINE_SECONDS = 24L * 60L * 60L
         private const val DEADLINE_PREFS = "revolt_session_deadline"
         private const val PREF_RUNTIME_TOKEN = "runtime_token"
         private const val PREF_EXPIRES_AT_MS = "expires_at_ms"
