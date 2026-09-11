@@ -4,6 +4,8 @@ import 'package:uuid/uuid.dart';
 class CryptoService {
   static const String _deviceIdPref = 'device_uuid';
   static const String _sessionNoncePref = 'session_auth_nonce';
+  static const String _pendingMainSessionNoncePref =
+      'pending_main_session_nonce';
   static const String _sessionStopPendingPref = 'session_stop_pending';
   static const _storage = FlutterSecureStorage();
 
@@ -25,8 +27,7 @@ class CryptoService {
     return newId;
   }
 
-  /// Persist the current main-session possession token across app/process restarts.
-  static Future<void> setSessionNonce(String nonce) async {
+  static void _requireSessionNonce(String nonce) {
     if (!_sessionNoncePattern.hasMatch(nonce)) {
       throw ArgumentError.value(
         nonce,
@@ -34,6 +35,11 @@ class CryptoService {
         'expected 128-bit lowercase hex',
       );
     }
+  }
+
+  /// Persist the current main-session possession token across app/process restarts.
+  static Future<void> setSessionNonce(String nonce) async {
+    _requireSessionNonce(nonce);
     await _storage.write(key: _sessionNoncePref, value: nonce);
   }
 
@@ -50,6 +56,34 @@ class CryptoService {
 
   static Future<void> clearSessionNonce() async {
     await _storage.delete(key: _sessionNoncePref);
+  }
+
+  /// A main-ad SSV candidate is not an authorized session token yet. Keep it
+  /// separately so a delayed Google callback can be recovered after an app
+  /// restart or a bounded confirmation timeout without minting a new nonce.
+  static Future<void> setPendingMainSessionNonce(String nonce) async {
+    _requireSessionNonce(nonce);
+    await _storage.write(key: _pendingMainSessionNoncePref, value: nonce);
+  }
+
+  static Future<String?> getPendingMainSessionNonce() async {
+    final nonce = await _storage.read(key: _pendingMainSessionNoncePref);
+    if (nonce == null) return null;
+    if (!_sessionNoncePattern.hasMatch(nonce)) {
+      await _storage.delete(key: _pendingMainSessionNoncePref);
+      return null;
+    }
+    return nonce;
+  }
+
+  /// Compare before deleting so cleanup from an older ad flow can never erase
+  /// a newer candidate that reused the same storage slot.
+  static Future<void> clearPendingMainSessionNonceIfMatches(String nonce) async {
+    _requireSessionNonce(nonce);
+    final current = await getPendingMainSessionNonce();
+    if (current == nonce) {
+      await _storage.delete(key: _pendingMainSessionNoncePref);
+    }
   }
 
   /// Persist an explicit user-requested server revocation until the server confirms it.
