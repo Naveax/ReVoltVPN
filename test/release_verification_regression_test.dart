@@ -184,6 +184,7 @@ void main() {
     expect(source, contains('static String? _invalidatedSessionNonce;'));
     expect(source, contains('persisted == _invalidatedSessionNonce'));
     expect(source, contains('_sessionMutationIsCurrent'));
+    expect(source, contains('_getSessionNonceForStop'));
 
     final probeStart = source.indexOf(
       'static Future<SessionProbeResult> probeCurrentSession()',
@@ -197,6 +198,18 @@ void main() {
     final probeSource = source.substring(probeStart, confirmStart);
     expect(probeSource, contains('_invalidateObservedSessionNonce'));
     expect(probeSource, isNot(contains('clearSessionNonce()')));
+
+    final stopStart = source.indexOf(
+      'static Future<SessionStopResult> _stopSessionInner',
+    );
+    final retryStart = source.indexOf(
+      'static Future<bool> retryPendingSessionStop',
+      stopStart,
+    );
+    expect(stopStart, greaterThanOrEqualTo(0));
+    expect(retryStart, greaterThan(stopStart));
+    final stopSource = source.substring(stopStart, retryStart);
+    expect(stopSource, contains('await _getSessionNonceForStop()'));
 
     final fetchStart = source.indexOf(
       'static Future<_HivemindSessionConfig?> _fetchActiveSession',
