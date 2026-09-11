@@ -85,6 +85,10 @@ class CryptoService {
     return nonce;
   }
 
+  static Future<void> clearPendingMainSessionNonce() async {
+    await _storage.delete(key: _pendingMainSessionNoncePref);
+  }
+
   /// Compare before deleting so cleanup from an older ad flow can never erase
   /// a newer candidate that reused the same storage slot.
   static Future<void> clearPendingMainSessionNonceIfMatches(String nonce) async {
@@ -96,12 +100,22 @@ class CryptoService {
   }
 
   /// Persist an explicit user-requested server revocation until the server confirms it.
+  /// A pending SSV candidate is cancelled under the same durable barrier so a
+  /// delayed callback can never be recovered into a connectable session after
+  /// the user has explicitly asked to disconnect.
   static Future<void> setSessionStopPending() async {
     await _storage.write(key: _sessionStopPendingPref, value: '1');
+    await clearPendingMainSessionNonce();
   }
 
   static Future<bool> isSessionStopPending() async {
-    return await _storage.read(key: _sessionStopPendingPref) == '1';
+    final pending = await _storage.read(key: _sessionStopPendingPref) == '1';
+    if (pending) {
+      // Crash recovery for the narrow window between persisting the stop marker
+      // and deleting a previously-staged SSV candidate.
+      await clearPendingMainSessionNonce();
+    }
+    return pending;
   }
 
   static Future<void> clearSessionStopPending() async {
