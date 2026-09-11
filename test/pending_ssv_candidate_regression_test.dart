@@ -72,12 +72,16 @@ void main() {
     );
   });
 
-  test('rewarded ad execution is single-flight', () {
+  test('rewarded ad execution is single-flight and intent-bound', () {
     final ads = File('lib/logic/ad_manager.dart').readAsStringSync();
 
     expect(ads, contains('Future<bool>? _showInFlight;'));
+    expect(ads, contains('String? _showInFlightType;'));
     expect(ads, contains('final existing = _showInFlight;'));
-    expect(ads, contains('if (existing != null) return existing;'));
+    expect(ads, contains('_showInFlightType == adType'));
+    expect(ads, contains(': Future<bool>.value(false);'));
     expect(ads, contains('identical(_showInFlight, tracked)'));
+    expect(ads, contains('_showInFlightType = null;'));
+    expect(ads, contains('_showInFlightType = adType;'));
   });
 }
