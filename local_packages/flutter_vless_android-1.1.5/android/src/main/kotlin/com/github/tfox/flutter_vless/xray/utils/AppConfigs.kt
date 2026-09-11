@@ -19,7 +19,10 @@ object AppConfigs {
      * Commands sent to the XrayVPNService via Intent.
      */
     enum class V2RAY_SERVICE_COMMANDS : Serializable {
-        START_SERVICE, STOP_SERVICE, RESTART_SERVICE, UPDATE_SESSION_DEADLINE
+        START_SERVICE,
+        STOP_SERVICE,
+        QUERY_RUNTIME,
+        UPDATE_SESSION_DEADLINE,
     }
 
     /**
@@ -32,16 +35,16 @@ object AppConfigs {
     /**
      * Connection modes:
      * - VPN_TUN: Standard VPN mode using Android VpnService (TUN device).
-     * - PROXY_ONLY: Runs Xray as a local SOCKS/HTTP proxy without establishing a VPN tunnel.
+     * - PROXY_ONLY: Runs Xray as a local authenticated SOCKS5 proxy without establishing a VPN tunnel.
      */
     enum class V2RAY_CONNECTION_MODES : Serializable {
         VPN_TUN, PROXY_ONLY
     }
 
-    var V2RAY_STATE: V2RAY_STATES = V2RAY_STATES.V2RAY_DISCONNECTED
+    @Volatile var V2RAY_STATE: V2RAY_STATES = V2RAY_STATES.V2RAY_DISCONNECTED
     @Volatile var RUNTIME_READY: Boolean = false
-    var V2RAY_CONFIG: XrayConfig? = null
-    var V2RAY_CONNECTION_MODE: V2RAY_CONNECTION_MODES = V2RAY_CONNECTION_MODES.VPN_TUN
+    @Volatile var V2RAY_CONFIG: XrayConfig? = null
+    @Volatile var V2RAY_CONNECTION_MODE: V2RAY_CONNECTION_MODES = V2RAY_CONNECTION_MODES.VPN_TUN
 
     // Stores the resource name and type for the custom notification icon
     var NOTIFICATION_ICON_RESOURCE_NAME: String = ""

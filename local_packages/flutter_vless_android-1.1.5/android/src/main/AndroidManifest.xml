@@ -23,9 +23,12 @@
             <intent-filter>
                 <action android:name="android.net.VpnService" />
             </intent-filter>
+            <!-- Enables Android's system Always-on VPN / "Block connections
+                 without VPN" controls. ReVolt itself never silently toggles
+                 lockdown; that system policy remains user/admin controlled. -->
             <meta-data
                 android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
-                android:value="false" />
+                android:value="true" />
         </service>
     </application>
 </manifest>
