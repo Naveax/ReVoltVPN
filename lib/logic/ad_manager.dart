@@ -20,6 +20,7 @@ class AdManager extends ChangeNotifier {
   bool get isAdLoading => adsEnabled ? _isAdLoading : false;
 
   Completer<bool>? _loadCompleter;
+  Future<bool>? _showInFlight;
 
   static String get _adUnitId => AppConfig.adUnitId;
 
@@ -94,7 +95,24 @@ class AdManager extends ChangeNotifier {
     return _loadCompleter!.future;
   }
 
-  Future<bool> showAd(String adType) async {
+  /// Rewarded-ad state is intentionally single-flight. Two concurrent main
+  /// flows could otherwise stage different possession candidates for the same
+  /// device before either Google SSV callback arrives.
+  Future<bool> showAd(String adType) {
+    final existing = _showInFlight;
+    if (existing != null) return existing;
+
+    late final Future<bool> tracked;
+    tracked = _showAdInner(adType).whenComplete(() {
+      if (identical(_showInFlight, tracked)) {
+        _showInFlight = null;
+      }
+    });
+    _showInFlight = tracked;
+    return tracked;
+  }
+
+  Future<bool> _showAdInner(String adType) async {
     if (adType != 'main' && adType != 'support') {
       debugPrint('[AdManager] Rejected unknown ad type.');
       return false;
@@ -109,12 +127,28 @@ class AdManager extends ChangeNotifier {
 
       final existing = await HivemindService.probeCurrentSession();
       if (existing == SessionProbeResult.active) {
+        final currentNonce = await HivemindService.getSessionNonce();
+        if (currentNonce != null) {
+          await _clearRecoveredCandidate(currentNonce);
+        }
         return true;
       }
       if (existing == SessionProbeResult.unavailable) {
         return false;
       }
-      nonce = HivemindService.newNonce();
+
+      // A Google SSV callback can arrive after the bounded foreground poll or
+      // after process death. Reuse the durable pending candidate before ever
+      // minting another nonce, otherwise a late callback could create a live
+      // generation the client no longer possesses and the server would
+      // correctly reject a different nonce as LiveSessionNonceMismatch.
+      final pending = await CryptoService.getPendingMainSessionNonce();
+      if (pending != null) {
+        if (await _confirmMainCandidate(pending)) return true;
+        nonce = pending;
+      } else {
+        nonce = HivemindService.newNonce();
+      }
     } else {
       if (await HivemindService.probeCurrentSession() !=
           SessionProbeResult.active) {
@@ -125,11 +159,14 @@ class AdManager extends ChangeNotifier {
       nonce = currentNonce;
     }
 
-    // Debug-only compatibility callback. Never persist a main candidate until
-    // the server confirms that exact nonce as the active generation.
+    // Debug-only compatibility callback. Stage the main candidate before the
+    // request for the same crash-safety rule used by production SSV.
     if (!adsEnabled && kDebugMode) {
       final deviceId = await CryptoService.getDeviceId();
       try {
+        if (adType == 'main') {
+          await CryptoService.setPendingMainSessionNonce(nonce);
+        }
         final customData = jsonEncode({
           'device_id': deviceId,
           'ad_type': adType,
@@ -146,7 +183,7 @@ class AdManager extends ChangeNotifier {
         );
         if (response.statusCode != 200) return false;
         if (adType == 'main') {
-          return await HivemindService.confirmAndSetSessionNonce(nonce);
+          return _confirmMainCandidate(nonce);
         }
         return true;
       } catch (_) {
@@ -166,6 +203,18 @@ class AdManager extends ChangeNotifier {
     }
 
     final deviceId = await CryptoService.getDeviceId();
+    if (adType == 'main') {
+      try {
+        // Persist before custom_data is handed to the SDK. If the process dies
+        // after Google receives the ad event, the same candidate remains
+        // recoverable and will be reused rather than silently abandoned.
+        await CryptoService.setPendingMainSessionNonce(nonce);
+      } catch (e) {
+        debugPrint('[AdManager] Could not persist SSV candidate: $e');
+        return false;
+      }
+    }
+
     final ssvOptions = ServerSideVerificationOptions(
       customData: jsonEncode({
         'device_id': deviceId,
@@ -213,12 +262,36 @@ class AdManager extends ChangeNotifier {
     );
 
     final earned = await rewardCompleter.future;
-    if (!earned) return false;
+    if (!earned) {
+      // Do not erase a staged main candidate here. A previous/reused attempt
+      // may already have a valid delayed SSV callback in flight. Reusing the
+      // candidate on the next ad is harmless; forgetting it can orphan a live
+      // server generation.
+      return false;
+    }
 
     if (adType == 'main') {
-      return HivemindService.confirmAndSetSessionNonce(nonce);
+      return _confirmMainCandidate(nonce);
     }
     return true;
+  }
+
+  Future<bool> _confirmMainCandidate(String nonce) async {
+    final confirmed = await HivemindService.confirmAndSetSessionNonce(nonce);
+    if (confirmed) {
+      await _clearRecoveredCandidate(nonce);
+    }
+    return confirmed;
+  }
+
+  Future<void> _clearRecoveredCandidate(String nonce) async {
+    try {
+      await CryptoService.clearPendingMainSessionNonceIfMatches(nonce);
+    } catch (e) {
+      // Authorization is already server-confirmed at this point. A stale
+      // candidate is safe because future cleanup compares the exact nonce.
+      debugPrint('[AdManager] Pending SSV candidate cleanup deferred: $e');
+    }
   }
 
   @override
