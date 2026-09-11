@@ -17,14 +17,23 @@ class CryptoService {
 
   /// Get or create a persistent device UUID for server-side session tracking.
   /// Corrupted or tampered storage values are replaced instead of being sent
-  /// to the public API as arbitrary query data.
+  /// to the public API as arbitrary query data. Session credentials are bound
+  /// to the device UUID, so a replacement identity also drops all old
+  /// device-bound authorization state.
   static Future<String> getDeviceId() async {
     final existing = await _storage.read(key: _deviceIdPref);
     if (existing != null && _uuidV4.hasMatch(existing)) return existing;
 
+    await _clearDeviceBoundSessionState();
     final newId = const Uuid().v4();
     await _storage.write(key: _deviceIdPref, value: newId);
     return newId;
+  }
+
+  static Future<void> _clearDeviceBoundSessionState() async {
+    await _storage.delete(key: _sessionNoncePref);
+    await _storage.delete(key: _pendingMainSessionNoncePref);
+    await _storage.delete(key: _sessionStopPendingPref);
   }
 
   static void _requireSessionNonce(String nonce) {
