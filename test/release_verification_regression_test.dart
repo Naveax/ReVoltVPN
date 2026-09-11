@@ -178,6 +178,40 @@ void main() {
     },
   );
 
+  test('passive session status cannot erase durable revocation state', () {
+    final source = File('lib/logic/hivemind_service.dart').readAsStringSync();
+
+    expect(source, contains('static String? _invalidatedSessionNonce;'));
+    expect(source, contains('persisted == _invalidatedSessionNonce'));
+    expect(source, contains('_sessionMutationIsCurrent'));
+
+    final probeStart = source.indexOf(
+      'static Future<SessionProbeResult> probeCurrentSession()',
+    );
+    final confirmStart = source.indexOf(
+      'static Future<bool> confirmAndSetSessionNonce',
+      probeStart,
+    );
+    expect(probeStart, greaterThanOrEqualTo(0));
+    expect(confirmStart, greaterThan(probeStart));
+    final probeSource = source.substring(probeStart, confirmStart);
+    expect(probeSource, contains('_invalidateObservedSessionNonce'));
+    expect(probeSource, isNot(contains('clearSessionNonce()')));
+
+    final fetchStart = source.indexOf(
+      'static Future<_HivemindSessionConfig?> _fetchActiveSession',
+    );
+    final cancelStart = source.indexOf(
+      'static void _throwIfCancelled',
+      fetchStart,
+    );
+    expect(fetchStart, greaterThanOrEqualTo(0));
+    expect(cancelStart, greaterThan(fetchStart));
+    final fetchSource = source.substring(fetchStart, cancelStart);
+    expect(fetchSource, contains('_invalidateObservedSessionNonce'));
+    expect(fetchSource, isNot(contains('clearSessionNonce()')));
+  });
+
   test('protected Xray TUN requires the authenticated descriptor broker', () {
     const base =
         'local_packages/flutter_vless_android-1.1.5/android/src/main/kotlin/'
