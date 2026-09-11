@@ -1,13 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-/// Background-survival controls.
-///
-/// Android stops background services of apps that are not exempt from Doze and
-/// App Standby, and it tears down the whole process group when a task is swiped
-/// away. Those are OS behaviours, not app bugs; the battery-optimisation
-/// exemption is the one sanctioned way an app can ask for around them, and it
-/// still needs one user tap.
+/// Android background-survival and system VPN policy controls.
 abstract final class PowerSettings {
   PowerSettings._();
 
@@ -29,7 +23,7 @@ abstract final class PowerSettings {
   }
 
   /// Shows the system exemption dialog. Returns false only when no system UI
-  /// could be opened at all — a user declining still returns true.
+  /// could be opened at all; a user declining still returns true.
   static Future<bool> requestDisableBatteryOptimisation() async {
     if (kIsWeb) return true;
     try {
@@ -37,6 +31,18 @@ abstract final class PowerSettings {
             'requestIgnoreBatteryOptimizations',
           ) ??
           false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Opens Android's VPN settings where the user can enable Always-on VPN and
+  /// "Block connections without VPN". Ordinary apps cannot silently enable
+  /// lockdown; Android deliberately keeps this under user/admin control.
+  static Future<bool> openVpnPolicySettings() async {
+    if (kIsWeb) return false;
+    try {
+      return await _channel.invokeMethod<bool>('openVpnSettings') ?? false;
     } catch (_) {
       return false;
     }

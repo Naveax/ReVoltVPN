@@ -1,9 +1,10 @@
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math';
 
 class SecureSocksSession {
   static const String inboundTag = 'revolt-secure-socks';
+  static const int _ephemeralPortStart = 49152;
+  static const int _ephemeralPortCount = 65536 - _ephemeralPortStart;
   static final Random _random = Random.secure();
 
   final int port;
@@ -24,18 +25,11 @@ class SecureSocksSession {
       throw const FormatException('VLESS configuration must be a JSON object.');
     }
 
-    final reservation = await ServerSocket.bind(
-      InternetAddress.loopbackIPv4,
-      0,
-      shared: false,
-    );
-    final port = reservation.port;
-    await reservation.close();
-
-    if (port <= 1024 || port > 65535) {
-      throw StateError('Could not allocate a safe local SOCKS5 port.');
-    }
-
+    // Never probe a port with bind(0) and then release it for Xray to re-bind.
+    // That is a classic TOCTOU window. Pick a CSPRNG candidate in the dynamic
+    // range and let Xray perform the first and only bind. A collision therefore
+    // fails closed instead of creating a hijackable reservation/re-bind gap.
+    final port = _ephemeralPortStart + _random.nextInt(_ephemeralPortCount);
     final username = _token(16);
     final password = _token(32);
 
