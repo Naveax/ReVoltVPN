@@ -63,12 +63,7 @@ void main() {
     expect(gradle, contains('implementation(protectedXrayRuntimeFiles)'));
     expect(
       gradle,
-      contains(
-        ': flutter_vless_android:prepareProtectedXrayRuntime'.replaceFirst(
-          ' ',
-          '',
-        ),
-      ),
+      contains(':flutter_vless_android:prepareProtectedXrayRuntime'),
     );
 
     expect(workflow, contains("flutter-version: '3.47.2'"));
@@ -159,6 +154,8 @@ void main() {
       expect(source, contains("base.scheme != 'https'"));
       expect(source, contains('uri.origin != base.origin'));
       expect(source, contains("_publicUrl('/session/stop')"));
+      expect(source, contains("_publicUrl('/v2/health')"));
+      expect(source, isNot(contains("_publicUrl('/health')")));
       expect(source, contains('CryptoService.setSessionStopPending()'));
       expect(source, contains('CryptoService.isSessionStopPending()'));
 
