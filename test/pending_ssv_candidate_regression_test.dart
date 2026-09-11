@@ -57,18 +57,71 @@ void main() {
     expect(ads, contains('clearPendingMainSessionNonceIfMatches(nonce)'));
 
     // Losing one local ad attempt is not proof that an older SSV callback cannot
-    // still arrive. The pending nonce therefore remains reusable.
+    // still arrive. The pending nonce therefore remains reusable unless an
+    // explicit disconnect has installed the durable stop barrier.
     final earnedFalse = ads.indexOf('if (!earned) {');
-    final confirmHelper = ads.indexOf(
-      'Future<bool> _confirmMainCandidate',
+    final stageHelper = ads.indexOf(
+      'Future<bool> _stageMainCandidate',
       earnedFalse,
     );
     expect(earnedFalse, greaterThanOrEqualTo(0));
-    expect(confirmHelper, greaterThan(earnedFalse));
-    final failedRewardPath = ads.substring(earnedFalse, confirmHelper);
+    expect(stageHelper, greaterThan(earnedFalse));
+    final failedRewardPath = ads.substring(earnedFalse, stageHelper);
     expect(
       failedRewardPath,
       isNot(contains('clearPendingMainSessionNonceIfMatches')),
+    );
+  });
+
+  test('explicit disconnect cancels pending SSV staging fail-closed', () {
+    final crypto = File('lib/logic/crypto_service.dart').readAsStringSync();
+    final ads = File('lib/logic/ad_manager.dart').readAsStringSync();
+
+    expect(crypto, contains('clearPendingMainSessionNonce()'));
+
+    final stopStart = crypto.indexOf(
+      'static Future<void> setSessionStopPending()',
+    );
+    final stopRead = crypto.indexOf(
+      'static Future<bool> isSessionStopPending()',
+      stopStart,
+    );
+    expect(stopStart, greaterThanOrEqualTo(0));
+    expect(stopRead, greaterThan(stopStart));
+    final stopSource = crypto.substring(stopStart, stopRead);
+    expect(stopSource, contains("_sessionStopPendingPref, value: '1'"));
+    expect(stopSource, contains('clearPendingMainSessionNonce()'));
+
+    final clearStop = crypto.indexOf(
+      'static Future<void> clearSessionStopPending()',
+      stopRead,
+    );
+    expect(clearStop, greaterThan(stopRead));
+    final stopReadSource = crypto.substring(stopRead, clearStop);
+    expect(stopReadSource, contains('if (pending)'));
+    expect(stopReadSource, contains('clearPendingMainSessionNonce()'));
+
+    final stageStart = ads.indexOf('Future<bool> _stageMainCandidate');
+    final confirmStart = ads.indexOf(
+      'Future<bool> _confirmMainCandidate',
+      stageStart,
+    );
+    expect(stageStart, greaterThanOrEqualTo(0));
+    expect(confirmStart, greaterThan(stageStart));
+    final stageSource = ads.substring(stageStart, confirmStart);
+
+    // The stop marker is checked on both sides of secure-storage persistence.
+    expect(
+      RegExp(r'isSessionStopPending\(\)').allMatches(stageSource).length,
+      greaterThanOrEqualTo(2),
+    );
+    expect(stageSource, contains('setPendingMainSessionNonce(nonce)'));
+    expect(stageSource, contains('clearPendingMainSessionNonceIfMatches(nonce)'));
+
+    // Both debug and production SSV paths must use the guarded staging helper.
+    expect(
+      RegExp(r'_stageMainCandidate\(nonce\)').allMatches(ads).length,
+      greaterThanOrEqualTo(2),
     );
   });
 
