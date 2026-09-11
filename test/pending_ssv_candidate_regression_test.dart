@@ -40,11 +40,24 @@ void main() {
     expect(ads, contains('if (await _confirmMainCandidate(pending)) return true;'));
     expect(ads, contains('nonce = pending;'));
 
-    // The candidate must be durable before its value is handed to Google SSV.
-    final persist = ads.indexOf('setPendingMainSessionNonce(nonce)');
-    final ssv = ads.indexOf('ServerSideVerificationOptions(', persist);
-    expect(persist, greaterThanOrEqualTo(0));
-    expect(ssv, greaterThan(persist));
+    // Runtime call order, not helper declaration order, matters here. The
+    // guarded stage call must happen before custom_data is handed to Google.
+    final productionStage = ads.indexOf(
+      'if (!await _stageMainCandidate(nonce)) return false;',
+    );
+    final ssv = ads.indexOf('ServerSideVerificationOptions(', productionStage);
+    expect(productionStage, greaterThanOrEqualTo(0));
+    expect(ssv, greaterThan(productionStage));
+
+    final stageHelper = ads.indexOf('Future<bool> _stageMainCandidate');
+    final confirmHelper = ads.indexOf(
+      'Future<bool> _confirmMainCandidate',
+      stageHelper,
+    );
+    expect(stageHelper, greaterThanOrEqualTo(0));
+    expect(confirmHelper, greaterThan(stageHelper));
+    final stageSource = ads.substring(stageHelper, confirmHelper);
+    expect(stageSource, contains('setPendingMainSessionNonce(nonce)'));
 
     // Cleanup is compare-and-delete and happens only after server confirmation.
     expect(
@@ -60,10 +73,6 @@ void main() {
     // still arrive. The pending nonce therefore remains reusable unless an
     // explicit disconnect has installed the durable stop barrier.
     final earnedFalse = ads.indexOf('if (!earned) {');
-    final stageHelper = ads.indexOf(
-      'Future<bool> _stageMainCandidate',
-      earnedFalse,
-    );
     expect(earnedFalse, greaterThanOrEqualTo(0));
     expect(stageHelper, greaterThan(earnedFalse));
     final failedRewardPath = ads.substring(earnedFalse, stageHelper);
