@@ -165,6 +165,16 @@ class HivemindService {
     return persisted;
   }
 
+  /// Revocation deliberately ignores the passive-observation invalidation
+  /// cache. If a nonce is still durable, an explicit stop should present it to
+  /// the server and accept either success or 401 as the definitive outcome.
+  static Future<String?> _getSessionNonceForStop() async {
+    if (_sessionNonce != null) return _sessionNonce;
+    final persisted = await CryptoService.getSessionNonce();
+    if (persisted != null) _sessionNonce = persisted;
+    return persisted;
+  }
+
   /// Definitive cleanup is reserved for the authenticated stop path. Passive
   /// status observations never erase durable credentials or the revocation
   /// marker because an older response may race a newly-started disconnect.
@@ -385,7 +395,7 @@ class HivemindService {
       }
     }
 
-    final nonce = await getSessionNonce();
+    final nonce = await _getSessionNonceForStop();
     if (nonce == null) {
       await CryptoService.clearSessionStopPending();
       _sessionStopInProgress = false;
