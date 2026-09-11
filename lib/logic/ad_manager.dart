@@ -173,8 +173,8 @@ class AdManager extends ChangeNotifier {
     if (!adsEnabled && kDebugMode) {
       final deviceId = await CryptoService.getDeviceId();
       try {
-        if (adType == 'main') {
-          await CryptoService.setPendingMainSessionNonce(nonce);
+        if (adType == 'main' && !await _stageMainCandidate(nonce)) {
+          return false;
         }
         final customData = jsonEncode({
           'device_id': deviceId,
@@ -214,10 +214,10 @@ class AdManager extends ChangeNotifier {
     final deviceId = await CryptoService.getDeviceId();
     if (adType == 'main') {
       try {
-        // Persist before custom_data is handed to the SDK. If the process dies
-        // after Google receives the ad event, the same candidate remains
-        // recoverable and will be reused rather than silently abandoned.
-        await CryptoService.setPendingMainSessionNonce(nonce);
+        // Persist before custom_data is handed to the SDK. The stop marker is
+        // checked on both sides of the write so an explicit disconnect wins
+        // regardless of whether it races before or after secure-storage I/O.
+        if (!await _stageMainCandidate(nonce)) return false;
       } catch (e) {
         debugPrint('[AdManager] Could not persist SSV candidate: $e');
         return false;
@@ -274,13 +274,25 @@ class AdManager extends ChangeNotifier {
     if (!earned) {
       // Do not erase a staged main candidate here. A previous/reused attempt
       // may already have a valid delayed SSV callback in flight. Reusing the
-      // candidate on the next ad is harmless; forgetting it can orphan a live
-      // server generation.
+      // candidate on the next ad is harmless unless an explicit stop marker
+      // has cancelled it, which _stageMainCandidate handles fail-closed.
       return false;
     }
 
     if (adType == 'main') {
       return _confirmMainCandidate(nonce);
+    }
+    return true;
+  }
+
+  Future<bool> _stageMainCandidate(String nonce) async {
+    if (await CryptoService.isSessionStopPending()) return false;
+
+    await CryptoService.setPendingMainSessionNonce(nonce);
+
+    if (await CryptoService.isSessionStopPending()) {
+      await CryptoService.clearPendingMainSessionNonceIfMatches(nonce);
+      return false;
     }
     return true;
   }
