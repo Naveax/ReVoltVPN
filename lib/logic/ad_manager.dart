@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
+
 import 'package:flutter/foundation.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
-import 'package:revoltvpn/logic/crypto_service.dart';
-import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/consent_manager.dart';
+import 'package:revoltvpn/logic/crypto_service.dart';
+import 'package:revoltvpn/logic/hivemind_service.dart';
 
 class AdManager extends ChangeNotifier {
   static const bool adsEnabled = false;
@@ -21,7 +21,6 @@ class AdManager extends ChangeNotifier {
 
   Completer<bool>? _loadCompleter;
 
-  // Google-provided test ad unit
   static String get _adUnitId => AppConfig.adUnitId;
 
   AdManager() {
@@ -95,15 +94,41 @@ class AdManager extends ChangeNotifier {
     return _loadCompleter!.future;
   }
 
-  // ── Show ad (or debug bypass) ─────────────────────────────────────
-
   Future<bool> showAd(String adType) async {
-    // Debug bypass: fire fake AdMob callback so support ads work in dev.
-    // The server's ADMOB_BYPASS must be True for this to succeed.
+    if (adType != 'main' && adType != 'support') {
+      debugPrint('[AdManager] Rejected unknown ad type.');
+      return false;
+    }
+
+    String nonce;
+    if (adType == 'main') {
+      if (!await HivemindService.retryPendingSessionStop()) {
+        debugPrint('[AdManager] Server session revocation is still pending.');
+        return false;
+      }
+
+      final existing = await HivemindService.probeCurrentSession();
+      if (existing == SessionProbeResult.active) {
+        return true;
+      }
+      if (existing == SessionProbeResult.unavailable) {
+        return false;
+      }
+      nonce = HivemindService.newNonce();
+    } else {
+      if (await HivemindService.probeCurrentSession() !=
+          SessionProbeResult.active) {
+        return false;
+      }
+      final currentNonce = await HivemindService.getSessionNonce();
+      if (currentNonce == null) return false;
+      nonce = currentNonce;
+    }
+
+    // Debug-only compatibility callback. Never persist a main candidate until
+    // the server confirms that exact nonce as the active generation.
     if (!adsEnabled && kDebugMode) {
       final deviceId = await CryptoService.getDeviceId();
-      final nonce = '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
-      HivemindService.setExpectedNonce(nonce);
       try {
         final customData = jsonEncode({
           'device_id': deviceId,
@@ -111,10 +136,18 @@ class AdManager extends ChangeNotifier {
           'nonce': nonce,
         });
         final fakeUrl = Uri.parse(
-            '${AppConfig.hivemindApiPublic}/admob/callback'
-            '?signature=test&key_id=test'
-            '&custom_data=${Uri.encodeComponent(customData)}');
-        await HivemindService.directGet(fakeUrl, timeout: const Duration(seconds: 8));
+          '${AppConfig.hivemindApiPublic}/admob/callback'
+          '?signature=test&key_id=test'
+          '&custom_data=${Uri.encodeComponent(customData)}',
+        );
+        final response = await HivemindService.directGet(
+          fakeUrl,
+          timeout: const Duration(seconds: 8),
+        );
+        if (response.statusCode != 200) return false;
+        if (adType == 'main') {
+          return await HivemindService.confirmAndSetSessionNonce(nonce);
+        }
         return true;
       } catch (_) {
         return false;
@@ -124,7 +157,6 @@ class AdManager extends ChangeNotifier {
     if (!adsEnabled) return false;
 
     await ensureSdkInitialized();
-
     if (!_isAdLoaded || _rewardedAd == null) {
       final loaded = await preloadAd();
       if (!loaded || _rewardedAd == null) {
@@ -134,11 +166,6 @@ class AdManager extends ChangeNotifier {
     }
 
     final deviceId = await CryptoService.getDeviceId();
-
-    final nonce = '${Random().nextInt(0x7FFFFFFF)}-${DateTime.now().millisecondsSinceEpoch}';
-    HivemindService.setExpectedNonce(nonce);
-    debugPrint('[AdManager] Ad nonce: $nonce');
-
     final ssvOptions = ServerSideVerificationOptions(
       customData: jsonEncode({
         'device_id': deviceId,
@@ -147,10 +174,11 @@ class AdManager extends ChangeNotifier {
       }),
     );
 
-    Completer<bool> rewardCompleter = Completer<bool>();
+    final rewardCompleter = Completer<bool>();
 
     _rewardedAd!.fullScreenContentCallback = FullScreenContentCallback(
-      onAdShowedFullScreenContent: (ad) => debugPrint('[AdManager] Ad showing.'),
+      onAdShowedFullScreenContent: (ad) =>
+          debugPrint('[AdManager] Ad showing.'),
       onAdDismissedFullScreenContent: (ad) {
         debugPrint('[AdManager] Ad dismissed.');
         ad.dispose();
@@ -175,14 +203,22 @@ class AdManager extends ChangeNotifier {
     _rewardedAd!.setServerSideOptions(ssvOptions);
     await _rewardedAd!.show(
       onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {
-        debugPrint('[AdManager] Reward earned: ${reward.amount} ${reward.type}');
+        debugPrint(
+          '[AdManager] Reward earned: ${reward.amount} ${reward.type}',
+        );
         if (!rewardCompleter.isCompleted) {
           rewardCompleter.complete(true);
         }
       },
     );
 
-    return rewardCompleter.future;
+    final earned = await rewardCompleter.future;
+    if (!earned) return false;
+
+    if (adType == 'main') {
+      return HivemindService.confirmAndSetSessionNonce(nonce);
+    }
+    return true;
   }
 
   @override

@@ -13,6 +13,18 @@ fun sha256Hex(file: File): String {
     return digest.joinToString("") { "%02x".format(it.toInt() and 0xff) }
 }
 
+// flutter_vless_android verifies and produces this exact digest-pinned AAR.
+// Keep it as a direct application dependency so AGP packages its native files
+// into the APK instead of trying to embed an AAR inside the plugin AAR.
+val protectedXrayRuntimeVersion = "26.7.28-protect1"
+val protectedXrayRuntimeAar = File(
+    gradle.gradleUserHomeDir,
+    "caches/revolt-xray-runtime/$protectedXrayRuntimeVersion/xray-android-$protectedXrayRuntimeVersion.aar"
+)
+val protectedXrayRuntimeFiles = files(protectedXrayRuntimeAar).builtBy(
+    ":flutter_vless_android:prepareProtectedXrayRuntime"
+)
+
 android {
     namespace = "com.paladinvpn.app"
     compileSdk = flutter.compileSdkVersion
@@ -146,4 +158,5 @@ flutter {
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation(protectedXrayRuntimeFiles)
 }

@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 group 'com.github.tfox.flutter_vless'
 version '1.0'
 
@@ -16,10 +18,6 @@ buildscript {
 
 rootProject.allprojects {
     repositories {
-        def localRuntimeRepo = findProperty('flutterVlessAndroidRuntimeRepo') ?: System.getenv('FLUTTER_VLESS_ANDROID_RUNTIME_REPO')
-        if (localRuntimeRepo) {
-            maven { url uri(localRuntimeRepo) }
-        }
         google()
         mavenCentral()
     }
@@ -27,6 +25,68 @@ rootProject.allprojects {
 
 apply plugin: 'com.android.library'
 apply plugin: 'kotlin-android'
+
+final String protectedRuntimeVersion = '26.7.28-protect1'
+final String protectedRuntimeSha256 = '54785c3c5437473d8f9c8071a6138ae781ed2038e57beb47b6a46de3545c3ad8'
+final String protectedRuntimeUrl =
+    "https://github.com/XIIIFOX/flutter_vless/releases/download/xray-android-v${protectedRuntimeVersion}/xray-android-${protectedRuntimeVersion}.aar"
+final File protectedRuntimeDir = new File(gradle.gradleUserHomeDir, "caches/revolt-xray-runtime/${protectedRuntimeVersion}")
+final File protectedRuntimeAar = new File(protectedRuntimeDir, "xray-android-${protectedRuntimeVersion}.aar")
+
+def sha256Hex = { File input ->
+    MessageDigest digest = MessageDigest.getInstance('SHA-256')
+    input.withInputStream { stream ->
+        byte[] buffer = new byte[1024 * 1024]
+        int read
+        while ((read = stream.read(buffer)) != -1) {
+            digest.update(buffer, 0, read)
+        }
+    }
+    digest.digest().collect { String.format('%02x', it & 0xff) }.join()
+}
+
+def prepareProtectedXrayRuntime = tasks.register('prepareProtectedXrayRuntime') {
+    outputs.file(protectedRuntimeAar)
+    doLast {
+        protectedRuntimeDir.mkdirs()
+        if (protectedRuntimeAar.isFile() && sha256Hex(protectedRuntimeAar) == protectedRuntimeSha256) {
+            logger.lifecycle("Using verified protected Xray runtime ${protectedRuntimeVersion}")
+            return
+        }
+
+        if (protectedRuntimeAar.exists() && !protectedRuntimeAar.delete()) {
+            throw new GradleException("Could not remove invalid cached protected Xray runtime")
+        }
+
+        File temporary = new File(protectedRuntimeDir, "${protectedRuntimeAar.name}.part")
+        if (temporary.exists()) temporary.delete()
+        logger.lifecycle("Downloading protected Xray runtime ${protectedRuntimeVersion}")
+        try {
+            new URL(protectedRuntimeUrl).withInputStream { input ->
+                temporary.withOutputStream { output -> output << input }
+            }
+            String actual = sha256Hex(temporary)
+            if (actual != protectedRuntimeSha256) {
+                temporary.delete()
+                throw new GradleException(
+                    "Protected Xray runtime SHA-256 mismatch: expected ${protectedRuntimeSha256}, got ${actual}"
+                )
+            }
+            if (!temporary.renameTo(protectedRuntimeAar)) {
+                temporary.withInputStream { input ->
+                    protectedRuntimeAar.withOutputStream { output -> output << input }
+                }
+                temporary.delete()
+            }
+            if (sha256Hex(protectedRuntimeAar) != protectedRuntimeSha256) {
+                protectedRuntimeAar.delete()
+                throw new GradleException("Protected Xray runtime failed post-copy verification")
+            }
+        } finally {
+            if (temporary.exists()) temporary.delete()
+        }
+    }
+}
 
 android {
     if (project.android.hasProperty("namespace")) {
@@ -46,14 +106,12 @@ android {
     defaultConfig {
         minSdkVersion 23
         targetSdkVersion 35
-        
-        // 16KB page size support for Android 15+
+
         ndk {
             abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
         }
     }
-    
-    // Configure 16KB page alignment
+
     buildFeatures {
         prefab true
     }
@@ -87,9 +145,18 @@ android {
     }
 }
 
+// The protected runtime AAR only supplies the native Xray executable/assets;
+// this Android library does not compile against classes from it. Keep the
+// digest-pinned download task here, but package the AAR only from the final app
+// module. That avoids the unsupported AAR-inside-AAR graph entirely.
+tasks.configureEach { task ->
+    if (task.name == 'preBuild') {
+        task.dependsOn(prepareProtectedXrayRuntime)
+    }
+}
+
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.code.gson:gson:2.10.1'
-    implementation "dev.tfox.fluttervless:xray-android:${findProperty('flutterVlessXrayRuntimeVersion') ?: '26.7.11'}"
 }
