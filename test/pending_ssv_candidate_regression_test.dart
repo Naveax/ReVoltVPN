@@ -13,6 +13,23 @@ void main() {
     expect(crypto, contains('clearPendingMainSessionNonceIfMatches'));
     expect(crypto, contains('_requireSessionNonce(nonce)'));
 
+    // A replacement device UUID must never inherit authorization state that
+    // was bound to the previous device identity.
+    expect(crypto, contains('await _clearDeviceBoundSessionState();'));
+    final deviceReset = crypto.indexOf(
+      'static Future<void> _clearDeviceBoundSessionState()',
+    );
+    expect(deviceReset, greaterThanOrEqualTo(0));
+    final nonceValidation = crypto.indexOf(
+      'static void _requireSessionNonce',
+      deviceReset,
+    );
+    expect(nonceValidation, greaterThan(deviceReset));
+    final resetSource = crypto.substring(deviceReset, nonceValidation);
+    expect(resetSource, contains('_sessionNoncePref'));
+    expect(resetSource, contains('_pendingMainSessionNoncePref'));
+    expect(resetSource, contains('_sessionStopPendingPref'));
+
     // A pending candidate must be recovered/reused before another random nonce
     // can be minted, otherwise a late Google callback can orphan a live server
     // generation behind a possession token the client forgot.
@@ -30,18 +47,29 @@ void main() {
     expect(ssv, greaterThan(persist));
 
     // Cleanup is compare-and-delete and happens only after server confirmation.
-    expect(ads, contains('final confirmed = await HivemindService.confirmAndSetSessionNonce(nonce);'));
+    expect(
+      ads,
+      contains(
+        'final confirmed = await HivemindService.confirmAndSetSessionNonce(nonce);',
+      ),
+    );
     expect(ads, contains('if (confirmed) {'));
     expect(ads, contains('clearPendingMainSessionNonceIfMatches(nonce)'));
 
     // Losing one local ad attempt is not proof that an older SSV callback cannot
     // still arrive. The pending nonce therefore remains reusable.
     final earnedFalse = ads.indexOf('if (!earned) {');
-    final confirmHelper = ads.indexOf('Future<bool> _confirmMainCandidate', earnedFalse);
+    final confirmHelper = ads.indexOf(
+      'Future<bool> _confirmMainCandidate',
+      earnedFalse,
+    );
     expect(earnedFalse, greaterThanOrEqualTo(0));
     expect(confirmHelper, greaterThan(earnedFalse));
     final failedRewardPath = ads.substring(earnedFalse, confirmHelper);
-    expect(failedRewardPath, isNot(contains('clearPendingMainSessionNonceIfMatches')));
+    expect(
+      failedRewardPath,
+      isNot(contains('clearPendingMainSessionNonceIfMatches')),
+    );
   });
 
   test('rewarded ad execution is single-flight', () {
