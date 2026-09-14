@@ -59,4 +59,9 @@ abstract final class AppConfig {
   // ── AdMob ──────────────────────────────────────────────────────────────
   static const String adUnitId =
       'ca-app-pub-0000000000000000/0000000000'; // ◄── REPLACE
+
+  /// H13 keeps the private session authorization secret off Google-visible custom_data and sends
+  /// only the server-issued public activation UUID. Keep disabled until the matching backend,
+  /// nginx route and Google SSV endpoint have passed production acceptance.
+  static const bool h13ActivationEnabled = false;
 }
