@@ -4,6 +4,7 @@ import 'package:uuid/uuid.dart';
 class CryptoService {
   static const String _deviceIdPref = 'device_uuid';
   static const String _sessionNoncePref = 'session_auth_nonce';
+  static const String _pendingSessionCandidatePref = 'pending_session_candidate_nonce';
   static const String _sessionStopPendingPref = 'session_stop_pending';
   static const _storage = FlutterSecureStorage();
 
@@ -26,30 +27,46 @@ class CryptoService {
   }
 
   /// Persist the current main-session possession token across app/process restarts.
+  /// Once the server-confirmed token is durable, its pre-activation reservation is
+  /// no longer needed and is removed from the pending slot.
   static Future<void> setSessionNonce(String nonce) async {
-    if (!_sessionNoncePattern.hasMatch(nonce)) {
-      throw ArgumentError.value(
-        nonce,
-        'nonce',
-        'expected 128-bit lowercase hex',
-      );
-    }
+    _validateSessionNonce(nonce);
     await _storage.write(key: _sessionNoncePref, value: nonce);
+    await _storage.delete(key: _pendingSessionCandidatePref);
   }
 
-  /// Return only a canonical 128-bit session nonce. Corrupt legacy values are discarded.
+  /// Return only a canonical 128-bit session nonce. During an explicit pending
+  /// stop, a pre-activation candidate is also an exact revocation capability, so
+  /// the stop path can cancel it even before Google SSV activates a session.
   static Future<String?> getSessionNonce() async {
-    final nonce = await _storage.read(key: _sessionNoncePref);
-    if (nonce == null) return null;
-    if (!_sessionNoncePattern.hasMatch(nonce)) {
-      await _storage.delete(key: _sessionNoncePref);
-      return null;
+    final nonce = await _readCanonicalNonce(_sessionNoncePref);
+    if (nonce != null) return nonce;
+
+    if (await isSessionStopPending()) {
+      return _readCanonicalNonce(_pendingSessionCandidatePref);
     }
-    return nonce;
+    return null;
   }
 
   static Future<void> clearSessionNonce() async {
     await _storage.delete(key: _sessionNoncePref);
+    await _storage.delete(key: _pendingSessionCandidatePref);
+  }
+
+  /// Durably remember an acknowledged server reservation without treating it as
+  /// an active session credential. This lets explicit stop/restart recovery cancel
+  /// the exact nonce if the app exits or disconnects before SSV confirmation.
+  static Future<void> setPendingSessionCandidate(String nonce) async {
+    _validateSessionNonce(nonce);
+    await _storage.write(key: _pendingSessionCandidatePref, value: nonce);
+  }
+
+  static Future<String?> getPendingSessionCandidate() {
+    return _readCanonicalNonce(_pendingSessionCandidatePref);
+  }
+
+  static Future<void> clearPendingSessionCandidate() async {
+    await _storage.delete(key: _pendingSessionCandidatePref);
   }
 
   /// Persist an explicit user-requested server revocation until the server confirms it.
@@ -63,5 +80,25 @@ class CryptoService {
 
   static Future<void> clearSessionStopPending() async {
     await _storage.delete(key: _sessionStopPendingPref);
+  }
+
+  static void _validateSessionNonce(String nonce) {
+    if (!_sessionNoncePattern.hasMatch(nonce)) {
+      throw ArgumentError.value(
+        nonce,
+        'nonce',
+        'expected 128-bit lowercase hex',
+      );
+    }
+  }
+
+  static Future<String?> _readCanonicalNonce(String key) async {
+    final nonce = await _storage.read(key: key);
+    if (nonce == null) return null;
+    if (!_sessionNoncePattern.hasMatch(nonce)) {
+      await _storage.delete(key: key);
+      return null;
+    }
+    return nonce;
   }
 }
