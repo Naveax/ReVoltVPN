@@ -101,8 +101,18 @@ class AdManager extends ChangeNotifier {
       return false;
     }
 
+    Future<void> cancelMainCandidate() async {
+      if (adType == 'main') {
+        await SessionCandidateService.cancelPending();
+      }
+    }
+
     String nonce;
     if (adType == 'main') {
+      if (!await SessionCandidateService.recoverOrphanedReservation()) {
+        debugPrint('[AdManager] Previous session candidate is not revoked yet.');
+        return false;
+      }
       if (!await HivemindService.retryPendingSessionStop()) {
         debugPrint('[AdManager] Server session revocation is still pending.');
         return false;
@@ -149,25 +159,40 @@ class AdManager extends ChangeNotifier {
           fakeUrl,
           timeout: const Duration(seconds: 8),
         );
-        if (response.statusCode != 200) return false;
+        if (response.statusCode != 200) {
+          await cancelMainCandidate();
+          return false;
+        }
         if (adType == 'main') {
-          return await HivemindService.confirmAndSetSessionNonce(nonce);
+          final confirmed = await HivemindService.confirmAndSetSessionNonce(nonce);
+          if (!confirmed) await cancelMainCandidate();
+          return confirmed;
         }
         return true;
       } catch (_) {
+        await cancelMainCandidate();
         return false;
       }
     }
 
-    if (!adsEnabled) return false;
+    if (!adsEnabled) {
+      await cancelMainCandidate();
+      return false;
+    }
 
     await ensureSdkInitialized();
     if (!_isAdLoaded || _rewardedAd == null) {
       final loaded = await preloadAd();
       if (!loaded || _rewardedAd == null) {
         debugPrint('[AdManager] Cannot show ad, failed to load.');
+        await cancelMainCandidate();
         return false;
       }
+    }
+
+    if (adType == 'main' && await CryptoService.isSessionStopPending()) {
+      await cancelMainCandidate();
+      return false;
     }
 
     final deviceId = await CryptoService.getDeviceId();
@@ -205,23 +230,37 @@ class AdManager extends ChangeNotifier {
       },
     );
 
-    _rewardedAd!.setServerSideOptions(ssvOptions);
-    await _rewardedAd!.show(
-      onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {
-        debugPrint(
-          '[AdManager] Reward earned: ${reward.amount} ${reward.type}',
-        );
-        if (!rewardCompleter.isCompleted) {
-          rewardCompleter.complete(true);
-        }
-      },
-    );
+    try {
+      _rewardedAd!.setServerSideOptions(ssvOptions);
+      await _rewardedAd!.show(
+        onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {
+          debugPrint(
+            '[AdManager] Reward earned: ${reward.amount} ${reward.type}',
+          );
+          if (!rewardCompleter.isCompleted) {
+            rewardCompleter.complete(true);
+          }
+        },
+      );
+    } catch (_) {
+      await cancelMainCandidate();
+      return false;
+    }
 
     final earned = await rewardCompleter.future;
-    if (!earned) return false;
+    if (!earned) {
+      await cancelMainCandidate();
+      return false;
+    }
 
     if (adType == 'main') {
-      return HivemindService.confirmAndSetSessionNonce(nonce);
+      if (await CryptoService.isSessionStopPending()) {
+        await cancelMainCandidate();
+        return false;
+      }
+      final confirmed = await HivemindService.confirmAndSetSessionNonce(nonce);
+      if (!confirmed) await cancelMainCandidate();
+      return confirmed;
     }
     return true;
   }
