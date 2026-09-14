@@ -59,6 +59,9 @@ jobs:
           test ! -e lib/logic/app_config.dart
           cp lib/logic/app_config.example.dart lib/logic/app_config.dart
 
+      - name: Validate AdMob candidate reservation contract
+        run: python3 tool/check_admob_candidate_contract.py
+
       - name: Check formatting of changed Dart files
         shell: bash
         env:
