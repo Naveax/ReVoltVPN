@@ -35,8 +35,9 @@ class AdManager extends ChangeNotifier {
 
   static Future<void> _initSdk() async {
     try {
-      await ConsentManager.requestConsentIfNeeded()
-          .timeout(const Duration(seconds: 5));
+      await ConsentManager.requestConsentIfNeeded().timeout(
+        const Duration(seconds: 5),
+      );
     } catch (e) {
       debugPrint('[AdManager] Consent init skipped: $e');
     }
@@ -112,10 +113,19 @@ class AdManager extends ChangeNotifier {
         return false;
       }
 
+      // A previous reward can outlive the local confirmation polling window. Recover that exact
+      // capability before probing/minting anything else; pending/activating ambiguity fails closed.
+      final recovery = await HivemindService.recoverPendingSessionCandidate();
+      if (recovery == PendingCandidateRecovery.active) {
+        return true;
+      }
+      if (recovery == PendingCandidateRecovery.unresolved) {
+        debugPrint('[AdManager] Main session candidate is still converging.');
+        return false;
+      }
+
       final existing = await HivemindService.probeCurrentSession();
       if (existing == SessionProbeResult.active) {
-        // The user already owns a live server session. Reuse that entitlement rather than
-        // watching another ad whose different nonce the hardened server will reject.
         return true;
       }
       if (existing == SessionProbeResult.unavailable) {
@@ -150,20 +160,29 @@ class AdManager extends ChangeNotifier {
           'ad_type': adType,
           'nonce': nonce,
         });
-        final fakeUrl =
-            Uri.parse('${AppConfig.hivemindApiPublic}/admob/callback'
-                '?signature=test&key_id=test'
-                '&custom_data=${Uri.encodeComponent(customData)}');
+        final fakeUrl = Uri.parse(
+          '${AppConfig.hivemindApiPublic}/admob/callback'
+          '?signature=test&key_id=test'
+          '&custom_data=${Uri.encodeComponent(customData)}',
+        );
         final response = await HivemindService.directGet(
           fakeUrl,
           timeout: const Duration(seconds: 8),
         );
-        if (response.statusCode != 200) return false;
+        if (response.statusCode != 200) {
+          if (adType == 'main') {
+            await HivemindService.cancelSessionCandidate(nonce);
+          }
+          return false;
+        }
         if (adType == 'main') {
           return HivemindService.confirmAndSetSessionNonce(nonce);
         }
         return true;
       } catch (_) {
+        if (adType == 'main') {
+          await HivemindService.cancelSessionCandidate(nonce);
+        }
         return false;
       }
     }
@@ -221,18 +240,31 @@ class AdManager extends ChangeNotifier {
     );
 
     _rewardedAd!.setServerSideOptions(ssvOptions);
-    await _rewardedAd!.show(
-      onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {
-        debugPrint(
-            '[AdManager] Reward earned: ${reward.amount} ${reward.type}');
-        if (!rewardCompleter.isCompleted) {
-          rewardCompleter.complete(true);
-        }
-      },
-    );
+    try {
+      await _rewardedAd!.show(
+        onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {
+          debugPrint(
+            '[AdManager] Reward earned: ${reward.amount} ${reward.type}',
+          );
+          if (!rewardCompleter.isCompleted) {
+            rewardCompleter.complete(true);
+          }
+        },
+      );
+    } catch (_) {
+      if (adType == 'main') {
+        await HivemindService.cancelSessionCandidate(nonce);
+      }
+      return false;
+    }
 
     final earned = await rewardCompleter.future;
-    if (!earned) return false;
+    if (!earned) {
+      if (adType == 'main') {
+        await HivemindService.cancelSessionCandidate(nonce);
+      }
+      return false;
+    }
 
     // Local onUserEarnedReward is not proof that Google SSV was accepted. For main rewards,
     // commit the possession nonce only after the server projects that exact nonce as active.
