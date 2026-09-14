@@ -56,16 +56,21 @@ class SessionCandidateService {
     }
   }
 
-  /// Cancel an acknowledged but not-yet-confirmed candidate. The durable stop
-  /// marker makes retry survive process death; CryptoService exposes the pending
-  /// candidate to Hivemind only while that explicit stop is pending.
+  static Future<bool> isCurrent(String nonce) async {
+    if (!_canonicalNonce.hasMatch(nonce)) return false;
+    return await CryptoService.getPendingSessionCandidate() == nonce;
+  }
+
+  /// Cancel an acknowledged but not-yet-confirmed candidate. stopSession()
+  /// advances Hivemind's mutation epoch synchronously and persists the durable
+  /// stop marker before reading the credential. CryptoService exposes the pending
+  /// candidate to that stop path only while the explicit stop marker is present.
   static Future<bool> cancelPending() async {
     final candidate = await CryptoService.getPendingSessionCandidate();
     if (candidate == null) return true;
 
     try {
-      await CryptoService.setSessionStopPending();
-      final result = await HivemindService.stopSession(markPending: false);
+      final result = await HivemindService.stopSession();
       return result != SessionStopResult.retryNeeded;
     } catch (_) {
       return false;
