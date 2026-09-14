@@ -2,10 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
-import 'package:revoltvpn/logic/crypto_service.dart';
-import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/consent_manager.dart';
+import 'package:revoltvpn/logic/crypto_service.dart';
+import 'package:revoltvpn/logic/hivemind_service.dart';
+import 'package:revoltvpn/logic/session_activation_service.dart';
 
 class AdManager extends ChangeNotifier {
   static const bool adsEnabled = false;
@@ -20,7 +21,6 @@ class AdManager extends ChangeNotifier {
 
   Completer<bool>? _loadCompleter;
 
-  // Google-provided test ad unit
   static String get _adUnitId => AppConfig.adUnitId;
 
   AdManager() {
@@ -95,19 +95,16 @@ class AdManager extends ChangeNotifier {
     return _loadCompleter!.future;
   }
 
-  // ── Show ad (or debug bypass) ─────────────────────────────────────
-
   Future<bool> showAd(String adType) async {
-    // Never let an unknown UI/client value fall into the privileged main reward path.
     if (adType != 'main' && adType != 'support') {
       debugPrint('[AdManager] Rejected unknown ad type.');
       return false;
     }
 
     String nonce;
+    SessionActivationIntent? h13Intent;
+
     if (adType == 'main') {
-      // If a previous user-requested disconnect still has an ambiguous server revocation,
-      // do not mint a new main nonce. Replacing a possibly-live generation must fail closed.
       if (!await HivemindService.retryPendingSessionStop()) {
         debugPrint('[AdManager] Server session revocation is still pending.');
         return false;
@@ -115,8 +112,6 @@ class AdManager extends ChangeNotifier {
 
       final existing = await HivemindService.probeCurrentSession();
       if (existing == SessionProbeResult.active) {
-        // The user already owns a live server session. Reuse that entitlement rather than
-        // watching another ad whose different nonce the hardened server will reject.
         return true;
       }
       if (existing == SessionProbeResult.unavailable) {
@@ -124,8 +119,6 @@ class AdManager extends ChangeNotifier {
       }
       nonce = HivemindService.newNonce();
     } else {
-      // Support rewards authorize an extension of the exact active generation. The server
-      // deliberately requires the current possession nonce, so a fresh random nonce is invalid.
       if (await HivemindService.probeCurrentSession() !=
           SessionProbeResult.active) {
         return false;
@@ -135,8 +128,9 @@ class AdManager extends ChangeNotifier {
       nonce = currentNonce;
     }
 
-    // Debug bypass: emit the same custom_data contract as production, but never persist a main
-    // candidate until the server confirms that exact nonce as the active generation.
+    // H13 deliberately does not participate in the local signature=test compatibility path.
+    // That backend route forbids the bypass entirely, so debug continues using the frozen legacy
+    // candidate contract even when the production H13 gate is enabled in a private test config.
     if (!adsEnabled && kDebugMode) {
       if (adType == 'main' &&
           !await HivemindService.reserveSessionCandidate(nonce)) {
@@ -181,10 +175,21 @@ class AdManager extends ChangeNotifier {
       }
     }
 
-    if (adType == 'main' &&
-        !await HivemindService.reserveSessionCandidate(nonce)) {
-      debugPrint('[AdManager] Main session candidate reservation failed.');
-      return false;
+    if (adType == 'main') {
+      if (AppConfig.h13ActivationEnabled) {
+        final prepared = await SessionActivationService.prepare();
+        if (prepared == null) {
+          debugPrint('[AdManager] H13 activation preparation unavailable.');
+          return false;
+        }
+        h13Intent = prepared;
+        // Only this public UUID crosses into Google-visible custom_data. The private session
+        // secret remains inside SessionActivationService and first-party HTTPS requests.
+        nonce = prepared.activationId;
+      } else if (!await HivemindService.reserveSessionCandidate(nonce)) {
+        debugPrint('[AdManager] Main session candidate reservation failed.');
+        return false;
+      }
     }
 
     final deviceId = await CryptoService.getDeviceId();
@@ -222,8 +227,17 @@ class AdManager extends ChangeNotifier {
       },
     );
 
-    _rewardedAd!.setServerSideOptions(ssvOptions);
+    Future<void> cleanupUnrewardedMain() async {
+      if (adType != 'main') return;
+      if (h13Intent != null) {
+        await SessionActivationService.recoverPendingAbandonment();
+      } else {
+        await HivemindService.cancelSessionCandidate(nonce);
+      }
+    }
+
     try {
+      _rewardedAd!.setServerSideOptions(ssvOptions);
       await _rewardedAd!.show(
         onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {
           debugPrint(
@@ -235,23 +249,21 @@ class AdManager extends ChangeNotifier {
         },
       );
     } catch (_) {
-      if (adType == 'main') {
-        await HivemindService.cancelSessionCandidate(nonce);
-      }
+      await cleanupUnrewardedMain();
       return false;
     }
 
     final earned = await rewardCompleter.future;
     if (!earned) {
-      if (adType == 'main') {
-        await HivemindService.cancelSessionCandidate(nonce);
-      }
+      await cleanupUnrewardedMain();
       return false;
     }
 
-    // Local onUserEarnedReward is not proof that Google SSV was accepted. For main rewards,
-    // commit the possession nonce only after the server projects that exact nonce as active.
     if (adType == 'main') {
+      final prepared = h13Intent;
+      if (prepared != null) {
+        return SessionActivationService.confirmAndPromote(prepared);
+      }
       return HivemindService.confirmAndSetSessionNonce(nonce);
     }
     return true;
