@@ -352,7 +352,8 @@ class SessionActivationService {
     if (uri.scheme != 'https' ||
         uri.userInfo.isNotEmpty ||
         uri.origin != base.origin) {
-      throw StateError('activation API must remain on configured HTTPS origin.');
+      throw StateError(
+          'activation API must remain on configured HTTPS origin.');
     }
     return uri;
   }
