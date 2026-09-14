@@ -140,6 +140,10 @@ class AdManager extends ChangeNotifier {
       nonce = currentNonce;
     }
 
+    if (adType == 'main' && !await SessionCandidateService.isCurrent(nonce)) {
+      return false;
+    }
+
     // Debug-only compatibility callback. Never persist a main candidate until
     // the server confirms that exact nonce as the active generation.
     if (!adsEnabled && kDebugMode) {
@@ -164,6 +168,7 @@ class AdManager extends ChangeNotifier {
           return false;
         }
         if (adType == 'main') {
+          if (!await SessionCandidateService.isCurrent(nonce)) return false;
           final confirmed = await HivemindService.confirmAndSetSessionNonce(nonce);
           if (!confirmed) await cancelMainCandidate();
           return confirmed;
@@ -190,6 +195,9 @@ class AdManager extends ChangeNotifier {
       }
     }
 
+    if (adType == 'main' && !await SessionCandidateService.isCurrent(nonce)) {
+      return false;
+    }
     if (adType == 'main' && await CryptoService.isSessionStopPending()) {
       await cancelMainCandidate();
       return false;
@@ -254,6 +262,7 @@ class AdManager extends ChangeNotifier {
     }
 
     if (adType == 'main') {
+      if (!await SessionCandidateService.isCurrent(nonce)) return false;
       if (await CryptoService.isSessionStopPending()) {
         await cancelMainCandidate();
         return false;
