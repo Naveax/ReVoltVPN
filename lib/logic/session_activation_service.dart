@@ -16,6 +16,8 @@ class SessionActivationIntent {
   final String sessionSecret;
 }
 
+enum _ActivationCancelResult { cancelled, alreadyActive, unavailable }
+
 /// Fail-closed H13 boundary between public AdMob correlation and private session auth.
 ///
 /// The private 128-bit session secret is persisted before preparation network I/O and is never
@@ -31,9 +33,6 @@ class SessionActivationService {
     r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
   );
 
-  // Serialize prepare, abandonment recovery and promotion inside one process. The server has its
-  // own per-device gate; this local gate prevents the app from racing its own durable ownership
-  // transitions around that server-side serialization.
   static Future<void> _tail = Future<void>.value();
 
   static Future<T> _serialized<T>(Future<T> Function() operation) {
@@ -60,8 +59,6 @@ class SessionActivationService {
       final secret = HivemindService.newNonce();
       if (!_secretPattern.hasMatch(secret)) return null;
 
-      // Persist ownership before sending the private secret. If the response is lost after the
-      // server commits, this exact secret remains available for cancel+stop convergence.
       try {
         await _storage.write(key: _pendingSecretKey, value: secret);
         await _storage.delete(key: _pendingActivationIdKey);
@@ -97,8 +94,6 @@ class SessionActivationService {
             value: activationId,
           );
         } catch (_) {
-          // Keep the private secret. Recovery can cancel by exact device+secret even when the
-          // public response handle could not be persisted locally.
           return null;
         }
 
@@ -116,10 +111,6 @@ class SessionActivationService {
     return _serialized(_pendingUnlocked);
   }
 
-  /// Converge an abandoned H13 preparation before forgetting private ownership.
-  ///
-  /// If active possession already equals the pending H13 secret, promotion committed and only the
-  /// local marker clear was interrupted. In that case never cancel/stop the live generation.
   static Future<bool> recoverPendingAbandonment() {
     return _serialized(_recoverPendingAbandonmentUnlocked);
   }
@@ -129,8 +120,6 @@ class SessionActivationService {
     try {
       secret = await _readSecret();
     } on FormatException {
-      // Corrupt ownership is not equivalent to no ownership. Retain the bytes and fail closed so
-      // a new generation cannot be minted while an unknown remote generation may still exist.
       return false;
     }
     if (secret == null) {
@@ -155,21 +144,31 @@ class SessionActivationService {
     final deviceId = await CryptoService.getDeviceId();
     if (!_uuidV4Pattern.hasMatch(deviceId)) return false;
 
-    if (!await _cancelIntent(deviceId, secret)) return false;
-    if (!await _stopExact(deviceId, secret)) return false;
-
-    try {
-      await _clearPending();
-      return true;
-    } catch (_) {
-      // Remote cleanup is already definitive. A stale local marker remains fail-closed and will
-      // be retried on the next operation instead of being treated as a fresh capability.
-      return false;
+    final cancellation = await _cancelIntent(deviceId, secret);
+    switch (cancellation) {
+      case _ActivationCancelResult.alreadyActive:
+        if (!await _adoptActiveSecret(deviceId, secret)) return false;
+        try {
+          await _clearPending();
+          return true;
+        } catch (_) {
+          // Active possession is already durable. A later recovery will recognize the equality
+          // and clear only this stale H13 marker, never revoke the live generation.
+          return false;
+        }
+      case _ActivationCancelResult.cancelled:
+        if (!await _stopExact(deviceId, secret)) return false;
+        try {
+          await _clearPending();
+          return true;
+        } catch (_) {
+          return false;
+        }
+      case _ActivationCancelResult.unavailable:
+        return false;
     }
   }
 
-  /// Prove authenticated active status for the private H13 secret, persist that exact secret as
-  /// current session possession, then retire only the matching H13 pending marker.
   static Future<bool> confirmAndPromote(SessionActivationIntent intent) {
     return _serialized(() async {
       if (!_uuidV4Pattern.hasMatch(intent.activationId) ||
@@ -196,45 +195,25 @@ class SessionActivationService {
 
       const maxAttempts = 8;
       for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-        try {
-          final response = await HivemindService.directGet(
-            url,
-            timeout: const Duration(seconds: 2),
-            headers: <String, String>{
-              _sessionNonceHeader: intent.sessionSecret,
-            },
-          );
-          if (response.statusCode == 200) {
-            final data = jsonDecode(response.body);
-            if (data is Map<String, dynamic> && data['active'] == true) {
-              final echoed = data['nonce'];
-              if (echoed != null && echoed != intent.sessionSecret) return false;
-
-              SessionActivationIntent? stillPending;
-              try {
-                stillPending = await _pendingUnlocked();
-              } on FormatException {
-                return false;
-              }
-              if (stillPending == null ||
-                  stillPending.activationId != intent.activationId ||
-                  stillPending.sessionSecret != intent.sessionSecret ||
-                  await CryptoService.isSessionStopPending()) {
-                return false;
-              }
-
-              await HivemindService.setSessionNonce(intent.sessionSecret);
-              await CryptoService.clearSessionStopPending();
-              try {
-                await _clearPending();
-              } catch (_) {
-                // Active possession is already durable. Recovery detects this exact equality and
-                // clears only the stale H13 marker without revoking the live generation.
-              }
-              return true;
-            }
+        if (await _adoptActiveSecret(deviceId, intent.sessionSecret)) {
+          SessionActivationIntent? stillPending;
+          try {
+            stillPending = await _pendingUnlocked();
+          } on FormatException {
+            return false;
           }
-        } catch (_) {}
+          if (stillPending == null ||
+              stillPending.activationId != intent.activationId ||
+              stillPending.sessionSecret != intent.sessionSecret ||
+              await CryptoService.isSessionStopPending()) {
+            return false;
+          }
+
+          try {
+            await _clearPending();
+          } catch (_) {}
+          return true;
+        }
 
         if (attempt < maxAttempts) {
           await Future<void>.delayed(const Duration(milliseconds: 750));
@@ -242,6 +221,29 @@ class SessionActivationService {
       }
       return false;
     });
+  }
+
+  static Future<bool> _adoptActiveSecret(String deviceId, String secret) async {
+    if (await CryptoService.isSessionStopPending()) return false;
+    try {
+      final response = await HivemindService.directGet(
+        _publicUrl('/session/status?device_id=$deviceId'),
+        timeout: const Duration(seconds: 2),
+        headers: <String, String>{_sessionNonceHeader: secret},
+      );
+      if (response.statusCode != 200) return false;
+      final data = jsonDecode(response.body);
+      if (data is! Map<String, dynamic> || data['active'] != true) return false;
+      final echoed = data['nonce'];
+      if (echoed != null && echoed != secret) return false;
+      if (await CryptoService.isSessionStopPending()) return false;
+
+      await HivemindService.setSessionNonce(secret);
+      await CryptoService.clearSessionStopPending();
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   static Future<SessionActivationIntent?> _pendingUnlocked() async {
@@ -260,7 +262,10 @@ class SessionActivationService {
     );
   }
 
-  static Future<bool> _cancelIntent(String deviceId, String secret) async {
+  static Future<_ActivationCancelResult> _cancelIntent(
+    String deviceId,
+    String secret,
+  ) async {
     try {
       final response = await HivemindService.directPost(
         _publicUrl('/session/activation-intents'),
@@ -271,12 +276,22 @@ class SessionActivationService {
         }),
         timeout: const Duration(seconds: 4),
       );
-      if (response.statusCode != 200) return false;
-      if (!_isNoStore(response.headers['cache-control'])) return false;
+      if (!_isNoStore(response.headers['cache-control'])) {
+        return _ActivationCancelResult.unavailable;
+      }
+      if (response.statusCode == 409) {
+        return _ActivationCancelResult.alreadyActive;
+      }
+      if (response.statusCode != 200) {
+        return _ActivationCancelResult.unavailable;
+      }
       final data = jsonDecode(response.body);
-      return data is Map<String, dynamic> && data['ok'] == true;
+      if (data is Map<String, dynamic> && data['ok'] == true) {
+        return _ActivationCancelResult.cancelled;
+      }
+      return _ActivationCancelResult.unavailable;
     } catch (_) {
-      return false;
+      return _ActivationCancelResult.unavailable;
     }
   }
 
