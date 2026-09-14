@@ -86,6 +86,29 @@ class HivemindService {
     return bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
   }
 
+  /// Reserve the exact main-session capability before a rewarded ad can be shown.
+  /// This does not persist possession locally; the nonce becomes local state only after
+  /// the server confirms that Google SSV activated this exact candidate.
+  static Future<bool> reserveSessionCandidate(String nonce) async {
+    if (!RegExp(r'^[0-9a-f]{32}$').hasMatch(nonce)) return false;
+
+    try {
+      final deviceId = await CryptoService.getDeviceId();
+      final response = await directPost(
+        _publicUrl('/session/candidate'),
+        body: jsonEncode({'device_id': deviceId}),
+        timeout: const Duration(seconds: 4),
+        headers: {_sessionNonceHeader: nonce},
+      );
+      if (response.statusCode != 200) return false;
+
+      final data = jsonDecode(response.body);
+      return data is Map<String, dynamic> && data['ok'] == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   static void cancel() {
     _currentCallId++;
   }
