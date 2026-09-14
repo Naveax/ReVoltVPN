@@ -35,8 +35,9 @@ class AdManager extends ChangeNotifier {
 
   static Future<void> _initSdk() async {
     try {
-      await ConsentManager.requestConsentIfNeeded()
-          .timeout(const Duration(seconds: 5));
+      await ConsentManager.requestConsentIfNeeded().timeout(
+        const Duration(seconds: 5),
+      );
     } catch (e) {
       debugPrint('[AdManager] Consent init skipped: $e');
     }
@@ -150,10 +151,11 @@ class AdManager extends ChangeNotifier {
           'ad_type': adType,
           'nonce': nonce,
         });
-        final fakeUrl =
-            Uri.parse('${AppConfig.hivemindApiPublic}/admob/callback'
-                '?signature=test&key_id=test'
-                '&custom_data=${Uri.encodeComponent(customData)}');
+        final fakeUrl = Uri.parse(
+          '${AppConfig.hivemindApiPublic}/admob/callback'
+          '?signature=test&key_id=test'
+          '&custom_data=${Uri.encodeComponent(customData)}',
+        );
         final response = await HivemindService.directGet(
           fakeUrl,
           timeout: const Duration(seconds: 8),
@@ -225,7 +227,8 @@ class AdManager extends ChangeNotifier {
       await _rewardedAd!.show(
         onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {
           debugPrint(
-              '[AdManager] Reward earned: ${reward.amount} ${reward.type}');
+            '[AdManager] Reward earned: ${reward.amount} ${reward.type}',
+          );
           if (!rewardCompleter.isCompleted) {
             rewardCompleter.complete(true);
           }

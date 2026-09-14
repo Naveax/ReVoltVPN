@@ -6,17 +6,9 @@ import 'package:http/http.dart' as http;
 import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 
-enum SessionProbeResult {
-  active,
-  inactive,
-  unavailable,
-}
+enum SessionProbeResult { active, inactive, unavailable }
 
-enum SessionStopResult {
-  stopped,
-  alreadyInactive,
-  retryNeeded,
-}
+enum SessionStopResult { stopped, alreadyInactive, retryNeeded }
 
 class HivemindService {
   static String? _sessionNonce;
@@ -24,7 +16,8 @@ class HivemindService {
   static final Random _secureRandom = Random.secure();
   static Future<SessionStopResult>? _stopInFlight;
 
-  static const _ua = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 '
+  static const _ua =
+      'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
   static const _sessionNonceHeader = 'X-RevoltVPN-Session-Nonce';
 
@@ -33,12 +26,7 @@ class HivemindService {
     Duration timeout = const Duration(seconds: 5),
     Map<String, String>? headers,
   }) {
-    return _sendNoRedirect(
-      'GET',
-      uri,
-      timeout: timeout,
-      headers: headers,
-    );
+    return _sendNoRedirect('GET', uri, timeout: timeout, headers: headers);
   }
 
   static Future<http.Response> directPost(
@@ -51,10 +39,7 @@ class HivemindService {
       'POST',
       uri,
       timeout: timeout,
-      headers: {
-        'Content-Type': 'application/json',
-        ...?headers,
-      },
+      headers: {'Content-Type': 'application/json', ...?headers},
       body: body,
     );
   }
@@ -244,8 +229,9 @@ class HivemindService {
   /// Revoke the currently-authorized server session. The revocation intent is persisted before
   /// the first network write and cleared only after a definitive 200/401 response. Ambiguous
   /// failures keep both the nonce and pending marker so a later process can retry safely.
-  static Future<SessionStopResult> stopSession(
-      {bool markPending = true}) async {
+  static Future<SessionStopResult> stopSession({
+    bool markPending = true,
+  }) async {
     final existing = _stopInFlight;
     if (existing != null) return existing;
 
@@ -260,8 +246,9 @@ class HivemindService {
     }
   }
 
-  static Future<SessionStopResult> _stopSessionInner(
-      {required bool markPending}) async {
+  static Future<SessionStopResult> _stopSessionInner({
+    required bool markPending,
+  }) async {
     final nonce = await getSessionNonce();
     if (nonce == null) {
       await CryptoService.clearSessionStopPending();
@@ -331,12 +318,17 @@ class HivemindService {
         if (!await reserveSessionCandidate(candidate)) {
           throw Exception('Session candidate reservation unavailable.');
         }
-        final customData =
-            jsonEncode({'device_id': deviceId, 'nonce': candidate});
+        final customData = jsonEncode({
+          'device_id': deviceId,
+          'nonce': candidate,
+        });
         final fakeUrl = _publicUrl(
-            '/admob/callback?signature=test&key_id=test&custom_data=${Uri.encodeComponent(customData)}');
-        final response =
-            await directGet(fakeUrl, timeout: const Duration(seconds: 8));
+          '/admob/callback?signature=test&key_id=test&custom_data=${Uri.encodeComponent(customData)}',
+        );
+        final response = await directGet(
+          fakeUrl,
+          timeout: const Duration(seconds: 8),
+        );
         if (response.statusCode == 200 &&
             await confirmAndSetSessionNonce(candidate)) {
           nonce = candidate;
@@ -367,7 +359,8 @@ class HivemindService {
           final serverNonce = data['nonce'] as String?;
           if (serverNonce != null && serverNonce != nonce) {
             debugPrint(
-                '[HivemindService] Session authorization mismatch — retrying…');
+              '[HivemindService] Session authorization mismatch — retrying…',
+            );
           } else if (data['active'] == true && data['vless_uuid'] != null) {
             final vlessUuid = data['vless_uuid'];
             final vlessIp = data['vless_ip'] ?? AppConfig.serverIp;
@@ -380,7 +373,8 @@ class HivemindService {
             final fp = data['reality_fp'] ?? AppConfig.realityFp;
             final xhttpPath = data['xhttp_path'] ?? AppConfig.vlessPath;
 
-            final vlessUrl = 'vless://$vlessUuid@$vlessIp:$vlessPort'
+            final vlessUrl =
+                'vless://$vlessUuid@$vlessIp:$vlessPort'
                 '?security=${AppConfig.vlessSecurity}'
                 '&type=${AppConfig.vlessType}'
                 '&path=$xhttpPath'
@@ -401,7 +395,8 @@ class HivemindService {
     }
 
     throw Exception(
-        'Session not activated. Server callback may have timed out.');
+      'Session not activated. Server callback may have timed out.',
+    );
   }
 
   static Future<bool> checkHealth() async {
