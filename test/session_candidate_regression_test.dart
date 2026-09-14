@@ -27,8 +27,11 @@ void main() {
     expect(candidateSource, contains("decoded['ok'] != true"));
     expect(candidateSource, contains('setPendingSessionCandidate(nonce)'));
     expect(candidateSource, contains('getPendingSessionCandidate()'));
+    expect(candidateSource, contains('getSessionStopEpoch()'));
+    expect(candidateSource, contains('_registrationStillCurrent(stopEpoch)'));
     expect(candidateSource, contains('setSessionStopPending()'));
-    expect(candidateSource, contains('stopSession(markPending: false)'));
+    expect(candidateSource, contains('clearPendingSessionCandidate()'));
+    expect(candidateSource, contains('_cancelExact(deviceId, candidate)'));
     expect(candidateSource, isNot(contains('setSessionNonce(')));
     expect(candidateSource, isNot(contains('debugPrint')));
 
@@ -36,8 +39,13 @@ void main() {
       cryptoSource,
       contains("_pendingSessionCandidatePref = 'pending_session_candidate_nonce'"),
     );
+    expect(
+      cryptoSource,
+      contains("_sessionStopEpochPref = 'session_stop_epoch'"),
+    );
     expect(cryptoSource, contains('setPendingSessionCandidate(String nonce)'));
     expect(cryptoSource, contains('getPendingSessionCandidate()'));
+    expect(cryptoSource, contains('getSessionStopEpoch()'));
     expect(
       cryptoSource,
       contains('if (await isSessionStopPending()) {'),
@@ -49,6 +57,14 @@ void main() {
     expect(
       cryptoSource,
       contains('await _storage.delete(key: _pendingSessionCandidatePref);'),
+    );
+    expect(
+      cryptoSource,
+      contains("await _storage.write(key: _sessionStopPendingPref, value: '1');"),
+    );
+    expect(
+      cryptoSource,
+      contains('value: (current + 1).toString(),'),
     );
 
     final mainStart = adSource.indexOf("if (adType == 'main') {");
@@ -69,13 +85,32 @@ void main() {
       nonceIndex,
     );
     final supportStart = adSource.indexOf('} else {', reserveIndex);
+    final firstCurrentCheck = adSource.indexOf(
+      'SessionCandidateService.isCurrent(nonce)',
+      supportStart,
+    );
     final debugCallbackIndex = adSource.indexOf(
       '// Debug-only compatibility callback.',
-      supportStart,
+      firstCurrentCheck,
     );
     final sdkInitIndex = adSource.indexOf(
       'await ensureSdkInitialized();',
       debugCallbackIndex,
+    );
+    final ssvOptionsIndex = adSource.indexOf(
+      'final ssvOptions = ServerSideVerificationOptions(',
+      sdkInitIndex,
+    );
+    final currentBeforeSsv = adSource.lastIndexOf(
+      'SessionCandidateService.isCurrent(nonce)',
+      ssvOptionsIndex,
+    );
+    final confirmIndex = adSource.lastIndexOf(
+      'HivemindService.confirmAndSetSessionNonce(nonce)',
+    );
+    final currentBeforeConfirm = adSource.lastIndexOf(
+      'SessionCandidateService.isCurrent(nonce)',
+      confirmIndex,
     );
 
     expect(mainStart, greaterThanOrEqualTo(0));
@@ -84,8 +119,13 @@ void main() {
     expect(nonceIndex, greaterThan(retryStopIndex));
     expect(reserveIndex, greaterThan(nonceIndex));
     expect(supportStart, greaterThan(reserveIndex));
-    expect(debugCallbackIndex, greaterThan(supportStart));
+    expect(firstCurrentCheck, greaterThan(supportStart));
+    expect(debugCallbackIndex, greaterThan(firstCurrentCheck));
     expect(sdkInitIndex, greaterThan(debugCallbackIndex));
+    expect(currentBeforeSsv, greaterThan(sdkInitIndex));
+    expect(ssvOptionsIndex, greaterThan(currentBeforeSsv));
+    expect(currentBeforeConfirm, greaterThan(ssvOptionsIndex));
+    expect(confirmIndex, greaterThan(currentBeforeConfirm));
     expect(
       adSource.substring(nonceIndex, supportStart),
       contains('return false;'),
@@ -95,7 +135,6 @@ void main() {
       isNot(contains('SessionCandidateService.register')),
     );
     expect(adSource, contains('cancelMainCandidate()'));
-    expect(adSource, contains('CryptoService.isSessionStopPending()'));
     expect(adSource, contains('if (!confirmed) await cancelMainCandidate();'));
   });
 }
