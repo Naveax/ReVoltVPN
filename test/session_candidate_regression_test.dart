@@ -10,9 +10,9 @@ void main() {
     final adSource = File('lib/logic/ad_manager.dart').readAsStringSync();
 
     expect(candidateSource, contains("RegExp(r'^[0-9a-f]{32}\$')"));
-    expect(candidateSource, contains("'$basePath/session/candidate'"));
-    expect(candidateSource, contains("query: null"));
-    expect(candidateSource, contains("fragment: null"));
+    expect(candidateSource, contains(r"'$basePath/session/candidate'"));
+    expect(candidateSource, contains('query: null'));
+    expect(candidateSource, contains('fragment: null'));
     expect(candidateSource, contains('HivemindService.directPost('));
     expect(candidateSource, contains('X-RevoltVPN-Session-Nonce'));
     expect(candidateSource, contains("jsonEncode(<String, String>{'device_id': deviceId})"));
