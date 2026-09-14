@@ -7,6 +7,7 @@ import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/consent_manager.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
+import 'package:revoltvpn/logic/session_candidate_service.dart';
 
 class AdManager extends ChangeNotifier {
   static const bool adsEnabled = false;
@@ -115,6 +116,10 @@ class AdManager extends ChangeNotifier {
         return false;
       }
       nonce = HivemindService.newNonce();
+      if (!await SessionCandidateService.register(nonce)) {
+        debugPrint('[AdManager] Session candidate reservation failed.');
+        return false;
+      }
     } else {
       if (await HivemindService.probeCurrentSession() !=
           SessionProbeResult.active) {
