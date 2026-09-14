@@ -94,8 +94,14 @@ class SessionActivationService {
   }
 
   static Future<SessionActivationIntent?> pending() async {
-    final secret = await _readSecret();
+    String? secret;
+    try {
+      secret = await _readSecret();
+    } on FormatException {
+      return null;
+    }
     if (secret == null) return null;
+
     final activationId = await _storage.read(key: _pendingActivationIdKey);
     if (activationId == null || !_uuidV4Pattern.hasMatch(activationId)) {
       if (activationId != null) {
@@ -113,7 +119,14 @@ class SessionActivationService {
   /// Cancellation must be proven first; then authenticated stop resolves the
   /// opposite race where Google callback activation won the device gate first.
   static Future<bool> recoverPendingAbandonment() async {
-    final secret = await _readSecret();
+    String? secret;
+    try {
+      secret = await _readSecret();
+    } on FormatException {
+      // Corrupt ownership is not equivalent to no ownership. Retain the bytes and
+      // fail closed so a new generation cannot be minted while remote state may exist.
+      return false;
+    }
     if (secret == null) {
       await _storage.delete(key: _pendingActivationIdKey);
       return true;
@@ -194,11 +207,7 @@ class SessionActivationService {
     final value = await _storage.read(key: _pendingSecretKey);
     if (value == null) return null;
     if (!_secretPattern.hasMatch(value)) {
-      // Corrupt ownership state is not usable for remote cleanup. Remove the
-      // malformed local bytes but leave no path that treats them as authority.
-      await _storage.delete(key: _pendingSecretKey);
-      await _storage.delete(key: _pendingActivationIdKey);
-      return null;
+      throw const FormatException('Corrupt H13 pending ownership state');
     }
     return value;
   }
