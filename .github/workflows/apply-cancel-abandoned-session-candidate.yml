@@ -1,0 +1,62 @@
+name: apply-cancel-abandoned-session-candidate
+
+on:
+  push:
+    branches:
+      - hardening/cancel-abandoned-session-candidate
+    paths:
+      - '.github/workflows/apply-cancel-abandoned-session-candidate.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: hardening/cancel-abandoned-session-candidate
+          fetch-depth: 1
+
+      - name: Apply exact candidate cleanup
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('lib/logic/hivemind_service.dart')
+          text = path.read_text()
+          anchor = "  static void cancel() {\n    _currentCallId++;\n  }\n"
+          method = "  /// Cancel an exact pre-activation reservation that is known not to have earned a reward.\n  /// This never reads or replaces the persisted possession nonce.\n  static Future<bool> cancelSessionCandidate(String nonce) async {\n    if (!RegExp(r'^[0-9a-f]{32}$').hasMatch(nonce)) return false;\n\n    try {\n      final deviceId = await CryptoService.getDeviceId();\n      final response = await directPost(\n        _publicUrl('/session/stop'),\n        body: jsonEncode({'device_id': deviceId}),\n        timeout: const Duration(seconds: 4),\n        headers: {_sessionNonceHeader: nonce},\n      );\n      if (response.statusCode != 200) return false;\n      final data = jsonDecode(response.body);\n      return data is Map<String, dynamic> && data['ok'] == true;\n    } catch (_) {\n      return false;\n    }\n  }\n\n"
+          if text.count(anchor) != 1:
+              raise SystemExit(f'cancel method anchor count: {text.count(anchor)}')
+          text = text.replace(anchor, method + anchor, 1)
+          old = "      try {\n        final customData =\n            jsonEncode({'device_id': deviceId, 'nonce': candidate});\n"
+          new = "      try {\n        if (!await reserveSessionCandidate(candidate)) {\n          throw Exception('Session candidate reservation unavailable.');\n        }\n        final customData =\n            jsonEncode({'device_id': deviceId, 'nonce': candidate});\n"
+          if text.count(old) != 1:
+              raise SystemExit(f'debug candidate anchor count: {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+
+          path = Path('lib/logic/ad_manager.dart')
+          text = path.read_text()
+          old = "    _rewardedAd!.setServerSideOptions(ssvOptions);\n    await _rewardedAd!.show(\n      onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {\n        debugPrint(\n            '[AdManager] Reward earned: ${reward.amount} ${reward.type}');\n        if (!rewardCompleter.isCompleted) {\n          rewardCompleter.complete(true);\n        }\n      },\n    );\n\n    final earned = await rewardCompleter.future;\n    if (!earned) return false;\n"
+          new = "    _rewardedAd!.setServerSideOptions(ssvOptions);\n    try {\n      await _rewardedAd!.show(\n        onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {\n          debugPrint(\n              '[AdManager] Reward earned: ${reward.amount} ${reward.type}');\n          if (!rewardCompleter.isCompleted) {\n            rewardCompleter.complete(true);\n          }\n        },\n      );\n    } catch (_) {\n      if (adType == 'main') {\n        await HivemindService.cancelSessionCandidate(nonce);\n      }\n      return false;\n    }\n\n    final earned = await rewardCompleter.future;\n    if (!earned) {\n      if (adType == 'main') {\n        await HivemindService.cancelSessionCandidate(nonce);\n      }\n      return false;\n    }\n"
+          if text.count(old) != 1:
+              raise SystemExit(f'ad show anchor count: {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          rm .github/workflows/apply-cancel-abandoned-session-candidate.yml
+          dart format lib/logic/ad_manager.dart lib/logic/hivemind_service.dart
+          git diff --check
+
+      - name: Commit cleanup
+        run: |
+          set -Eeuo pipefail
+          git config user.name Naveax
+          git config user.email Omersevik095@gmail.com
+          git add -A
+          git diff --cached --check
+          git commit -m 'Cancel abandoned main-session candidates'
+          git push origin HEAD:hardening/cancel-abandoned-session-candidate
