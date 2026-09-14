@@ -12,18 +12,29 @@ void main() {
       'lib/logic/app_config.example.dart',
     ).readAsStringSync();
 
-    expect(config, contains('static const bool h13ActivationEnabled = false;'));
+    expect(
+      config,
+      contains('static const bool h13ActivationEnabled = false;'),
+    );
     expect(ads, contains('if (AppConfig.h13ActivationEnabled)'));
-    expect(ads, contains('final prepared = await SessionActivationService.prepare();'));
+    expect(
+      ads,
+      contains('final prepared = await SessionActivationService.prepare();'),
+    );
     expect(ads, contains('nonce = prepared.activationId;'));
-    expect(ads, contains('SessionActivationService.confirmAndPromote(prepared)'));
+    expect(
+      ads,
+      contains('SessionActivationService.confirmAndPromote(prepared)'),
+    );
 
     final productionGate = ads.indexOf('if (AppConfig.h13ActivationEnabled)');
     final activationAssignment = ads.indexOf(
       'nonce = prepared.activationId;',
       productionGate,
     );
-    final ssv = ads.indexOf('final ssvOptions = ServerSideVerificationOptions(');
+    final ssv = ads.indexOf(
+      'final ssvOptions = ServerSideVerificationOptions(',
+    );
     final customNonce = ads.indexOf("'nonce': nonce", ssv);
     expect(productionGate, greaterThanOrEqualTo(0));
     expect(activationAssignment, greaterThan(productionGate));
@@ -35,8 +46,6 @@ void main() {
     expect(ssvBlock, isNot(contains('sessionSecret')));
     expect(ssvBlock, isNot(contains("'session_secret'")));
 
-    // Debug stays on the legacy signature=test compatibility route and returns before the
-    // production-only H13 preparation gate.
     final debugStart = ads.indexOf('if (!adsEnabled && kDebugMode)');
     final debugCallback = ads.indexOf('signature=test', debugStart);
     expect(debugStart, greaterThanOrEqualTo(0));
@@ -45,7 +54,7 @@ void main() {
 
     expect(activation, contains("'h13_pending_session_secret'"));
     expect(activation, contains("'h13_pending_activation_id'"));
-    expect(activation, contains("RegExp(r'^[0-9a-f]{32}\\$')"));
+    expect(activation, contains("RegExp(r'^[0-9a-f]{32}\$')"));
     expect(activation, contains("'/session/activation-intents'"));
     expect(activation, contains("'/session/status?device_id=\$deviceId'"));
     expect(activation, contains("'X-RevoltVPN-Session-Nonce'"));
@@ -57,7 +66,9 @@ void main() {
       'lib/logic/session_activation_service.dart',
     ).readAsStringSync();
 
-    final prepare = source.indexOf('static Future<SessionActivationIntent?> prepare()');
+    final prepare = source.indexOf(
+      'static Future<SessionActivationIntent?> prepare()',
+    );
     final persistSecret = source.indexOf(
       'await _storage.write(key: _pendingSecretKey, value: secret);',
       prepare,
@@ -72,9 +83,18 @@ void main() {
     final recover = source.indexOf(
       'static Future<bool> _recoverPendingAbandonmentUnlocked()',
     );
-    final activeEquality = source.indexOf('if (activeSecret == secret)', recover);
-    final cancel = source.indexOf('if (!await _cancelIntent(deviceId, secret))', recover);
-    final stop = source.indexOf('if (!await _stopExact(deviceId, secret))', cancel);
+    final activeEquality = source.indexOf(
+      'if (activeSecret == secret)',
+      recover,
+    );
+    final cancel = source.indexOf(
+      'if (!await _cancelIntent(deviceId, secret))',
+      recover,
+    );
+    final stop = source.indexOf(
+      'if (!await _stopExact(deviceId, secret))',
+      cancel,
+    );
     final clear = source.indexOf('await _clearPending();', stop);
     expect(activeEquality, greaterThan(recover));
     expect(cancel, greaterThan(activeEquality));
@@ -96,13 +116,19 @@ void main() {
       'await HivemindService.setSessionNonce(intent.sessionSecret);',
       promote,
     );
-    final clearPending = source.indexOf('await _clearPending();', persistActive);
+    final clearPending = source.indexOf(
+      'await _clearPending();',
+      persistActive,
+    );
     expect(stopPending, greaterThan(promote));
     expect(privateHeader, greaterThan(stopPending));
     expect(persistActive, greaterThan(privateHeader));
     expect(clearPending, greaterThan(persistActive));
 
-    expect(source, contains('static Future<void> _tail = Future<void>.value();'));
+    expect(
+      source,
+      contains('static Future<void> _tail = Future<void>.value();'),
+    );
     expect(source, contains('static Future<T> _serialized<T>'));
   });
 }
