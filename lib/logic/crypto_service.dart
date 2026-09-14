@@ -8,6 +8,7 @@ class CryptoService {
   static const String _sessionStopPendingPref = 'session_stop_pending';
   static const String _sessionStopEpochPref = 'session_stop_epoch';
   static const _storage = FlutterSecureStorage();
+  static Future<void> _sessionStopStorageTail = Future<void>.value();
 
   static final RegExp _uuidV4 = RegExp(
     r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
@@ -74,13 +75,20 @@ class CryptoService {
   /// The monotonic epoch intentionally survives marker cleanup. Candidate registration
   /// snapshots it before network I/O so an older in-flight registration cannot become
   /// current again merely because a fast stop already cleared the pending marker.
-  static Future<void> setSessionStopPending() async {
-    await _storage.write(key: _sessionStopPendingPref, value: '1');
-    final current = await getSessionStopEpoch();
-    await _storage.write(
-      key: _sessionStopEpochPref,
-      value: (current + 1).toString(),
-    );
+  /// Stop-marker writes and clears share one process-local storage queue so a duplicate
+  /// stop cannot leave a delayed marker write behind after the first stop cleared it.
+  static Future<void> setSessionStopPending() {
+    return _serializeSessionStopStorage(() async {
+      if (await _storage.read(key: _sessionStopPendingPref) == '1') {
+        return;
+      }
+      await _storage.write(key: _sessionStopPendingPref, value: '1');
+      final current = await getSessionStopEpoch();
+      await _storage.write(
+        key: _sessionStopEpochPref,
+        value: (current + 1).toString(),
+      );
+    });
   }
 
   static Future<bool> isSessionStopPending() async {
@@ -102,8 +110,21 @@ class CryptoService {
     return parsed;
   }
 
-  static Future<void> clearSessionStopPending() async {
-    await _storage.delete(key: _sessionStopPendingPref);
+  static Future<void> clearSessionStopPending() {
+    return _serializeSessionStopStorage(
+      () => _storage.delete(key: _sessionStopPendingPref),
+    );
+  }
+
+  static Future<void> _serializeSessionStopStorage(
+    Future<void> Function() action,
+  ) {
+    final operation = _sessionStopStorageTail.then((_) => action());
+    _sessionStopStorageTail = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace __) {},
+    );
+    return operation;
   }
 
   static void _validateSessionNonce(String nonce) {
