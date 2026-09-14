@@ -141,6 +141,7 @@ class AdManager extends ChangeNotifier {
     }
 
     if (adType == 'main' && !await SessionCandidateService.isCurrent(nonce)) {
+      await cancelMainCandidate();
       return false;
     }
 
@@ -168,7 +169,10 @@ class AdManager extends ChangeNotifier {
           return false;
         }
         if (adType == 'main') {
-          if (!await SessionCandidateService.isCurrent(nonce)) return false;
+          if (!await SessionCandidateService.isCurrent(nonce)) {
+            await cancelMainCandidate();
+            return false;
+          }
           final confirmed = await HivemindService.confirmAndSetSessionNonce(nonce);
           if (!confirmed) await cancelMainCandidate();
           return confirmed;
@@ -196,9 +200,6 @@ class AdManager extends ChangeNotifier {
     }
 
     if (adType == 'main' && !await SessionCandidateService.isCurrent(nonce)) {
-      return false;
-    }
-    if (adType == 'main' && await CryptoService.isSessionStopPending()) {
       await cancelMainCandidate();
       return false;
     }
@@ -262,8 +263,7 @@ class AdManager extends ChangeNotifier {
     }
 
     if (adType == 'main') {
-      if (!await SessionCandidateService.isCurrent(nonce)) return false;
-      if (await CryptoService.isSessionStopPending()) {
+      if (!await SessionCandidateService.isCurrent(nonce)) {
         await cancelMainCandidate();
         return false;
       }
