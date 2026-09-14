@@ -110,6 +110,17 @@ class AdManager extends ChangeNotifier {
         return false;
       }
 
+      // Legacy candidates can survive an app update into the H13-capable client. Reconcile that
+      // exact capability before probing or minting either authorization contract.
+      final recovery = await HivemindService.recoverPendingSessionCandidate();
+      if (recovery == PendingCandidateRecovery.active) {
+        return true;
+      }
+      if (recovery == PendingCandidateRecovery.unresolved) {
+        debugPrint('[AdManager] Main session candidate is still converging.');
+        return false;
+      }
+
       final existing = await HivemindService.probeCurrentSession();
       if (existing == SessionProbeResult.active) {
         return true;
@@ -154,12 +165,20 @@ class AdManager extends ChangeNotifier {
           fakeUrl,
           timeout: const Duration(seconds: 8),
         );
-        if (response.statusCode != 200) return false;
+        if (response.statusCode != 200) {
+          if (adType == 'main') {
+            await HivemindService.cancelSessionCandidate(nonce);
+          }
+          return false;
+        }
         if (adType == 'main') {
           return HivemindService.confirmAndSetSessionNonce(nonce);
         }
         return true;
       } catch (_) {
+        if (adType == 'main') {
+          await HivemindService.cancelSessionCandidate(nonce);
+        }
         return false;
       }
     }
