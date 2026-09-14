@@ -56,6 +56,24 @@ void main() {
     expect(privateSecretInCancel, greaterThan(cancelMethod));
     expect(stopMethod, greaterThan(cancelMethod));
 
+    final readSecret = source.indexOf('static Future<String?> _readSecret() async');
+    final clearPendingMethod = source.indexOf(
+      'static Future<void> _clearPending() async',
+      readSecret,
+    );
+    expect(readSecret, greaterThanOrEqualTo(0));
+    expect(clearPendingMethod, greaterThan(readSecret));
+    final readSecretBody = source.substring(readSecret, clearPendingMethod);
+    expect(
+      readSecretBody,
+      contains("throw const FormatException('Corrupt H13 pending ownership state');"),
+    );
+    expect(readSecretBody, isNot(contains('_storage.delete')));
+    expect(
+      source.substring(recover, cancel),
+      contains('on FormatException'),
+    );
+
     // The future ad cutover must use activationId as public SSV correlation.
     // This capability file itself never constructs AdMob custom_data.
     expect(source, isNot(contains('ServerSideVerificationOptions')));
