@@ -125,7 +125,14 @@ class SessionActivationService {
   }
 
   static Future<bool> _recoverPendingAbandonmentUnlocked() async {
-    final secret = await _readSecret();
+    String? secret;
+    try {
+      secret = await _readSecret();
+    } on FormatException {
+      // Corrupt ownership is not equivalent to no ownership. Retain the bytes and fail closed so
+      // a new generation cannot be minted while an unknown remote generation may still exist.
+      return false;
+    }
     if (secret == null) {
       try {
         await _storage.delete(key: _pendingActivationIdKey);
@@ -169,7 +176,13 @@ class SessionActivationService {
           !_secretPattern.hasMatch(intent.sessionSecret)) {
         return false;
       }
-      final current = await _pendingUnlocked();
+
+      SessionActivationIntent? current;
+      try {
+        current = await _pendingUnlocked();
+      } on FormatException {
+        return false;
+      }
       if (current == null ||
           current.activationId != intent.activationId ||
           current.sessionSecret != intent.sessionSecret) {
@@ -197,7 +210,12 @@ class SessionActivationService {
               final echoed = data['nonce'];
               if (echoed != null && echoed != intent.sessionSecret) return false;
 
-              final stillPending = await _pendingUnlocked();
+              SessionActivationIntent? stillPending;
+              try {
+                stillPending = await _pendingUnlocked();
+              } on FormatException {
+                return false;
+              }
               if (stillPending == null ||
                   stillPending.activationId != intent.activationId ||
                   stillPending.sessionSecret != intent.sessionSecret ||
@@ -283,11 +301,7 @@ class SessionActivationService {
     final value = await _storage.read(key: _pendingSecretKey);
     if (value == null) return null;
     if (!_secretPattern.hasMatch(value)) {
-      // Corrupt bytes cannot authorize remote cleanup. Remove the malformed local material rather
-      // than ever projecting it as a credential.
-      await _storage.delete(key: _pendingSecretKey);
-      await _storage.delete(key: _pendingActivationIdKey);
-      return null;
+      throw const FormatException('Corrupt H13 pending ownership state');
     }
     return value;
   }
