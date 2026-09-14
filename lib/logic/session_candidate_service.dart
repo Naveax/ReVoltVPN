@@ -58,7 +58,11 @@ class SessionCandidateService {
 
   static Future<bool> isCurrent(String nonce) async {
     if (!_canonicalNonce.hasMatch(nonce)) return false;
-    return await CryptoService.getPendingSessionCandidate() == nonce;
+    try {
+      return await CryptoService.getPendingSessionCandidate() == nonce;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Cancel an acknowledged but not-yet-confirmed candidate. stopSession()
@@ -80,9 +84,13 @@ class SessionCandidateService {
   /// Before a new main-ad flow, converge any reservation left by a crash,
   /// dismissal, failed show, or disconnect before accepting another candidate.
   static Future<bool> recoverOrphanedReservation() async {
-    final candidate = await CryptoService.getPendingSessionCandidate();
-    if (candidate == null) return true;
-    return cancelPending();
+    try {
+      final candidate = await CryptoService.getPendingSessionCandidate();
+      if (candidate == null) return true;
+      return cancelPending();
+    } catch (_) {
+      return false;
+    }
   }
 
   static Future<void> _cancelExact(String deviceId, String nonce) async {
