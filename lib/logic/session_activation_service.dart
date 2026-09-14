@@ -152,8 +152,6 @@ class SessionActivationService {
           await _clearPending();
           return true;
         } catch (_) {
-          // Active possession is already durable. A later recovery will recognize the equality
-          // and clear only this stale H13 marker, never revoke the live generation.
           return false;
         }
       case _ActivationCancelResult.cancelled:
@@ -191,7 +189,6 @@ class SessionActivationService {
 
       final deviceId = await CryptoService.getDeviceId();
       if (!_uuidV4Pattern.hasMatch(deviceId)) return false;
-      final url = _publicUrl('/session/status?device_id=$deviceId');
 
       const maxAttempts = 8;
       for (int attempt = 1; attempt <= maxAttempts; attempt++) {
