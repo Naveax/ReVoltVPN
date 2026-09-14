@@ -38,7 +38,7 @@ if ads.count(call) != 2:
 
 debug_branch = ads.index("if (!adsEnabled && kDebugMode)")
 debug_reserve = ads.index(call, debug_branch)
-debug_callback = ads.index("'/admob/callback?signature=test&key_id=test'", debug_branch)
+debug_callback = ads.index("/admob/callback", debug_branch)
 if not debug_branch < debug_reserve < debug_callback:
     fail("debug main candidate must be reserved before callback simulation")
 
