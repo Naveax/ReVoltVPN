@@ -221,13 +221,28 @@ for needle in (
     "on FormatException",
     "_publicUrl('/session/activation-intents')",
     "_publicUrl('/session/status?device_id=$deviceId')",
-    "headers: <String, String>{",
-    "_sessionNonceHeader: intent.sessionSecret",
-    "HivemindService.setSessionNonce(intent.sessionSecret)",
+    "_ActivationCancelResult.alreadyActive",
+    "response.statusCode == 409",
+    "_adoptActiveSecret(deviceId, secret)",
+    "_sessionNonceHeader: secret",
+    "HivemindService.setSessionNonce(secret)",
 ):
     source = config if needle.startswith("static const bool h13") else h13
     if needle not in source:
         fail(f"H13 cutover invariant is missing: {needle}")
+
+h13_recover_start = h13.index("static Future<bool> _recoverPendingAbandonmentUnlocked() async")
+h13_recover_end = h13.index("\n  static Future<bool> confirmAndPromote", h13_recover_start)
+h13_recover = h13[h13_recover_start:h13_recover_end]
+active_case = h13_recover.index("case _ActivationCancelResult.alreadyActive:")
+cancelled_case = h13_recover.index("case _ActivationCancelResult.cancelled:")
+active_branch = h13_recover[active_case:cancelled_case]
+if "_adoptActiveSecret(deviceId, secret)" not in active_branch:
+    fail("callback-winner cleanup must adopt the authenticated active secret")
+if "_stopExact" in active_branch:
+    fail("callback-winner cleanup must never stop the live H13 generation")
+if "_stopExact(deviceId, secret)" not in h13_recover[cancelled_case:]:
+    fail("definitively cancelled H13 ownership must still converge exact-secret stop")
 
 read_start = h13.index("static Future<String?> _readSecret() async")
 read_end = h13.index("\n  static Future<void> _clearPending()", read_start)
@@ -239,5 +254,5 @@ if "ServerSideVerificationOptions" in h13 or "customData:" in h13:
     fail("H13 capability service must not construct third-party-visible AdMob payloads")
 
 print(
-    "[PASS] legacy candidates recover safely, candidate cleanup cannot stop a live entitlement, and default-off H13 keeps private authorization off Google-visible correlation while failing closed on corrupt ownership."
+    "[PASS] legacy candidates recover safely; H13 keeps private authorization off Google-visible correlation, adopts a verified callback winner instead of revoking it, and fails closed on corrupt ownership."
 )
