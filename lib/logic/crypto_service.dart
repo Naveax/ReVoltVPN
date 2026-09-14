@@ -6,6 +6,7 @@ class CryptoService {
   static const String _sessionNoncePref = 'session_auth_nonce';
   static const String _pendingSessionCandidatePref = 'pending_session_candidate_nonce';
   static const String _sessionStopPendingPref = 'session_stop_pending';
+  static const String _sessionStopEpochPref = 'session_stop_epoch';
   static const _storage = FlutterSecureStorage();
 
   static final RegExp _uuidV4 = RegExp(
@@ -70,12 +71,35 @@ class CryptoService {
   }
 
   /// Persist an explicit user-requested server revocation until the server confirms it.
+  /// The monotonic epoch intentionally survives marker cleanup. Candidate registration
+  /// snapshots it before network I/O so an older in-flight registration cannot become
+  /// current again merely because a fast stop already cleared the pending marker.
   static Future<void> setSessionStopPending() async {
     await _storage.write(key: _sessionStopPendingPref, value: '1');
+    final current = await getSessionStopEpoch();
+    await _storage.write(
+      key: _sessionStopEpochPref,
+      value: (current + 1).toString(),
+    );
   }
 
   static Future<bool> isSessionStopPending() async {
     return await _storage.read(key: _sessionStopPendingPref) == '1';
+  }
+
+  static Future<int> getSessionStopEpoch() async {
+    final raw = await _storage.read(key: _sessionStopEpochPref);
+    if (raw == null) return 0;
+    if (raw.isEmpty || raw.length > 20) {
+      await _storage.delete(key: _sessionStopEpochPref);
+      return 0;
+    }
+    final parsed = int.tryParse(raw);
+    if (parsed == null || parsed < 0) {
+      await _storage.delete(key: _sessionStopEpochPref);
+      return 0;
+    }
+    return parsed;
   }
 
   static Future<void> clearSessionStopPending() async {
