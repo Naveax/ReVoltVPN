@@ -221,18 +221,30 @@ class AdManager extends ChangeNotifier {
     );
 
     _rewardedAd!.setServerSideOptions(ssvOptions);
-    await _rewardedAd!.show(
-      onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {
-        debugPrint(
-            '[AdManager] Reward earned: ${reward.amount} ${reward.type}');
-        if (!rewardCompleter.isCompleted) {
-          rewardCompleter.complete(true);
-        }
-      },
-    );
+    try {
+      await _rewardedAd!.show(
+        onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {
+          debugPrint(
+              '[AdManager] Reward earned: ${reward.amount} ${reward.type}');
+          if (!rewardCompleter.isCompleted) {
+            rewardCompleter.complete(true);
+          }
+        },
+      );
+    } catch (_) {
+      if (adType == 'main') {
+        await HivemindService.cancelSessionCandidate(nonce);
+      }
+      return false;
+    }
 
     final earned = await rewardCompleter.future;
-    if (!earned) return false;
+    if (!earned) {
+      if (adType == 'main') {
+        await HivemindService.cancelSessionCandidate(nonce);
+      }
+      return false;
+    }
 
     // Local onUserEarnedReward is not proof that Google SSV was accepted. For main rewards,
     // commit the possession nonce only after the server projects that exact nonce as active.
