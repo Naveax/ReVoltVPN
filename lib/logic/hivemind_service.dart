@@ -10,14 +10,23 @@ enum SessionProbeResult { active, inactive, unavailable }
 
 enum SessionStopResult { stopped, alreadyInactive, retryNeeded }
 
+enum CandidateLifecycleState {
+  pending,
+  activating,
+  active,
+  absent,
+  unavailable
+}
+
+enum PendingCandidateRecovery { none, active, unresolved }
+
 class HivemindService {
   static String? _sessionNonce;
   static int _currentCallId = 0;
   static final Random _secureRandom = Random.secure();
   static Future<SessionStopResult>? _stopInFlight;
 
-  static const _ua =
-      'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 '
+  static const _ua = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
   static const _sessionNonceHeader = 'X-RevoltVPN-Session-Nonce';
   static final RegExp _canonicalSessionNonce = RegExp(r'^[0-9a-f]{32}$');
@@ -72,46 +81,115 @@ class HivemindService {
     return bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
   }
 
-  /// Reserve the exact main-session capability before a rewarded ad can be shown.
-  /// A server-acknowledged reservation is durably remembered separately from the
-  /// active possession token. A later main flow must first converge cleanup of an
-  /// older reservation before another capability is admitted.
+  /// Reserve one exact main-session capability. Existing durable candidate ownership
+  /// must first be resolved by [recoverPendingSessionCandidate]; it is never cancelled
+  /// blindly because a delayed signed SSV may already have consumed it into a live session.
+  /// The new capability is persisted before the network reservation so a crash or lost
+  /// response can be reconciled through the exact candidate status boundary after restart.
   static Future<bool> reserveSessionCandidate(String nonce) async {
     if (!_canonicalSessionNonce.hasMatch(nonce)) return false;
 
     try {
-      final pending = await CryptoService.getPendingSessionCandidate();
-      if (pending != null && !await cancelSessionCandidate(pending)) {
+      if (await CryptoService.getPendingSessionCandidate() != null)
         return false;
-      }
 
       final deviceId = await CryptoService.getDeviceId();
-      final response = await directPost(
-        _publicUrl('/session/candidate'),
-        body: jsonEncode({'device_id': deviceId}),
-        timeout: const Duration(seconds: 4),
-        headers: {_sessionNonceHeader: nonce},
-      );
-      if (response.statusCode != 200) return false;
-
-      final data = jsonDecode(response.body);
-      if (data is! Map<String, dynamic> || data['ok'] != true) return false;
+      await CryptoService.setPendingSessionCandidate(nonce);
 
       try {
-        await CryptoService.setPendingSessionCandidate(nonce);
-      } catch (_) {
-        await _cancelSessionCandidateRemote(deviceId, nonce);
-        return false;
-      }
-      return true;
+        final response = await directPost(
+          _publicUrl('/session/candidate'),
+          body: jsonEncode({'device_id': deviceId, 'operation': 'register'}),
+          timeout: const Duration(seconds: 4),
+          headers: {_sessionNonceHeader: nonce},
+        );
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          if (data is Map<String, dynamic> && data['ok'] == true) {
+            return true;
+          }
+        }
+      } catch (_) {}
+
+      // A definitive or ambiguous registration failure is cleaned up only through the
+      // candidate-only operation. If that cleanup is itself ambiguous, durable ownership
+      // remains so the next process can probe/recover instead of minting another nonce.
+      await cancelSessionCandidate(nonce);
+      return false;
     } catch (_) {
       return false;
     }
   }
 
-  /// Cancel an exact pre-activation reservation. Local ownership is cleared only
-  /// after the server definitively acknowledges cancellation. Ambiguous failures
-  /// retain the candidate for retry after restart.
+  /// Inspect only the exact pre-activation capability lifecycle. This endpoint never
+  /// returns VPN credentials and is used to distinguish delayed SSV from an expired orphan.
+  static Future<CandidateLifecycleState> probeSessionCandidate(
+      String nonce) async {
+    if (!_canonicalSessionNonce.hasMatch(nonce)) {
+      return CandidateLifecycleState.unavailable;
+    }
+
+    try {
+      final deviceId = await CryptoService.getDeviceId();
+      final response = await directPost(
+        _publicUrl('/session/candidate'),
+        body: jsonEncode({'device_id': deviceId, 'operation': 'status'}),
+        timeout: const Duration(seconds: 4),
+        headers: {_sessionNonceHeader: nonce},
+      );
+      if (response.statusCode != 200) {
+        return CandidateLifecycleState.unavailable;
+      }
+
+      final data = jsonDecode(response.body);
+      if (data is! Map<String, dynamic>) {
+        return CandidateLifecycleState.unavailable;
+      }
+      switch (data['state']) {
+        case 'pending':
+          return CandidateLifecycleState.pending;
+        case 'activating':
+          return CandidateLifecycleState.activating;
+        case 'active':
+          return CandidateLifecycleState.active;
+        case 'absent':
+          return CandidateLifecycleState.absent;
+        default:
+          return CandidateLifecycleState.unavailable;
+      }
+    } catch (_) {
+      return CandidateLifecycleState.unavailable;
+    }
+  }
+
+  /// Converge a durable candidate left behind by a timeout, process death, or delayed SSV.
+  /// Pending/activating states fail closed. Active state is promoted to possession; only an
+  /// explicit server-side absent state permits forgetting the local candidate.
+  static Future<PendingCandidateRecovery>
+      recoverPendingSessionCandidate() async {
+    final pending = await CryptoService.getPendingSessionCandidate();
+    if (pending == null) return PendingCandidateRecovery.none;
+
+    final state = await probeSessionCandidate(pending);
+    switch (state) {
+      case CandidateLifecycleState.active:
+        if (await confirmAndSetSessionNonce(pending)) {
+          return PendingCandidateRecovery.active;
+        }
+        return PendingCandidateRecovery.unresolved;
+      case CandidateLifecycleState.absent:
+        await CryptoService.clearPendingSessionCandidate();
+        return PendingCandidateRecovery.none;
+      case CandidateLifecycleState.pending:
+      case CandidateLifecycleState.activating:
+      case CandidateLifecycleState.unavailable:
+        return PendingCandidateRecovery.unresolved;
+    }
+  }
+
+  /// Cancel a reservation through the candidate-only server operation. The server holds
+  /// the same per-device gate as signed SSV and returns 409 instead of stopping a nonce that
+  /// has already crossed into provisioning/active state.
   static Future<bool> cancelSessionCandidate(String nonce) async {
     if (!_canonicalSessionNonce.hasMatch(nonce)) return false;
 
@@ -129,20 +207,14 @@ class HivemindService {
     }
   }
 
-  static Future<bool> retryPendingSessionCandidateCleanup() async {
-    final pending = await CryptoService.getPendingSessionCandidate();
-    if (pending == null) return true;
-    return cancelSessionCandidate(pending);
-  }
-
   static Future<bool> _cancelSessionCandidateRemote(
     String deviceId,
     String nonce,
   ) async {
     try {
       final response = await directPost(
-        _publicUrl('/session/stop'),
-        body: jsonEncode({'device_id': deviceId}),
+        _publicUrl('/session/candidate'),
+        body: jsonEncode({'device_id': deviceId, 'operation': 'cancel'}),
         timeout: const Duration(seconds: 4),
         headers: {_sessionNonceHeader: nonce},
       );
@@ -342,6 +414,14 @@ class HivemindService {
 
     var nonce = await getSessionNonce();
     if (nonce == null && !skipAdBypass && kDebugMode) {
+      final recovery = await recoverPendingSessionCandidate();
+      if (recovery == PendingCandidateRecovery.active) {
+        nonce = await getSessionNonce();
+      } else if (recovery == PendingCandidateRecovery.unresolved) {
+        throw Exception('Session candidate recovery is still pending.');
+      }
+    }
+    if (nonce == null && !skipAdBypass && kDebugMode) {
       final candidate = newNonce();
       try {
         if (!await reserveSessionCandidate(candidate)) {
@@ -400,8 +480,7 @@ class HivemindService {
             final fp = data['reality_fp'] ?? AppConfig.realityFp;
             final xhttpPath = data['xhttp_path'] ?? AppConfig.vlessPath;
 
-            final vlessUrl =
-                'vless://$vlessUuid@$vlessIp:$vlessPort'
+            final vlessUrl = 'vless://$vlessUuid@$vlessIp:$vlessPort'
                 '?security=${AppConfig.vlessSecurity}'
                 '&type=${AppConfig.vlessType}'
                 '&path=$xhttpPath'
