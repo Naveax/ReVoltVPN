@@ -37,7 +37,8 @@ jobs:
           new = "      try {\n        if (!await reserveSessionCandidate(candidate)) {\n          throw Exception('Session candidate reservation unavailable.');\n        }\n        final customData =\n            jsonEncode({'device_id': deviceId, 'nonce': candidate});\n"
           if text.count(old) != 1:
               raise SystemExit(f'debug candidate anchor count: {text.count(old)}')
-          path.write_text(text.replace(old, new, 1))
+          text = text.replace(old, new, 1)
+          path.write_text(text)
 
           path = Path('lib/logic/ad_manager.dart')
           text = path.read_text()
@@ -48,7 +49,6 @@ jobs:
           path.write_text(text.replace(old, new, 1))
           PY
           rm .github/workflows/apply-cancel-abandoned-session-candidate.yml
-          dart format lib/logic/ad_manager.dart lib/logic/hivemind_service.dart
           git diff --check
 
       - name: Commit cleanup
