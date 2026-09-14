@@ -6,17 +6,9 @@ import 'package:http/http.dart' as http;
 import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 
-enum SessionProbeResult {
-  active,
-  inactive,
-  unavailable,
-}
+enum SessionProbeResult { active, inactive, unavailable }
 
-enum SessionStopResult {
-  stopped,
-  alreadyInactive,
-  retryNeeded,
-}
+enum SessionStopResult { stopped, alreadyInactive, retryNeeded }
 
 class HivemindService {
   static String? _sessionNonce;
@@ -24,21 +16,18 @@ class HivemindService {
   static final Random _secureRandom = Random.secure();
   static Future<SessionStopResult>? _stopInFlight;
 
-  static const _ua = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 '
+  static const _ua =
+      'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
   static const _sessionNonceHeader = 'X-RevoltVPN-Session-Nonce';
+  static final RegExp _canonicalSessionNonce = RegExp(r'^[0-9a-f]{32}$');
 
   static Future<http.Response> directGet(
     Uri uri, {
     Duration timeout = const Duration(seconds: 5),
     Map<String, String>? headers,
   }) {
-    return _sendNoRedirect(
-      'GET',
-      uri,
-      timeout: timeout,
-      headers: headers,
-    );
+    return _sendNoRedirect('GET', uri, timeout: timeout, headers: headers);
   }
 
   static Future<http.Response> directPost(
@@ -51,10 +40,7 @@ class HivemindService {
       'POST',
       uri,
       timeout: timeout,
-      headers: {
-        'Content-Type': 'application/json',
-        ...?headers,
-      },
+      headers: {'Content-Type': 'application/json', ...?headers},
       body: body,
     );
   }
@@ -87,12 +73,18 @@ class HivemindService {
   }
 
   /// Reserve the exact main-session capability before a rewarded ad can be shown.
-  /// This does not persist possession locally; the nonce becomes local state only after
-  /// the server confirms that Google SSV activated this exact candidate.
+  /// A server-acknowledged reservation is durably remembered separately from the
+  /// active possession token. A later main flow must first converge cleanup of an
+  /// older reservation before another capability is admitted.
   static Future<bool> reserveSessionCandidate(String nonce) async {
-    if (!RegExp(r'^[0-9a-f]{32}$').hasMatch(nonce)) return false;
+    if (!_canonicalSessionNonce.hasMatch(nonce)) return false;
 
     try {
+      final pending = await CryptoService.getPendingSessionCandidate();
+      if (pending != null && !await cancelSessionCandidate(pending)) {
+        return false;
+      }
+
       final deviceId = await CryptoService.getDeviceId();
       final response = await directPost(
         _publicUrl('/session/candidate'),
@@ -102,6 +94,59 @@ class HivemindService {
       );
       if (response.statusCode != 200) return false;
 
+      final data = jsonDecode(response.body);
+      if (data is! Map<String, dynamic> || data['ok'] != true) return false;
+
+      try {
+        await CryptoService.setPendingSessionCandidate(nonce);
+      } catch (_) {
+        await _cancelSessionCandidateRemote(deviceId, nonce);
+        return false;
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Cancel an exact pre-activation reservation. Local ownership is cleared only
+  /// after the server definitively acknowledges cancellation. Ambiguous failures
+  /// retain the candidate for retry after restart.
+  static Future<bool> cancelSessionCandidate(String nonce) async {
+    if (!_canonicalSessionNonce.hasMatch(nonce)) return false;
+
+    try {
+      final deviceId = await CryptoService.getDeviceId();
+      if (!await _cancelSessionCandidateRemote(deviceId, nonce)) return false;
+
+      final pending = await CryptoService.getPendingSessionCandidate();
+      if (pending == nonce) {
+        await CryptoService.clearPendingSessionCandidate();
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> retryPendingSessionCandidateCleanup() async {
+    final pending = await CryptoService.getPendingSessionCandidate();
+    if (pending == null) return true;
+    return cancelSessionCandidate(pending);
+  }
+
+  static Future<bool> _cancelSessionCandidateRemote(
+    String deviceId,
+    String nonce,
+  ) async {
+    try {
+      final response = await directPost(
+        _publicUrl('/session/stop'),
+        body: jsonEncode({'device_id': deviceId}),
+        timeout: const Duration(seconds: 4),
+        headers: {_sessionNonceHeader: nonce},
+      );
+      if (response.statusCode != 200) return false;
       final data = jsonDecode(response.body);
       return data is Map<String, dynamic> && data['ok'] == true;
     } catch (_) {
@@ -145,10 +190,6 @@ class HivemindService {
     );
   }
 
-  /// Probe the currently persisted possession token without minting a replacement.
-  /// A definitive inactive response invalidates the local token. Network/server ambiguity
-  /// is fail-closed and leaves the token untouched so callers cannot accidentally replace a
-  /// still-live server generation with a fresh AdMob nonce.
   static Future<SessionProbeResult> probeCurrentSession() async {
     final nonce = await getSessionNonce();
     if (nonce == null) return SessionProbeResult.inactive;
@@ -183,10 +224,9 @@ class HivemindService {
     }
   }
 
-  /// Commit a candidate main-session nonce only after the server projects that exact nonce as
-  /// active. This closes the client-side window where a locally-earned ad could overwrite the
-  /// previous possession token before Google SSV was accepted by the server.
   static Future<bool> confirmAndSetSessionNonce(String nonce) async {
+    if (await CryptoService.getPendingSessionCandidate() != nonce) return false;
+
     final deviceId = await CryptoService.getDeviceId();
     final url = _publicUrl('/session/status?device_id=$deviceId');
 
@@ -203,6 +243,9 @@ class HivemindService {
           if (data is Map<String, dynamic> && data['active'] == true) {
             final serverNonce = data['nonce'] as String?;
             if (serverNonce == null || serverNonce == nonce) {
+              if (await CryptoService.getPendingSessionCandidate() != nonce) {
+                return false;
+              }
               await setSessionNonce(nonce);
               await CryptoService.clearSessionStopPending();
               return true;
@@ -220,11 +263,9 @@ class HivemindService {
     return false;
   }
 
-  /// Revoke the currently-authorized server session. The revocation intent is persisted before
-  /// the first network write and cleared only after a definitive 200/401 response. Ambiguous
-  /// failures keep both the nonce and pending marker so a later process can retry safely.
-  static Future<SessionStopResult> stopSession(
-      {bool markPending = true}) async {
+  static Future<SessionStopResult> stopSession({
+    bool markPending = true,
+  }) async {
     final existing = _stopInFlight;
     if (existing != null) return existing;
 
@@ -239,8 +280,9 @@ class HivemindService {
     }
   }
 
-  static Future<SessionStopResult> _stopSessionInner(
-      {required bool markPending}) async {
+  static Future<SessionStopResult> _stopSessionInner({
+    required bool markPending,
+  }) async {
     final nonce = await getSessionNonce();
     if (nonce == null) {
       await CryptoService.clearSessionStopPending();
@@ -272,8 +314,6 @@ class HivemindService {
             return SessionStopResult.stopped;
           }
         } else if (response.statusCode == 401) {
-          // The possession token is no longer authorized, so there is no live credential left
-          // for this client to revoke.
           await clearSessionNonce();
           return SessionStopResult.alreadyInactive;
         }
@@ -300,19 +340,24 @@ class HivemindService {
     final deviceId = await CryptoService.getDeviceId();
     final callId = ++_currentCallId;
 
-    // Preserve the exact possession token established by a successful main AdMob callback.
-    // Only debug compatibility mode may mint a candidate here, and even then it is not persisted
-    // until the server confirms that exact nonce as active.
     var nonce = await getSessionNonce();
     if (nonce == null && !skipAdBypass && kDebugMode) {
       final candidate = newNonce();
       try {
-        final customData =
-            jsonEncode({'device_id': deviceId, 'nonce': candidate});
+        if (!await reserveSessionCandidate(candidate)) {
+          throw Exception('Session candidate reservation unavailable.');
+        }
+        final customData = jsonEncode({
+          'device_id': deviceId,
+          'nonce': candidate,
+        });
         final fakeUrl = _publicUrl(
-            '/admob/callback?signature=test&key_id=test&custom_data=${Uri.encodeComponent(customData)}');
-        final response =
-            await directGet(fakeUrl, timeout: const Duration(seconds: 8));
+          '/admob/callback?signature=test&key_id=test&custom_data=${Uri.encodeComponent(customData)}',
+        );
+        final response = await directGet(
+          fakeUrl,
+          timeout: const Duration(seconds: 8),
+        );
         if (response.statusCode == 200 &&
             await confirmAndSetSessionNonce(candidate)) {
           nonce = candidate;
@@ -337,13 +382,11 @@ class HivemindService {
         );
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body);
-
-          // Older servers echoed the nonce. Accept that compatibility response only when it
-          // matches the possession token we sent; newer servers deliberately never echo it.
           final serverNonce = data['nonce'] as String?;
           if (serverNonce != null && serverNonce != nonce) {
             debugPrint(
-                '[HivemindService] Session authorization mismatch — retrying…');
+              '[HivemindService] Session authorization mismatch — retrying…',
+            );
           } else if (data['active'] == true && data['vless_uuid'] != null) {
             final vlessUuid = data['vless_uuid'];
             final vlessIp = data['vless_ip'] ?? AppConfig.serverIp;
@@ -351,12 +394,14 @@ class HivemindService {
             final pbk = data['reality_pbk'] ?? '';
             final sid = data['reality_sid'] ?? '';
             final sni = data['reality_sni'];
-            if (sni == null)
+            if (sni == null) {
               throw Exception('Server did not provide reality_sni');
+            }
             final fp = data['reality_fp'] ?? AppConfig.realityFp;
             final xhttpPath = data['xhttp_path'] ?? AppConfig.vlessPath;
 
-            final vlessUrl = 'vless://$vlessUuid@$vlessIp:$vlessPort'
+            final vlessUrl =
+                'vless://$vlessUuid@$vlessIp:$vlessPort'
                 '?security=${AppConfig.vlessSecurity}'
                 '&type=${AppConfig.vlessType}'
                 '&path=$xhttpPath'
@@ -377,7 +422,8 @@ class HivemindService {
     }
 
     throw Exception(
-        'Session not activated. Server callback may have timed out.');
+      'Session not activated. Server callback may have timed out.',
+    );
   }
 
   static Future<bool> checkHealth() async {
@@ -391,8 +437,6 @@ class HivemindService {
       return false;
     }
   }
-
-  // ── URL builders ──────────────────────────────────────────────────
 
   static Uri _configuredApiBase() {
     final base = Uri.tryParse(AppConfig.hivemindApiPublic.trim());
