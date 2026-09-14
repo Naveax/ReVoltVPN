@@ -10,7 +10,7 @@ void main() {
 
     expect(source, contains("'h13_pending_session_secret'"));
     expect(source, contains("'h13_pending_activation_id'"));
-    expect(source, contains("RegExp(r'^[0-9a-f]{32}\\$')"));
+    expect(source, contains("RegExp(r'^[0-9a-f]{32}\$')"));
     expect(source, contains("'/session/activation-intents'"));
     expect(source, contains("'/session/stop'"));
     expect(source, contains("'X-RevoltVPN-Session-Nonce'"));
