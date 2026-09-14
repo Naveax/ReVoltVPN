@@ -137,6 +137,12 @@ class AdManager extends ChangeNotifier {
     // Debug bypass: emit the same custom_data contract as production, but never persist a main
     // candidate until the server confirms that exact nonce as the active generation.
     if (!adsEnabled && kDebugMode) {
+      if (adType == 'main' &&
+          !await HivemindService.reserveSessionCandidate(nonce)) {
+        debugPrint('[AdManager] Main session candidate reservation failed.');
+        return false;
+      }
+
       final deviceId = await CryptoService.getDeviceId();
       try {
         final customData = jsonEncode({
@@ -171,6 +177,12 @@ class AdManager extends ChangeNotifier {
         debugPrint('[AdManager] Cannot show ad, failed to load.');
         return false;
       }
+    }
+
+    if (adType == 'main' &&
+        !await HivemindService.reserveSessionCandidate(nonce)) {
+      debugPrint('[AdManager] Main session candidate reservation failed.');
+      return false;
     }
 
     final deviceId = await CryptoService.getDeviceId();
