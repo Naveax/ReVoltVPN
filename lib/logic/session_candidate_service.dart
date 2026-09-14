@@ -27,6 +27,9 @@ class SessionCandidateService {
     if (!_canonicalNonce.hasMatch(nonce)) return false;
 
     try {
+      final stopEpoch = await CryptoService.getSessionStopEpoch();
+      if (await CryptoService.isSessionStopPending()) return false;
+
       final existing = await CryptoService.getPendingSessionCandidate();
       if (existing != null && existing != nonce) return false;
 
@@ -44,13 +47,33 @@ class SessionCandidateService {
         return false;
       }
 
+      if (!await _registrationStillCurrent(stopEpoch)) {
+        await _cancelExact(deviceId, nonce);
+        return false;
+      }
+
       try {
         await CryptoService.setPendingSessionCandidate(nonce);
-        return true;
       } catch (_) {
         await _cancelExact(deviceId, nonce);
         return false;
       }
+
+      if (!await _registrationStillCurrent(stopEpoch)) {
+        final cancelled = await _cancelExact(deviceId, nonce);
+        if (cancelled) {
+          await CryptoService.clearPendingSessionCandidate();
+        } else if (!await CryptoService.isSessionStopPending()) {
+          try {
+            await CryptoService.setSessionStopPending();
+          } catch (_) {
+            // The pending candidate remains durable and blocks another main flow.
+          }
+        }
+        return false;
+      }
+
+      return true;
     } catch (_) {
       return false;
     }
@@ -59,23 +82,36 @@ class SessionCandidateService {
   static Future<bool> isCurrent(String nonce) async {
     if (!_canonicalNonce.hasMatch(nonce)) return false;
     try {
+      if (await CryptoService.isSessionStopPending()) return false;
       return await CryptoService.getPendingSessionCandidate() == nonce;
     } catch (_) {
       return false;
     }
   }
 
-  /// Cancel an acknowledged but not-yet-confirmed candidate. stopSession()
-  /// advances Hivemind's mutation epoch synchronously and persists the durable
-  /// stop marker before reading the credential. CryptoService exposes the pending
-  /// candidate to that stop path only while the explicit stop marker is present.
+  /// Cancel an acknowledged but not-yet-confirmed candidate directly with the
+  /// exact nonce. The same endpoint also revokes it if Google SSV won the race
+  /// and already promoted that nonce to a provisioning/active generation.
   static Future<bool> cancelPending() async {
     final candidate = await CryptoService.getPendingSessionCandidate();
     if (candidate == null) return true;
 
     try {
-      final result = await HivemindService.stopSession();
-      return result != SessionStopResult.retryNeeded;
+      final deviceId = await CryptoService.getDeviceId();
+      final cancelled = await _cancelExact(deviceId, candidate);
+      if (!cancelled) {
+        if (!await CryptoService.isSessionStopPending()) {
+          await CryptoService.setSessionStopPending();
+        }
+        return false;
+      }
+
+      await CryptoService.clearPendingSessionCandidate();
+      if (await CryptoService.isSessionStopPending() &&
+          await CryptoService.getSessionNonce() == null) {
+        await CryptoService.clearSessionStopPending();
+      }
+      return true;
     } catch (_) {
       return false;
     }
@@ -93,17 +129,24 @@ class SessionCandidateService {
     }
   }
 
-  static Future<void> _cancelExact(String deviceId, String nonce) async {
+  static Future<bool> _registrationStillCurrent(int stopEpoch) async {
+    if (await CryptoService.isSessionStopPending()) return false;
+    return await CryptoService.getSessionStopEpoch() == stopEpoch;
+  }
+
+  static Future<bool> _cancelExact(String deviceId, String nonce) async {
     try {
-      await HivemindService.directPost(
+      final response = await HivemindService.directPost(
         _publicUrl('session/stop'),
         body: jsonEncode(<String, String>{'device_id': deviceId}),
         timeout: const Duration(seconds: 4),
         headers: <String, String>{_sessionNonceHeader: nonce},
       );
+      if (response.statusCode != 200) return false;
+      final decoded = jsonDecode(response.body);
+      return decoded is Map<String, dynamic> && decoded['ok'] == true;
     } catch (_) {
-      // The ad has not been shown yet, so no SSV callback can activate this
-      // untracked reservation. It expires on the server's fixed TTL.
+      return false;
     }
   }
 }
