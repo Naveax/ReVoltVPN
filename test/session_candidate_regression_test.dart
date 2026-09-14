@@ -43,6 +43,10 @@ void main() {
       cryptoSource,
       contains("_sessionStopEpochPref = 'session_stop_epoch'"),
     );
+    expect(
+      cryptoSource,
+      contains('_sessionStopStorageTail = Future<void>.value()'),
+    );
     expect(cryptoSource, contains('setPendingSessionCandidate(String nonce)'));
     expect(cryptoSource, contains('getPendingSessionCandidate()'));
     expect(cryptoSource, contains('getSessionStopEpoch()'));
@@ -65,6 +69,18 @@ void main() {
     expect(
       cryptoSource,
       contains('value: (current + 1).toString(),'),
+    );
+    expect(
+      cryptoSource,
+      contains('return _serializeSessionStopStorage(() async {'),
+    );
+    expect(
+      cryptoSource,
+      contains('return _serializeSessionStopStorage('),
+    );
+    expect(
+      cryptoSource,
+      contains('_sessionStopStorageTail.then((_) => action())'),
     );
 
     final mainStart = adSource.indexOf("if (adType == 'main') {");
