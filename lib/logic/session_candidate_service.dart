@@ -123,7 +123,7 @@ class SessionCandidateService {
     try {
       final candidate = await CryptoService.getPendingSessionCandidate();
       if (candidate == null) return true;
-      return cancelPending();
+      return await cancelPending();
     } catch (_) {
       return false;
     }
