@@ -80,6 +80,14 @@ for needle in (
 for needle in (
     "VLESS endpoint must be a bare IP literal.",
     "value.contains('%')",
+    "static bool _allowedIpv4(List<int> octets)",
+    "octets[0] == 127",
+    "octets[0] == 169 && octets[1] == 254",
+    "octets[0] >= 224 && octets[0] <= 239",
+    "static bool _allowedIpv6(List<int> words)",
+    "(words[0] & 0xff00) == 0xff00",
+    "(words[0] & 0xffc0) == 0xfe80",
+    "words[5] == 0xffff",
     "return '[$value]'",
     "candidate is! int || candidate < 1 || candidate > 65535",
 ):
