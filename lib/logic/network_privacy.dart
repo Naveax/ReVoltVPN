@@ -7,8 +7,8 @@ abstract final class NetworkPrivacy {
   /// Hostnames are deliberately rejected: the transport endpoint comes from the
   /// authenticated ReVoltVPN status response and must remain an IP literal so
   /// connecting the tunnel cannot silently introduce an OS-DNS bootstrap path.
-  /// Unspecified, loopback, link-local, multicast and IPv4 broadcast endpoints
-  /// are also rejected as defense in depth against a malformed server response.
+  /// Only public/global-unicast endpoint ranges are accepted; LAN, CGNAT,
+  /// documentation, benchmark, transition and other special-use ranges fail closed.
   static String vlessAuthorityHost(Object? value) {
     if (value is! String ||
         value.isEmpty ||
@@ -69,12 +69,26 @@ abstract final class NetworkPrivacy {
   }
 
   static bool _allowedIpv4(List<int> octets) {
-    final unspecified = octets.every((octet) => octet == 0);
-    final loopback = octets[0] == 127;
-    final linkLocal = octets[0] == 169 && octets[1] == 254;
-    final multicast = octets[0] >= 224 && octets[0] <= 239;
-    final broadcast = octets.every((octet) => octet == 255);
-    return !(unspecified || loopback || linkLocal || multicast || broadcast);
+    final a = octets[0];
+    final b = octets[1];
+    final c = octets[2];
+
+    // Production transport endpoints must be public Internet unicast, not merely
+    // syntactically valid literals. Otherwise a malformed/authenticated response
+    // could make the protected socket escape toward LAN, CGNAT or a special-use
+    // range on the physical network.
+    if (a == 0 || a == 10 || a == 127 || a >= 224) return false;
+    if (a == 100 && b >= 64 && b <= 127) return false; // RFC 6598 CGNAT.
+    if (a == 169 && b == 254) return false; // Link-local.
+    if (a == 172 && b >= 16 && b <= 31) return false; // RFC 1918.
+    if (a == 192 && b == 0 && c == 0) return false; // IETF special-use /24.
+    if (a == 192 && b == 0 && c == 2) return false; // TEST-NET-1.
+    if (a == 192 && b == 88 && c == 99) return false; // Deprecated 6to4 relay.
+    if (a == 192 && b == 168) return false; // RFC 1918.
+    if (a == 198 && (b == 18 || b == 19)) return false; // Benchmarking.
+    if (a == 198 && b == 51 && c == 100) return false; // TEST-NET-2.
+    if (a == 203 && b == 0 && c == 113) return false; // TEST-NET-3.
+    return true;
   }
 
   static List<int>? _parseIpv6Words(String value) {
@@ -140,24 +154,27 @@ abstract final class NetworkPrivacy {
   }
 
   static bool _allowedIpv6(List<int> words) {
-    final unspecified = words.every((word) => word == 0);
-    final loopback = words.take(7).every((word) => word == 0) && words[7] == 1;
-    final multicast = (words[0] & 0xff00) == 0xff00;
-    final linkLocal = (words[0] & 0xffc0) == 0xfe80;
-    if (unspecified || loopback || multicast || linkLocal) return false;
+    // Public IPv6 unicast is allocated from 2000::/3. This automatically
+    // excludes ULA, link-local, multicast, mapped/compatible and other local
+    // scopes before the narrower special-use exclusions below.
+    if ((words[0] & 0xe000) != 0x2000) return false;
 
-    // Also apply the IPv4 safety floor to IPv4-compatible/mapped literals.
-    final compatible = words.take(6).every((word) => word == 0);
-    final mapped =
-        words.take(5).every((word) => word == 0) && words[5] == 0xffff;
-    if (compatible || mapped) {
-      final ipv4 = <int>[
-        words[6] >> 8,
-        words[6] & 0xff,
-        words[7] >> 8,
-        words[7] & 0xff,
-      ];
-      return _allowedIpv4(ipv4);
+    if (words[0] == 0x2001) {
+      if (words[1] == 0x0000) return false; // Teredo 2001::/32.
+      if (words[1] == 0x0002 && words[2] == 0) {
+        return false; // Benchmarking 2001:2::/48.
+      }
+      if (words[1] == 0x0db8) return false; // Documentation 2001:db8::/32.
+      if ((words[1] & 0xfff0) == 0x0010) {
+        return false; // ORCHIDv1 2001:10::/28.
+      }
+      if ((words[1] & 0xfff0) == 0x0020) {
+        return false; // ORCHIDv2 2001:20::/28.
+      }
+    }
+    if (words[0] == 0x2002) return false; // Deprecated 6to4 2002::/16.
+    if (words[0] == 0x3fff && (words[1] & 0xf000) == 0) {
+      return false; // Documentation 3fff::/20.
     }
 
     return true;
