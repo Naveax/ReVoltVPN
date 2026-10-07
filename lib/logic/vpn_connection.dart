@@ -224,6 +224,13 @@ class VpnConnection extends ChangeNotifier {
       await _vless.startVless(
         remark: parsed.remark.isNotEmpty ? parsed.remark : 'Revolt VPN',
         config: parsed.getFullConfiguration(),
+        // Privacy v2: no application/subnet bypass is permitted in the managed
+        // ReVoltVPN profile. AndroidDnsPolicy.proxy installs a virtual resolver
+        // whose queries are forwarded through the selected VLESS outbound.
+        blockedApps: const <String>[],
+        bypassSubnets: const <String>[],
+        proxyOnly: false,
+        androidDnsPolicy: AndroidDnsPolicy.proxy,
       );
     } catch (e) {
       debugPrint('[VPN] Tunnel start error: $e');

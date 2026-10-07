@@ -52,6 +52,9 @@ jobs:
       - name: Resolve locked dependencies
         run: flutter pub get --enforce-lockfile
 
+      - name: Validate DNS and IPv6 privacy contract
+        run: python3 tool/check_dns_ipv6_privacy_contract.py
+
       - name: Materialize sanitized CI config
         shell: bash
         run: |

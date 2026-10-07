@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
+import 'package:revoltvpn/logic/network_privacy.dart';
 
 enum SessionProbeResult { active, inactive, unavailable }
 
@@ -469,8 +470,10 @@ class HivemindService {
             );
           } else if (data['active'] == true && data['vless_uuid'] != null) {
             final vlessUuid = data['vless_uuid'];
-            final vlessIp = data['vless_ip'] ?? AppConfig.serverIp;
-            final vlessPort = data['vless_port'] ?? 443;
+            final vlessHost = NetworkPrivacy.vlessAuthorityHost(
+              data['vless_ip'] ?? AppConfig.serverIp,
+            );
+            final vlessPort = NetworkPrivacy.vlessPort(data['vless_port']);
             final pbk = data['reality_pbk'] ?? '';
             final sid = data['reality_sid'] ?? '';
             final sni = data['reality_sni'];
@@ -480,7 +483,7 @@ class HivemindService {
             final fp = data['reality_fp'] ?? AppConfig.realityFp;
             final xhttpPath = data['xhttp_path'] ?? AppConfig.vlessPath;
 
-            final vlessUrl = 'vless://$vlessUuid@$vlessIp:$vlessPort'
+            final vlessUrl = 'vless://$vlessUuid@$vlessHost:$vlessPort'
                 '?security=${AppConfig.vlessSecurity}'
                 '&type=${AppConfig.vlessType}'
                 '&path=$xhttpPath'
