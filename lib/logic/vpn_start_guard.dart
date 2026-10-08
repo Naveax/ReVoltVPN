@@ -7,7 +7,27 @@ class VpnStartGuard {
   Future<void>? _starting;
   Future<void>? _lateCleanup;
   bool _lateCleanupFailed = false;
+  bool _authenticatedTunnel = false;
   bool get cancelled => _cancelled;
+  // A native callback or ping is not authenticated proof of a session.
+  bool get mayReportConnected =>
+      _authenticatedTunnel && !_cancelled && !cannotRestart;
+
+  void authorizeConnected() {
+    if (_cancelled || cannotRestart) {
+      throw StateError('Native VPN cannot be marked secure');
+    }
+    _authenticatedTunnel = true;
+  }
+
+  void invalidateConnected() => _authenticatedTunnel = false;
+
+  // Native teardown failure is not recoverable by another unverified start.
+  void blockUnsafeRestart() {
+    _authenticatedTunnel = false;
+    _lateCleanupFailed = true;
+  }
+
   bool get isStarting => _starting != null;
   bool get cannotRestart =>
       _starting != null || _lateCleanup != null || _lateCleanupFailed;
@@ -17,9 +37,13 @@ class VpnStartGuard {
       throw StateError('Previous VPN start or cleanup has not settled');
     }
     _cancelled = false;
+    _authenticatedTunnel = false;
   }
 
-  void cancel() => _cancelled = true;
+  void cancel() {
+    _cancelled = true;
+    _authenticatedTunnel = false;
+  }
 
   /// Registers the native Future synchronously, without an await gap.
   Future<bool> start(Future<void> Function() begin) async {

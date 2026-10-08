@@ -108,8 +108,40 @@ class VpnConnection extends ChangeNotifier {
 
       final delay = await _vless.getConnectedServerDelay();
       if (delay > 0) {
-        _isStartupRestoration = true;
-        _setStatus(VpnStatus.connected, 'Secured');
+        // Native delay is NOT proof of current server authorization: an old
+        // tunnel may survive process restart after its nonce was revoked.
+        final ownedNonce = await CryptoService.getSessionNonce();
+        final probe = ownedNonce == null
+            ? SessionProbeResult.inactive
+            : await HivemindService.probeCurrentSession();
+        // An explicit revoke intent outranks an earlier status response.
+        // This read also closes the initialization-vs-health-recovery window.
+        final stopPending = await CryptoService.isSessionStopPending();
+        if (_cancelled) return;
+        if (probe == SessionProbeResult.active && !stopPending) {
+          _startGuard.authorizeConnected();
+          _isStartupRestoration = true;
+          _setStatus(VpnStatus.connected, 'Secured');
+        } else {
+          _startGuard.invalidateConnected();
+          try {
+            await _vless.stopVless().timeout(const Duration(seconds: 5));
+            _setStatus(
+                stopPending || probe == SessionProbeResult.unavailable
+                    ? VpnStatus.error
+                    : VpnStatus.disconnected,
+                stopPending
+                    ? 'Revocation pending'
+                    : probe == SessionProbeResult.unavailable
+                        ? 'Session verification unavailable'
+                        : 'Tap to connect');
+          } catch (e) {
+            _startGuard.blockUnsafeRestart();
+            _errorMessage = 'Unverified native VPN shutdown failed.';
+            _setStatus(VpnStatus.error, 'Shutdown failed');
+            debugPrint('[VPN] Unverified startup cleanup failed: $e');
+          }
+        }
       }
     } catch (_) {}
   }
@@ -119,18 +151,28 @@ class VpnConnection extends ChangeNotifier {
     if (_cancelled || _status == VpnStatus.disconnecting) return;
     switch (status.connectionState) {
       case VlessConnectionState.connected:
+        // A stale native callback is untrusted until the current start future
+        // or authenticated startup restoration authorizes this generation.
+        if (!_startGuard.mayReportConnected) return;
         _setStatus(VpnStatus.connected, 'Secured');
         break;
       case VlessConnectionState.disconnected:
+        if (!_startGuard.mayReportConnected) return;
+        _startGuard.invalidateConnected();
         _isStartupRestoration = false;
         _setStatus(VpnStatus.disconnected, 'Tap to connect');
         break;
       case VlessConnectionState.connecting:
+        if (_status != VpnStatus.connecting) return;
         _setStatus(VpnStatus.connecting, 'Establishing tunnel…');
         break;
       case VlessConnectionState.disconnecting:
+        if (!_startGuard.mayReportConnected) return;
+        _startGuard.invalidateConnected();
         _isStartupRestoration = false;
-        _setStatus(VpnStatus.disconnecting, 'Tearing down…');
+        // The session timer will perform explicit revocation. Do not become
+        // stuck in disconnecting after the early native-event filter fires.
+        _setStatus(VpnStatus.disconnected, 'Tunnel dropped');
         break;
       case VlessConnectionState.unknown:
         if (_status != VpnStatus.connected &&
@@ -259,6 +301,7 @@ class VpnConnection extends ChangeNotifier {
     }
 
     if (_cancelled) return false;
+    _startGuard.authorizeConnected();
     _setStatus(VpnStatus.connected, 'Secured');
     return true;
   }

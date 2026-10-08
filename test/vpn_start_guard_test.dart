@@ -4,6 +4,71 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:revoltvpn/logic/vpn_start_guard.dart';
 
 void main() {
+  test('native connected callbacks are denied without authenticated state',
+      () async {
+    final guard = VpnStartGuard();
+    expect(guard.mayReportConnected, false);
+    guard.reset();
+    expect(guard.mayReportConnected, false);
+
+    final startDone = Completer<void>();
+    final start = guard.start(() => startDone.future);
+    expect(guard.mayReportConnected, false);
+    expect(guard.authorizeConnected, throwsStateError);
+    startDone.complete();
+    expect(await start, true);
+    expect(guard.mayReportConnected, false);
+    guard.authorizeConnected();
+    expect(guard.mayReportConnected, true);
+    guard.invalidateConnected();
+    expect(guard.mayReportConnected, false);
+  });
+
+  test('cancelled or reset generations reject old connected callbacks',
+      () async {
+    final guard = VpnStartGuard();
+    guard.authorizeConnected();
+    expect(guard.mayReportConnected, true);
+    guard.cancel();
+    expect(guard.mayReportConnected, false);
+    expect(guard.authorizeConnected, throwsStateError);
+    guard.reset();
+    expect(guard.mayReportConnected, false);
+    guard.authorizeConnected();
+    expect(guard.mayReportConnected, true);
+  });
+
+  test('failed startup restoration teardown permanently blocks reconnect',
+      () async {
+    final guard = VpnStartGuard();
+    guard.blockUnsafeRestart();
+    expect(guard.mayReportConnected, false);
+    expect(guard.cannotRestart, true);
+    expect(guard.authorizeConnected, throwsStateError);
+    expect(guard.reset, throwsStateError);
+  });
+
+  test('late start cleanup never authorizes connected in a new attempt',
+      () async {
+    final guard = VpnStartGuard();
+    final lateStart = Completer<void>();
+    final lateStop = Completer<void>();
+    final start = guard.start(() => lateStart.future);
+    guard.cancel();
+    expect(await guard.waitForStart(Duration.zero), false);
+    guard.stopAfterLateStart(() => lateStop.future);
+    expect(guard.mayReportConnected, false);
+    lateStart.complete();
+    expect(await start, false);
+    await Future<void>.delayed(Duration.zero);
+    expect(guard.authorizeConnected, throwsStateError);
+    lateStop.complete();
+    await Future<void>.delayed(Duration.zero);
+    expect(guard.cannotRestart, false);
+    guard.reset();
+    expect(guard.mayReportConnected, false);
+  });
+
   test('cancel before native start prevents any engine invocation', () async {
     final guard = VpnStartGuard();
     guard.cancel();
