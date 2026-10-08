@@ -37,6 +37,7 @@ required = [
     (tests, "direct native start is denied during failed cleanup latch"),
     (tests, "direct native start cannot bypass unfinished local cleanup"),
     (tests, "synchronous begin exception releases reservation after propagation"),
+    (tests, "stop marker write fault still stops native tunnel after a late start"),
     (vpn, "if (!_startGuard.mayReportConnected) return;"),
     (vpn, "final probe = ownedNonce == null"),
     (vpn, "await HivemindService.probeCurrentSession();"),
@@ -127,7 +128,9 @@ assert "await CryptoService.setSessionStopPending();" in disconnect
 # permit a new native start. Best-effort local + remote stop still execute.
 persistence = disconnect.split("await CryptoService.setSessionStopPending();", 1)[1].split("bool localStopFailed = false;", 1)[0]
 assert "catch (e) {" in persistence
-assert persistence.index("_startGuard.blockUnsafeRestart();") < persistence.index("await _vless.stopVless().timeout(")
+assert "if (_startGuard.isStarting) {" in persistence
+assert "_startGuard.stopAfterLateStart(" in persistence
+assert persistence.index("_startGuard.blockUnsafeRestart();") < persistence.index("_startGuard.stopAfterLateStart(") < persistence.index("await _vless.stopVless().timeout(")
 assert persistence.index("await _vless.stopVless().timeout(") < persistence.index("await HivemindService.stopSession(markPending: false);")
 assert persistence.index("await HivemindService.stopSession(markPending: false);") < persistence.index("_setStatus(VpnStatus.error, 'Shutdown not durable');")
 

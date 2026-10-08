@@ -4,6 +4,34 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:revoltvpn/logic/vpn_start_guard.dart';
 
 void main() {
+  test('stop marker write fault still stops native tunnel after a late start',
+      () async {
+    final guard = VpnStartGuard();
+    final starting = Completer<void>();
+    final lateStop = Completer<void>();
+    final start = guard.start(() => starting.future);
+    guard.cancel();
+    guard.blockUnsafeRestart();
+    var stops = 0;
+    guard.stopAfterLateStart(() {
+      stops++;
+      return lateStop.future;
+    });
+    expect(stops, 0);
+    expect(guard.cannotRestart, true);
+    starting.complete();
+    expect(await start, false);
+    await Future<void>.delayed(Duration.zero);
+    expect(stops, 1);
+    lateStop.complete();
+    await Future<void>.delayed(Duration.zero);
+    // Even if the deferred local stop succeeds, the missing durable marker
+    // prevents new admissions until a secure process recovery.
+    expect(guard.cannotRestart, true);
+    expect(await guard.start(() async {}), false);
+    expect(guard.reset, throwsStateError);
+  });
+
   test('synchronous native callback cannot reenter a second start', () async {
     final guard = VpnStartGuard();
     final native = Completer<void>();

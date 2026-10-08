@@ -384,6 +384,13 @@ class VpnConnection extends ChangeNotifier {
       _startGuard.blockUnsafeRestart();
       debugPrint('[VPN] Cannot persist stop intent: $e');
       if (!kIsWeb && _initialized) {
+        if (_startGuard.isStarting) {
+          // A start can settle after this immediate stop. Repeat teardown
+          // once it settles, even though the durable marker write failed.
+          // Keep the no-restart latch regardless of the cleanup outcome.
+          _startGuard.stopAfterLateStart(
+              () => _vless.stopVless().timeout(const Duration(seconds: 5)));
+        }
         try {
           await _vless.stopVless().timeout(const Duration(seconds: 5));
         } catch (stopError) {
