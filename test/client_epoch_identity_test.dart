@@ -7,6 +7,9 @@ class _MemoryEpochStorage implements ClientEpochStorage {
   bool rejectCandidateWrite = false;
   bool rejectNonceWrite = false;
   bool rejectRotationDelete = false;
+  bool rejectRotationWrite = false;
+  bool rejectNonceDelete = false;
+  bool rejectStopDelete = false;
 
   @override
   Future<String?> read(String key) async => values[key];
@@ -14,6 +17,7 @@ class _MemoryEpochStorage implements ClientEpochStorage {
   @override
   Future<void> write(String key, String value) async {
     if ((rejectIdentityWrite && key == ClientEpochIdentity.identityKey) ||
+        (rejectRotationWrite && key == ClientEpochIdentity.rotationReadyKey) ||
         (rejectCandidateWrite && key == ClientEpochIdentity.candidateKey) ||
         (rejectNonceWrite && key == ClientEpochIdentity.sessionNonceKey)) {
       throw StateError('simulated secure storage failure');
@@ -23,7 +27,9 @@ class _MemoryEpochStorage implements ClientEpochStorage {
 
   @override
   Future<void> delete(String key) async {
-    if (rejectRotationDelete && key == ClientEpochIdentity.rotationReadyKey) {
+    if ((rejectRotationDelete && key == ClientEpochIdentity.rotationReadyKey) ||
+        (rejectNonceDelete && key == ClientEpochIdentity.sessionNonceKey) ||
+        (rejectStopDelete && key == ClientEpochIdentity.stopPendingKey)) {
       throw StateError('simulated marker deletion failure');
     }
     values.remove(key);
@@ -35,6 +41,150 @@ void main() {
   const nextId = 'deadbeef-abcd-4000-8000-123456789abc';
   const candidate1 = '11111111111111111111111111111111';
   const candidate2 = '22222222222222222222222222222222';
+
+  test('confirmed exact stop receipt clears only its owned capability',
+      () async {
+    final store = _MemoryEpochStorage()
+      ..values[ClientEpochIdentity.identityKey] = oldId
+      ..values[ClientEpochIdentity.sessionNonceKey] = candidate1
+      ..values[ClientEpochIdentity.stopPendingKey] = '1';
+    final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+    expect(await epochs.completeAcknowledgedSessionStop(candidate1), true);
+    expect(await epochs.readSessionNonce(), null);
+    expect(store.values.containsKey(ClientEpochIdentity.stopPendingKey), false);
+    expect(store.values[ClientEpochIdentity.rotationReadyKey], '1');
+    expect(await epochs.beginCandidateReservation(candidate2), nextId);
+    expect(store.values[ClientEpochIdentity.identityKey], nextId);
+    expect(store.values[ClientEpochIdentity.candidateKey], candidate2);
+  });
+
+  test('stale stop receipt cannot erase a newer active nonce or stop intent',
+      () async {
+    final store = _MemoryEpochStorage()
+      ..values[ClientEpochIdentity.identityKey] = oldId
+      ..values[ClientEpochIdentity.sessionNonceKey] = candidate1
+      ..values[ClientEpochIdentity.stopPendingKey] = '1';
+    final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+    expect(await epochs.completeAcknowledgedSessionStop(candidate1), true);
+    expect(await epochs.beginCandidateReservation(candidate2), nextId);
+    expect(await epochs.promoteCandidate(candidate2), true);
+    await epochs.synchronizedStorage(
+        () => store.write(ClientEpochIdentity.stopPendingKey, '1'));
+    expect(await epochs.completeAcknowledgedSessionStop(candidate1), false);
+    expect(await epochs.readSessionNonce(), candidate2);
+    expect(store.values[ClientEpochIdentity.stopPendingKey], '1');
+    expect(
+        store.values.containsKey(ClientEpochIdentity.rotationReadyKey), false);
+    expect(store.values[ClientEpochIdentity.identityKey], nextId);
+  });
+
+  test('stop receipt refuses unresolved candidate and corrupt markers',
+      () async {
+    for (final blocker in [
+      ClientEpochIdentity.candidateKey,
+      ClientEpochIdentity.stopPendingKey,
+      ClientEpochIdentity.rotationReadyKey,
+    ]) {
+      final store = _MemoryEpochStorage()
+        ..values[ClientEpochIdentity.identityKey] = oldId
+        ..values[ClientEpochIdentity.sessionNonceKey] = candidate1
+        ..values[ClientEpochIdentity.stopPendingKey] = '1';
+      store.values[blocker] = blocker == ClientEpochIdentity.candidateKey
+          ? candidate2
+          : 'malformed';
+      final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+      expect(await epochs.completeAcknowledgedSessionStop(candidate1), false);
+      expect(await epochs.readSessionNonce(), candidate1);
+      expect(store.values[blocker], isNotNull);
+      expect(store.values.containsKey(ClientEpochIdentity.rotationReadyKey),
+          blocker == ClientEpochIdentity.rotationReadyKey);
+    }
+  });
+
+  test('rotation-marker write failure retains possession and pending stop',
+      () async {
+    final store = _MemoryEpochStorage()
+      ..values[ClientEpochIdentity.identityKey] = oldId
+      ..values[ClientEpochIdentity.sessionNonceKey] = candidate1
+      ..values[ClientEpochIdentity.stopPendingKey] = '1'
+      ..rejectRotationWrite = true;
+    final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+    await expectLater(epochs.completeAcknowledgedSessionStop(candidate1),
+        throwsA(isA<StateError>()));
+    expect(await epochs.readSessionNonce(), candidate1);
+    expect(store.values[ClientEpochIdentity.stopPendingKey], '1');
+    expect(
+        store.values.containsKey(ClientEpochIdentity.rotationReadyKey), false);
+    expect(await epochs.beginCandidateReservation(candidate2), null);
+    store.rejectRotationWrite = false;
+    expect(await epochs.completeAcknowledgedSessionStop(candidate1), true);
+  });
+
+  test('failed nonce deletion keeps rotation proof and owner across restart',
+      () async {
+    final store = _MemoryEpochStorage()
+      ..values[ClientEpochIdentity.identityKey] = oldId
+      ..values[ClientEpochIdentity.sessionNonceKey] = candidate1
+      ..values[ClientEpochIdentity.stopPendingKey] = '1'
+      ..rejectNonceDelete = true;
+    final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+    await expectLater(epochs.completeAcknowledgedSessionStop(candidate1),
+        throwsA(isA<StateError>()));
+    expect(store.values[ClientEpochIdentity.rotationReadyKey], '1');
+    expect(store.values[ClientEpochIdentity.sessionNonceKey], candidate1);
+    expect(await epochs.beginCandidateReservation(candidate2), null);
+    store.rejectNonceDelete = false;
+    final restarted = ClientEpochIdentity(store, newUuid: () => nextId);
+    expect(await restarted.completeAcknowledgedSessionStop(candidate1), true);
+    expect(await restarted.beginCandidateReservation(candidate2), nextId);
+  });
+
+  test('failed pending-stop deletion never allows a new candidate', () async {
+    final store = _MemoryEpochStorage()
+      ..values[ClientEpochIdentity.identityKey] = oldId
+      ..values[ClientEpochIdentity.sessionNonceKey] = candidate1
+      ..values[ClientEpochIdentity.stopPendingKey] = '1'
+      ..rejectStopDelete = true;
+    final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+    await expectLater(epochs.completeAcknowledgedSessionStop(candidate1),
+        throwsA(isA<StateError>()));
+    expect(await epochs.readSessionNonce(), null);
+    expect(store.values[ClientEpochIdentity.rotationReadyKey], '1');
+    expect(store.values[ClientEpochIdentity.stopPendingKey], '1');
+    expect(await epochs.beginCandidateReservation(candidate2), null);
+    store.rejectStopDelete = false;
+    final restarted = ClientEpochIdentity(store, newUuid: () => nextId);
+    expect(await restarted.clearStopIntentIfNoOwnership(), true);
+    expect(await restarted.beginCandidateReservation(candidate2), nextId);
+  });
+
+  test('receipt and candidate promotion serialize without erasing candidate',
+      () async {
+    for (final stopFirst in [true, false]) {
+      final store = _MemoryEpochStorage()
+        ..values[ClientEpochIdentity.identityKey] = oldId
+        ..values[ClientEpochIdentity.candidateKey] = candidate1
+        ..values[ClientEpochIdentity.stopPendingKey] = '1';
+      final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+      final outcomes = await Future.wait(stopFirst
+          ? [
+              epochs.completeAcknowledgedSessionStop(candidate1),
+              epochs.promoteCandidate(candidate1),
+            ]
+          : [
+              epochs.promoteCandidate(candidate1),
+              epochs.completeAcknowledgedSessionStop(candidate1),
+            ]);
+      expect(outcomes, stopFirst ? [false, true] : [true, true]);
+      if (stopFirst) {
+        expect(await epochs.readSessionNonce(), candidate1);
+        expect(await epochs.completeAcknowledgedSessionStop(candidate1), true);
+      }
+      expect(store.values[ClientEpochIdentity.rotationReadyKey], '1');
+      expect(
+          store.values.containsKey(ClientEpochIdentity.sessionNonceKey), false);
+    }
+  });
 
   test('durable nonce reader observes promotion and authenticated teardown',
       () async {

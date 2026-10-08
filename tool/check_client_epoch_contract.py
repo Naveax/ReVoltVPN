@@ -23,8 +23,13 @@ required = [
     (epoch, "Client epoch UUIDv4 generation failed"),
     (epoch, "Missing or invalid old client epoch"),
     (crypto, "FlutterSecureStorage"),
-    (crypto, "acknowledgeClientEpochTerminal()"),
-    (hivemind, "await CryptoService.acknowledgeClientEpochTerminal();"),
+    (crypto, "completeAcknowledgedSessionStop(String nonce)"),
+    (epoch, "Future<bool> completeAcknowledgedSessionStop(String nonce)"),
+    (hivemind, "await CryptoService.completeAcknowledgedSessionStop(nonce)"),
+    (tests, "confirmed exact stop receipt clears only its owned capability"),
+    (tests, "stale stop receipt cannot erase a newer active nonce or stop intent"),
+    (tests, "failed nonce deletion keeps rotation proof and owner across restart"),
+    (tests, "failed pending-stop deletion never allows a new candidate"),
     (hivemind, "return SessionStopResult.retryNeeded;"),
     (crypto, "beginMainSessionCandidate(String nonce)"),
     (epoch, "Future<String?> beginCandidateReservation(String nonce)"),
@@ -76,13 +81,11 @@ for source, phrase in required:
 
 # Corrupt durable possession/candidate values cannot be safely interpreted, but
 # must never be silently deleted: the reservation gate still blocks on them.
-for getter, following in (
-    ("getSessionNonce()", "clearSessionNonce()"),
-    ("getPendingSessionCandidate()", "releaseCandidateIfOwned(String nonce)"),
+for getter, terminator in (
+    ("getSessionNonce()", "// Candidate creation is deliberately"),
+    ("getPendingSessionCandidate()", "static Future<bool> releaseCandidateIfOwned"),
 ):
-    body = crypto.split("static Future<String?> " + getter, 1)[1].split(
-        ("static Future<bool> " if following.startswith("release") else "static Future<void> ") + following, 1
-    )[0]
+    body = crypto.split("static Future<String?> " + getter, 1)[1].split(terminator, 1)[0]
     assert "_storage.delete" not in body, f"Corrupt {getter} must not be discarded"
 
 assert "rotateClientEpochBeforeNewSession" not in ads
@@ -94,7 +97,10 @@ assert "static String? _sessionNonce;" not in hivemind
 assert "_sessionNonce = nonce" not in hivemind
 assert "if (_sessionNonce != null)" not in hivemind
 assert "return _sessionNonce;" not in hivemind
-assert "await CryptoService.clearSessionStopPending();" not in hivemind.split("static Future<bool> confirmAndSetSessionNonce", 1)[1].split("static Future<SessionStopResult> stopSession", 1)[0]
+assert "CryptoService.clearSessionStopPending()" not in hivemind
+assert "CryptoService.clearSessionNonce()" not in hivemind
+assert "acknowledgeClientEpochTerminal" not in crypto
+assert "static Future<void> clearSessionNonce()" not in crypto
 
 # Rotation must be local-only. The public API must not gain a linkable
 # old/new epoch mapping or an endpoint for pseudonym exchange.
@@ -104,11 +110,11 @@ for source in (hivemind, ads, crypto):
 
 # Status inactive can be emitted on invalid authorization and fail-closed
 # conditions. It is NOT a teardown receipt and cannot directly rotate epochs.
-assert "acknowledgeClientEpochTerminal" not in timer
+assert "completeAcknowledgedSessionStop" not in timer
 status_probe = hivemind.split("static Future<SessionProbeResult> probeCurrentSession() async", 1)[1]
 status_probe = status_probe.split("static Future<bool> confirmAndSetSessionNonce", 1)[0]
 assert "await stopSession();" in status_probe
-assert "acknowledgeClientEpochTerminal" not in status_probe
+assert "completeAcknowledgedSessionStop" not in status_probe
 assert "clearSessionNonce();" not in status_probe
 
 for label, source in (("stop", hivemind), ("status timer", timer)):
@@ -117,8 +123,13 @@ for label, source in (("stop", hivemind), ("status timer", timer)):
     fragment = source.split("} else if (response.statusCode == 401) {", 1)
     assert len(fragment) == 2, f"Missing explicit 401 boundary: {label}"
     guarded = fragment[1].split("}", 1)[0]
-    assert "acknowledgeClientEpochTerminal" not in guarded, label
+    assert "completeAcknowledgedSessionStop" not in guarded, label
     assert "clearSessionNonce" not in guarded, label
+
+finalize = epoch.split("Future<bool> completeAcknowledgedSessionStop(String nonce)", 1)[1].split("/// Reserve exactly one candidate", 1)[0]
+assert finalize.index("await _storage.read(sessionNonceKey) != nonce") < finalize.index("await _storage.write(rotationReadyKey, '1');")
+assert finalize.index("await _storage.read(candidateKey) != null") < finalize.index("await _storage.write(rotationReadyKey, '1');")
+assert finalize.index("await _storage.write(rotationReadyKey, '1');") < finalize.index("await _storage.delete(sessionNonceKey);") < finalize.index("await _storage.delete(stopPendingKey);")
 
 legacy_rotation = epoch.split("Future<bool> rotateBeforeNewSession()", 1)[1]
 assert legacy_rotation.index("await _storage.write(identityKey, replacement);") < legacy_rotation.index(

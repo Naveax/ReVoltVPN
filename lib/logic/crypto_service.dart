@@ -2,7 +2,6 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:revoltvpn/logic/client_epoch_identity.dart';
 
 class CryptoService {
-  static const String _sessionNoncePref = 'session_auth_nonce';
   static const String _pendingSessionCandidatePref =
       'pending_session_candidate_nonce';
   static const String _sessionStopPendingPref = 'session_stop_pending';
@@ -14,9 +13,12 @@ class CryptoService {
   /// Current server pseudonym; legacy wire field name is device_id.
   static Future<String> getDeviceId() => _epoch.current();
 
-  /// Call only after a server-authenticated final session state.
-  static Future<void> acknowledgeClientEpochTerminal() =>
-      _epoch.acknowledgeTerminal();
+  /// Consume an authenticated stop receipt only for its exact durable
+  /// possession nonce; rotation/nonce/stop records change under one gate.
+  static Future<bool> completeAcknowledgedSessionStop(String nonce) {
+    _validateSessionNonce(nonce);
+    return _epoch.completeAcknowledgedSessionStop(nonce);
+  }
 
   /// Atomically claim a new main candidate and any eligible epoch rotation.
   /// Returns the exact pseudonym to use for the server registration request.
@@ -39,9 +41,6 @@ class CryptoService {
   /// Return only a canonical 128-bit session nonce. Corrupt values must stay
   /// durable: deleting unknown possession can orphan a live server credential.
   static Future<String?> getSessionNonce() => _epoch.readSessionNonce();
-
-  static Future<void> clearSessionNonce() =>
-      _epoch.synchronizedStorage(() => _storage.delete(key: _sessionNoncePref));
 
   // Candidate creation is deliberately only exposed through
   // beginMainSessionCandidate. A separate setter would bypass the atomic
@@ -74,9 +73,6 @@ class CryptoService {
   // malformed marker may still represent an unresolved revocation intent.
   static Future<bool> isSessionStopPending() => _epoch.synchronizedStorage(
       () async => await _storage.read(key: _sessionStopPendingPref) != null);
-
-  static Future<void> clearSessionStopPending() => _epoch
-      .synchronizedStorage(() => _storage.delete(key: _sessionStopPendingPref));
 
   static void _validateSessionNonce(String nonce) {
     if (!_sessionNoncePattern.hasMatch(nonce)) {

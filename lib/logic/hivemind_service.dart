@@ -236,11 +236,6 @@ class HivemindService {
   // authorization credential for later authenticated calls.
   static Future<String?> getSessionNonce() => CryptoService.getSessionNonce();
 
-  static Future<void> clearSessionNonce() async {
-    await CryptoService.clearSessionNonce();
-    await CryptoService.clearSessionStopPending();
-  }
-
   static Future<http.Response> authenticatedGet(
     Uri uri, {
     Duration timeout = const Duration(seconds: 5),
@@ -389,9 +384,13 @@ class HivemindService {
           final data = jsonDecode(response.body);
           if (SessionTerminalEvidence.confirmedStopped(
               response.statusCode, data)) {
-            await CryptoService.acknowledgeClientEpochTerminal();
-            await clearSessionNonce();
-            return SessionStopResult.stopped;
+            // Bind this receipt to the exact durable capability. A stale
+            // response must not retire another nonce or clear a newer stop
+            // intent. Partial secure-store failures remain retryable.
+            if (await CryptoService.completeAcknowledgedSessionStop(nonce)) {
+              return SessionStopResult.stopped;
+            }
+            return SessionStopResult.retryNeeded;
           }
         } else if (response.statusCode == 401) {
           // HTTP authentication rejection is not a teardown receipt. The edge

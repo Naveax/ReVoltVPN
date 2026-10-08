@@ -94,6 +94,29 @@ class ClientEpochIdentity {
         await _storage.write(rotationReadyKey, '1');
       });
 
+  /// Finalize only an exact, server-authenticated /session/stop receipt.
+  /// The network request is completed before taking this storage lock.
+  /// Publish rotation proof first, then remove possession, then release stop
+  /// intent. On a storage failure, every partial state blocks unsafe reuse:
+  /// a surviving nonce/stop marker prohibits admission, and a surviving
+  /// rotation marker forces a fresh pseudonym before any next candidate.
+  Future<bool> completeAcknowledgedSessionStop(String nonce) =>
+      _exclusive(() async {
+        if (!RegExp(r'^[0-9a-f]{32}$').hasMatch(nonce)) return false;
+        if (await _storage.read(sessionNonceKey) != nonce) return false;
+        // An unresolved SSV candidate may still own server capability. Never
+        // retire the old epoch while any candidate needs reconciliation.
+        if (await _storage.read(candidateKey) != null) return false;
+        final rotation = await _storage.read(rotationReadyKey);
+        if (rotation != null && rotation != '1') return false;
+        final stop = await _storage.read(stopPendingKey);
+        if (stop != null && stop != '1') return false;
+        await _storage.write(rotationReadyKey, '1');
+        await _storage.delete(sessionNonceKey);
+        await _storage.delete(stopPendingKey);
+        return true;
+      });
+
   /// Reserve exactly one candidate and its epoch together, before any network I/O.
   /// A separate rotate-then-reserve pair is unsafe: another admission could
   /// claim a nonce for the previous or newly minted epoch between those awaits.
