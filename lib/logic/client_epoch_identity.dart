@@ -87,20 +87,26 @@ class ClientEpochIdentity {
           throw StateError('Invalid stored client epoch');
         }
         var identity = existing ?? _checkedNewId(null);
-        if (await _storage.read(rotationReadyKey) == '1') {
+        final rotationMarker = await _storage.read(rotationReadyKey);
+        if (rotationMarker != null && rotationMarker != '1') {
+          throw StateError('Corrupt client epoch rotation marker');
+        }
+        if (rotationMarker == '1') {
           // A terminal marker with no old pseudonym is an inconsistent store,
           // not permission to silently create an unrelated replacement.
           if (existing == null) {
             throw StateError('Missing or invalid old client epoch');
           }
-          // Validate/generate before consuming the marker, so a bad RNG value
-          // cannot silently erase the only evidence authorizing rotation.
+          // Publish the new identity before consuming rotation permission.
+          // If this secure write fails, the marker must still force rotation
+          // on retry: otherwise a stopped epoch could be reused remotely.
           identity = _checkedNewId(existing);
-          await _storage.delete(rotationReadyKey);
         }
-        // Persist the identity before the nonce, so any crash after nonce
-        // persistence still leaves one unambiguous owned epoch.
+        // Persist before consuming the marker and before registering the
+        // candidate. An interrupted marker deletion may cause an extra local
+        // rotation, but can never publish the retired identity to the server.
         if (identity != existing) await _storage.write(identityKey, identity);
+        if (rotationMarker == '1') await _storage.delete(rotationReadyKey);
         await _storage.write(candidateKey, nonce);
         return identity;
       });
@@ -141,19 +147,24 @@ class ClientEpochIdentity {
   /// Rotate at the start of the next main-session admission, not in the
   /// middle of an existing authenticated request. Never persist a mapping.
   Future<bool> rotateBeforeNewSession() => _exclusive(() async {
-        if (await _storage.read(rotationReadyKey) != '1') return false;
+        final rotationMarker = await _storage.read(rotationReadyKey);
+        if (rotationMarker == null) return false;
+        if (rotationMarker != '1') {
+          throw StateError('Corrupt client epoch rotation marker');
+        }
         for (final key in [sessionNonceKey, candidateKey, stopPendingKey]) {
           if (await _storage.read(key) != null) return false;
         }
-        // Consume first. If a process crashes here, privacy rotation is
-        // deferred rather than repeating and orphaning a newly minted epoch.
+        // Never consume rotation permission before persisting the replacement.
+        // An extra unpublished rotation on recovery is safer than reusing the
+        // previous server-visible epoch after a storage write failure.
         final previous = await _storage.read(identityKey);
         if (previous == null || !_uuidV4.hasMatch(previous)) {
           throw StateError('Missing or invalid old client epoch');
         }
         final replacement = _checkedNewId(previous);
-        await _storage.delete(rotationReadyKey);
         await _storage.write(identityKey, replacement);
+        await _storage.delete(rotationReadyKey);
         return true;
       });
 }

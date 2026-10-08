@@ -48,6 +48,10 @@ required = [
     (timer, "await _doDisconnect('Data cap reached');"),
     (hivemind, "final stop = await stopSession();"),
     (tests, "failed secure write never creates repeated untracked rotations"),
+    (tests, "reservation write failure retains rotation proof and old epoch"),
+    (tests, "marker deletion failure cannot expose retired epoch to new candidate"),
+    (tests, "malformed rotation marker blocks main admission and legacy rotation"),
+    (epoch, "Corrupt client epoch rotation marker"),
     (tests, "keeps epoch when a session, candidate or stop remains durable"),
     (evidence, "statusCode == 200"),
     (evidence, "body['active'] == false"),
@@ -102,8 +106,17 @@ for label, source in (("stop", hivemind), ("status timer", timer)):
     assert "acknowledgeClientEpochTerminal" not in guarded, label
     assert "clearSessionNonce" not in guarded, label
 
-assert epoch.index("await _storage.delete(rotationReadyKey);") < epoch.index(
-    "await _storage.write(identityKey, replacement);"
-), "Consume the durable marker before publishing the new epoch"
+legacy_rotation = epoch.split("Future<bool> rotateBeforeNewSession()", 1)[1]
+assert legacy_rotation.index("await _storage.write(identityKey, replacement);") < legacy_rotation.index(
+    "await _storage.delete(rotationReadyKey);"
+), "Never consume rotation proof before publishing the replacement UUID"
+
+admission = epoch.split("Future<String?> beginCandidateReservation(String nonce)", 1)[1].split(
+    "/// Promote the exact server-confirmed candidate", 1
+)[0]
+assert admission.index("await _storage.write(identityKey, identity);") < admission.index(
+    "await _storage.delete(rotationReadyKey);"
+) < admission.index("await _storage.write(candidateKey, nonce);")
+assert "if (rotationMarker != null && rotationMarker != '1')" in admission
 
 print("[PASS] client epoch rotation requires terminal proof, checks all durable blockers, and has no server-side mapping.")

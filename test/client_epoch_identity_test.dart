@@ -6,6 +6,7 @@ class _MemoryEpochStorage implements ClientEpochStorage {
   bool rejectIdentityWrite = false;
   bool rejectCandidateWrite = false;
   bool rejectNonceWrite = false;
+  bool rejectRotationDelete = false;
 
   @override
   Future<String?> read(String key) async => values[key];
@@ -22,6 +23,9 @@ class _MemoryEpochStorage implements ClientEpochStorage {
 
   @override
   Future<void> delete(String key) async {
+    if (rejectRotationDelete && key == ClientEpochIdentity.rotationReadyKey) {
+      throw StateError('simulated marker deletion failure');
+    }
     values.remove(key);
   }
 }
@@ -303,6 +307,63 @@ void main() {
     expect(store.values[ClientEpochIdentity.candidateKey], candidate1);
   });
 
+  test('reservation write failure retains rotation proof and old epoch',
+      () async {
+    final store = _MemoryEpochStorage()
+      ..values[ClientEpochIdentity.identityKey] = oldId;
+    final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+    await epochs.acknowledgeTerminal();
+    store.rejectIdentityWrite = true;
+    await expectLater(epochs.beginCandidateReservation(candidate1),
+        throwsA(isA<StateError>()));
+    expect(store.values[ClientEpochIdentity.identityKey], oldId);
+    expect(store.values[ClientEpochIdentity.rotationReadyKey], '1');
+    expect(store.values.containsKey(ClientEpochIdentity.candidateKey), false);
+    store.rejectIdentityWrite = false;
+    final afterRestart = ClientEpochIdentity(store, newUuid: () => nextId);
+    expect(await afterRestart.beginCandidateReservation(candidate2), nextId);
+    expect(store.values[ClientEpochIdentity.identityKey], nextId);
+    expect(store.values[ClientEpochIdentity.candidateKey], candidate2);
+  });
+
+  test('marker deletion failure cannot expose retired epoch to new candidate',
+      () async {
+    const thirdId = 'f00df00d-aaaa-4000-8000-000000000001';
+    final store = _MemoryEpochStorage()
+      ..values[ClientEpochIdentity.identityKey] = oldId;
+    await ClientEpochIdentity(store, newUuid: () => nextId)
+        .acknowledgeTerminal();
+    store.rejectRotationDelete = true;
+    await expectLater(
+        ClientEpochIdentity(store, newUuid: () => nextId)
+            .beginCandidateReservation(candidate1),
+        throwsA(isA<StateError>()));
+    expect(store.values[ClientEpochIdentity.identityKey], nextId);
+    expect(store.values[ClientEpochIdentity.rotationReadyKey], '1');
+    expect(store.values.containsKey(ClientEpochIdentity.candidateKey), false);
+    store.rejectRotationDelete = false;
+    final retry = ClientEpochIdentity(store, newUuid: () => thirdId);
+    expect(await retry.beginCandidateReservation(candidate2), thirdId);
+    expect(store.values[ClientEpochIdentity.identityKey], thirdId);
+    expect(store.values[ClientEpochIdentity.candidateKey], candidate2);
+    expect(await retry.beginCandidateReservation(candidate1), null);
+  });
+
+  test('malformed rotation marker blocks main admission and legacy rotation',
+      () async {
+    final store = _MemoryEpochStorage()
+      ..values[ClientEpochIdentity.identityKey] = oldId
+      ..values[ClientEpochIdentity.rotationReadyKey] = 'garbage';
+    final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+    await expectLater(epochs.beginCandidateReservation(candidate1),
+        throwsA(isA<StateError>()));
+    await expectLater(
+        epochs.rotateBeforeNewSession(), throwsA(isA<StateError>()));
+    expect(store.values[ClientEpochIdentity.identityKey], oldId);
+    expect(store.values[ClientEpochIdentity.rotationReadyKey], 'garbage');
+    expect(store.values.containsKey(ClientEpochIdentity.candidateKey), false);
+  });
+
   test('failed secure write never creates repeated untracked rotations',
       () async {
     final store = _MemoryEpochStorage()
@@ -314,7 +375,9 @@ void main() {
         epochs.rotateBeforeNewSession(), throwsA(isA<StateError>()));
     store.rejectIdentityWrite = false;
     expect(await epochs.current(), oldId);
-    expect(await epochs.rotateBeforeNewSession(), false);
+    expect(store.values[ClientEpochIdentity.rotationReadyKey], '1');
+    expect(await epochs.rotateBeforeNewSession(), true);
+    expect(await epochs.current(), nextId);
     expect(
         store.values.containsKey(ClientEpochIdentity.rotationReadyKey), false);
   });
