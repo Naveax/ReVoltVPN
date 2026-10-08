@@ -27,15 +27,17 @@ required = [
     (hivemind, "await CryptoService.acknowledgeClientEpochTerminal();"),
     (hivemind, "return SessionStopResult.retryNeeded;"),
     (ads, "await CryptoService.rotateClientEpochBeforeNewSession();"),
-    (timer, "await CryptoService.acknowledgeClientEpochTerminal();"),
+    (timer, "await _doDisconnect('Server ended session');"),
+    (timer, "await _doDisconnect('Data cap reached');"),
+    (hivemind, "final stop = await stopSession();"),
     (tests, "failed secure write never creates repeated untracked rotations"),
     (tests, "keeps epoch when a session, candidate or stop remains durable"),
     (evidence, "statusCode == 200"),
     (evidence, "body['active'] == false"),
     (evidence, "body['ok'] == true"),
     (hivemind, "SessionTerminalEvidence.confirmedStopped("),
-    (hivemind, "SessionTerminalEvidence.confirmedInactive("),
-    (timer, "SessionTerminalEvidence.confirmedInactive("),
+    (hivemind, "SessionTerminalEvidence.reportsInactive("),
+    (timer, "SessionTerminalEvidence.reportsInactive("),
     (evidence_tests, "HTTP $code must not authorize rotation"),
 ]
 for source, phrase in required:
@@ -46,6 +48,15 @@ for source, phrase in required:
 for source in (hivemind, ads, crypto):
     for forbidden in ("/session/rotate", "old_epoch", "new_epoch"):
         assert forbidden not in source, f"Remote/linkable rotation: {forbidden}"
+
+# Status inactive can be emitted on invalid authorization and fail-closed
+# conditions. It is NOT a teardown receipt and cannot directly rotate epochs.
+assert "acknowledgeClientEpochTerminal" not in timer
+status_probe = hivemind.split("static Future<SessionProbeResult> probeCurrentSession() async", 1)[1]
+status_probe = status_probe.split("static Future<bool> confirmAndSetSessionNonce", 1)[0]
+assert "await stopSession();" in status_probe
+assert "acknowledgeClientEpochTerminal" not in status_probe
+assert "clearSessionNonce();" not in status_probe
 
 for label, source in (("stop", hivemind), ("status timer", timer)):
     # A remote 401 is not authenticated Xray teardown evidence: retain the

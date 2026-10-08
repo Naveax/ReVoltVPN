@@ -3,7 +3,7 @@
 /// rejection (including an HTTP 401 from an edge proxy) is not proof that a
 /// credential was removed from Xray.
 abstract final class SessionTerminalEvidence {
-  static bool confirmedInactive(int statusCode, Object? body) =>
+  static bool reportsInactive(int statusCode, Object? body) =>
       statusCode == 200 &&
       body is Map<String, dynamic> &&
       body['active'] == false;

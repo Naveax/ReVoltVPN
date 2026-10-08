@@ -291,14 +291,17 @@ class HivemindService {
         return SessionProbeResult.active;
       }
       // Missing or malformed status is not proof of terminal teardown.
-      if (!SessionTerminalEvidence.confirmedInactive(
-          response.statusCode, data)) {
+      if (!SessionTerminalEvidence.reportsInactive(response.statusCode, data)) {
         return SessionProbeResult.unavailable;
       }
 
-      await CryptoService.acknowledgeClientEpochTerminal();
-      await clearSessionNonce();
-      return SessionProbeResult.inactive;
+      // The public status endpoint returns active:false for missing/mismatched
+      // auth and fail-closed latch states too. Only the explicit stop operation
+      // converges teardown/cancellation under the server's device gate.
+      final stop = await stopSession();
+      return stop == SessionStopResult.retryNeeded
+          ? SessionProbeResult.unavailable
+          : SessionProbeResult.inactive;
     } catch (_) {
       return SessionProbeResult.unavailable;
     }

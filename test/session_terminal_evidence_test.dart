@@ -3,8 +3,8 @@ import 'package:revoltvpn/logic/session_terminal_evidence.dart';
 
 void main() {
   test('inactive status needs explicit Boolean false and success', () {
-    expect(SessionTerminalEvidence.confirmedInactive(200, {'active': false}),
-        true);
+    expect(
+        SessionTerminalEvidence.reportsInactive(200, {'active': false}), true);
     for (final payload in [
       {'active': true},
       {'active': null},
@@ -16,12 +16,11 @@ void main() {
       [],
       'false',
     ]) {
-      expect(SessionTerminalEvidence.confirmedInactive(200, payload), false,
+      expect(SessionTerminalEvidence.reportsInactive(200, payload), false,
           reason: 'ambiguous payload cannot retire credential: $payload');
     }
     for (final status in [200 + 1, 400, 401, 403, 409, 429, 500, 503]) {
-      expect(
-          SessionTerminalEvidence.confirmedInactive(status, {'active': false}),
+      expect(SessionTerminalEvidence.reportsInactive(status, {'active': false}),
           false);
     }
   });

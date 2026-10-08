@@ -161,10 +161,10 @@ class SessionTimer extends ChangeNotifier {
           _markSyncFailure();
           return;
         }
-        if (SessionTerminalEvidence.confirmedInactive(
+        if (SessionTerminalEvidence.reportsInactive(
             response.statusCode, data)) {
-          await CryptoService.acknowledgeClientEpochTerminal();
-          await HivemindService.clearSessionNonce();
+          // Status alone is not Xray teardown proof. VPN disconnect persists
+          // intent and revokes the exact nonce before the epoch can rotate.
           await _doDisconnect('Server ended session');
           return;
         }
@@ -182,8 +182,6 @@ class SessionTimer extends ChangeNotifier {
 
         final capExhausted = data['cap_exhausted'] ?? false;
         if (capExhausted) {
-          await CryptoService.acknowledgeClientEpochTerminal();
-          await HivemindService.clearSessionNonce();
           await _doDisconnect('Data cap reached');
           return;
         }
