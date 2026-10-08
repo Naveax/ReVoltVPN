@@ -26,8 +26,18 @@ $links = Get-AdbText -Arguments @('shell','cat','/proc/net/dev')
 $installed = $packages -match '(?m)^package:com\.paladinvpn\.app\s*$'
 $owner = $vpn -match 'Active package name:\s*com\.paladinvpn\.app'
 $tunInterface = [regex]::IsMatch($links, '(?m)^\s*tun\d+:')
-$virtualResolverAdvertised = $conn.Contains('198.18.0.2')
-$vpnLink = [regex]::IsMatch($conn, 'InterfaceName:\s*tun\d+')
+# Only inspect the current, owned, connected VPN agent. A stale resolver
+# string elsewhere in dumpsys must never count as evidence.
+$agents = [regex]::Matches($conn, 'NetworkAgentInfo\{network\{\d+\}[\s\S]*?(?=NetworkAgentInfo\{network\{\d+\}|\z)')
+$ownedAgents = @($agents | Where-Object { $_.Value.Contains('ni{VPN CONNECTED extra: VPN:com.paladinvpn.app}') })
+$vpnAgent = if ($ownedAgents.Count -eq 1) { $ownedAgents[0].Value } else { '' }
+$linkMatch = [regex]::Match($vpnAgent, 'lp\{\{([\s\S]*?)\}\}\s+nc\{')
+$link = if ($linkMatch.Success) { $linkMatch.Groups[1].Value } else { '' }
+$vpnLink = $link -match 'InterfaceName:\s*tun\d+\b'
+$virtualResolverAdvertised = $link -match 'DnsAddresses:\s*\[\s*/198\.18\.0\.2\s*\]'
+$ipv4DefaultCaptured = $link -match '0\.0\.0\.0/0\s*->\s*0\.0\.0\.0\s+tun\d+\b'
+$ipv6DefaultUnreachable = $link -match '::/0\s+unreachable\b'
+$vpnBypassForbidden = $vpnAgent.Contains('bypassable=false')
 # Historical transitions are not proof of the presently enforced lockdown.
 $historicalLockdownEvent = [regex]::Matches(
     $vpn,'Mode changed: lockdown=(true|false) alwaysOn=(true|false)'
@@ -44,7 +54,10 @@ if ($ApkPath) {
 $status = if (-not $installed) { 'BLOCKED_NO_CLIENT' }
           elseif (-not $tunInterface -or -not $vpnLink) { 'BLOCKED_NO_ESTABLISHED_TUN' }
           elseif (-not $virtualResolverAdvertised) { 'BLOCKED_NO_VIRTUAL_DNS_PROOF' }
-          else { 'TUN_DNS_OBSERVED_LIVE_LEAK_TESTS_STILL_REQUIRED' }
+          elseif (-not $ipv4DefaultCaptured -or -not $ipv6DefaultUnreachable -or -not $vpnBypassForbidden) {
+              'BLOCKED_ROUTE_OR_BYPASS_POLICY'
+          }
+          else { 'TUN_DNS_ROUTES_OBSERVED_LIVE_LEAK_TESTS_STILL_REQUIRED' }
 
 [ordered]@{
     evidence_type = 'P0.8_READ_ONLY_PREFLIGHT_NOT_LEAK_ACCEPTANCE'
@@ -55,7 +68,11 @@ $status = if (-not $installed) { 'BLOCKED_NO_CLIENT' }
     vpn_owner_matches = [bool]$owner
     tun_interface_present = [bool]$tunInterface
     tun_linkproperties_present = [bool]$vpnLink
+    current_vpn_agent_unique = [bool]($ownedAgents.Count -eq 1)
     virtual_dns_observed = [bool]$virtualResolverAdvertised
+    ipv4_full_tunnel_route_observed = [bool]$ipv4DefaultCaptured
+    ipv6_default_route_unreachable_observed = [bool]$ipv6DefaultUnreachable
+    vpn_bypassable_false_observed = [bool]$vpnBypassForbidden
     last_lockdown_transition_not_current_proof = $lastEvent
     local_apk_sha256_not_installed_binary_attestation = $apkSha
     verdict = $status
