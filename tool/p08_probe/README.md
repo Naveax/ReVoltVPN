@@ -39,13 +39,20 @@ at 1.1.1.1:443. HTTPS/TLS certificate checks use the server hostname,
 not merely SNI. No user browsing data or session credentials are probed.
 
 `RESPONSE_VERIFIED` means an actual DNS wire response was read and its
-transaction ID/response flag matched; a TCP connect acknowledgment alone
+transaction ID, response flag, complete echoed QNAME, QTYPE and QCLASS matched.
+Header-only, truncated, altered or mismatched DNS questions are unverified.
+A TCP connect acknowledgment alone
 is not a DNS response. A reply may legitimately be carried by an active
 VPN. It is **not** by itself a leak. A timeout likewise does not prove a
 DNS packet did not escape. No-TUN network blocking requires all five
 direct DNS transport attempts to be denied at connect time in addition
 to the existing independent-UID IPv4/IPv6/DNS checks. Ambiguity yields
 `INCONCLUSIVE_OR_POSSIBLE_ESCAPE_INVESTIGATE` rather than a pass.
+
+`DnsEvidence.java` is a pure Java validation helper included in the isolated
+probe APK, with 14 positive/negative cases in `DnsEvidenceTest.java` that run
+in CI without Android networking, an upstream DNS resolver or user data.
+These tests confirm that a 12-byte DNS header is insufficient as evidence.
 
 Extended tests can take longer than the earlier probe. The script now
 uses a 45-second default deadline; use `-TimeoutSeconds 60` for a slow

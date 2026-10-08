@@ -67,6 +67,14 @@ jobs:
       - name: Validate independent P0.8 UID DNS probe contract
         run: python3 tool/check_p08_independent_probe_contract.py
 
+      - name: Run isolated P0.8 DNS wire evidence unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/p08-wire"
+          javac -encoding UTF-8 -d "$RUNNER_TEMP/p08-wire" tool/p08_probe/DnsEvidence.java tool/p08_probe/DnsEvidenceTest.java
+          java -cp "$RUNNER_TEMP/p08-wire" dev.naveax.p08probe.DnsEvidenceTest
+
       - name: Materialize sanitized CI config
         shell: bash
         run: |

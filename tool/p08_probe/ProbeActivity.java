@@ -60,9 +60,7 @@ public final class ProbeActivity extends Activity {
     }
 
     private static boolean validDnsResponse(byte[] query, byte[] reply) {
-        return reply.length >= 12 && reply[0] == query[0] &&
-            reply[1] == query[1] && (reply[2] & 0x80) != 0 &&
-            (reply[5] & 0xff) == 1;
+        return DnsEvidence.matchesExactQuestion(query, reply);
     }
 
     private static byte[] readFully(InputStream stream, int length) throws Exception {
@@ -199,7 +197,9 @@ public final class ProbeActivity extends Activity {
                 byte[] reply = readFully(in, size);
                 return validDnsResponse(query, reply) ? "RESPONSE_VERIFIED" : "UNVERIFIED_REPLY";
             }
-            byte[] reply = readFully(in, 12);
+            // A 12-byte response header is not evidence of the exact DNS
+            // question. Require the complete query-sized prefix at minimum.
+            byte[] reply = readFully(in, query.length);
             return validDnsResponse(query, reply) ? "RESPONSE_VERIFIED" : "UNVERIFIED_REPLY";
         } catch (Exception e) {
             return "NO_VERIFIED_RESPONSE_" + e.getClass().getSimpleName();

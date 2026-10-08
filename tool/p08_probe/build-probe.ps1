@@ -26,15 +26,16 @@ $classes = Join-Path $OutputDir 'classes'
 $dex = Join-Path $OutputDir 'dex'
 New-Item -ItemType Directory -Force $classes, $dex | Out-Null
 $source = Join-Path $PSScriptRoot 'ProbeActivity.java'
+$wire = Join-Path $PSScriptRoot 'DnsEvidence.java'
 $manifest = Join-Path $PSScriptRoot 'AndroidManifest.xml'
 $unsigned = Join-Path $OutputDir 'base-unsigned.apk'
 $aligned = Join-Path $OutputDir 'base-aligned.apk'
 $apk = Join-Path $OutputDir 'probe.apk'
 $key = Join-Path $OutputDir 'probe.jks'
 
-& $javac -source 8 -target 8 -classpath $platform -d $classes $source
+& $javac -source 8 -target 8 -classpath $platform -d $classes $source $wire
 if ($LASTEXITCODE -ne 0) { throw 'JAVAC_FAILED' }
-& $d8 --lib $platform --min-api 28 --output $dex (Join-Path $classes 'dev\naveax\p08probe\ProbeActivity.class')
+& $d8 --lib $platform --min-api 28 --output $dex (Join-Path $classes 'dev\naveax\p08probe\ProbeActivity.class') (Join-Path $classes 'dev\naveax\p08probe\DnsEvidence.class')
 if ($LASTEXITCODE -ne 0) { throw 'D8_FAILED' }
 & $aapt link -o $unsigned --manifest $manifest -I $platform
 if ($LASTEXITCODE -ne 0) { throw 'AAPT2_FAILED' }
