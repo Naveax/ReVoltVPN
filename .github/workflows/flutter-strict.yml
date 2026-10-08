@@ -64,6 +64,9 @@ jobs:
       - name: Validate active session accounting contract
         run: python3 tool/check_session_status_snapshot_contract.py
 
+      - name: Validate independent P0.8 UID DNS probe contract
+        run: python3 tool/check_p08_independent_probe_contract.py
+
       - name: Materialize sanitized CI config
         shell: bash
         run: |

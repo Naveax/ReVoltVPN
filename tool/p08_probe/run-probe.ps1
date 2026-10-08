@@ -3,7 +3,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$AdbPath,
     [Parameter(Mandatory=$true)][string]$Serial,
-    [ValidateRange(5,60)][int]$TimeoutSeconds = 25
+    [ValidateRange(10,90)][int]$TimeoutSeconds = 45
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
@@ -42,7 +42,9 @@ if (-not $complete) { throw 'Independent P0.8 probe did not reach PROBE_DONE' }
 # persist tokens, raw logcat, network destinations or per-UID payloads.
 $names = @(
     'ACTIVE_NETWORK','IPV4_TCP','IPV4_OTHER_TCP','IPV4_TLS_END_TO_END',
-    'IPV6_TCP','DNS_LOOKUP'
+    'IPV6_TCP','DNS_LOOKUP',
+    'DIRECT_DNS_A_UDP53','DIRECT_DNS_AAAA_UDP53','DIRECT_DNS_A_TCP53',
+    'DOT_DNS_A_TLS853','DOH_DNS_A_HTTPS443'
 )
 $parsed = @{}
 foreach ($name in $names) {
@@ -55,6 +57,21 @@ foreach ($name in $names) {
 $vpn = @($records | Where-Object {
     $_.Contains("RUN=$runId ACTIVE_NETWORK=") -and $_.Contains(' VPN=true ')
 }).Count -eq 1
+$directDnsNames = @(
+    'DIRECT_DNS_A_UDP53','DIRECT_DNS_AAAA_UDP53','DIRECT_DNS_A_TCP53',
+    'DOT_DNS_A_TLS853','DOH_DNS_A_HTTPS443'
+)
+# A DNS reply on any direct transport is an observation requiring underlay
+# correlation. It is never standalone proof of a leak or an approved tunnel.
+$verifiedDirectDnsReply = @($directDnsNames | Where-Object {
+    $parsed[$_] -eq 'RESPONSE_VERIFIED'
+}).Count -gt 0
+# No-TUN network blocking can only be claimed if each new direct DNS
+# transport failed before it could even connect. A UDP timeout alone is
+# not proof the request never escaped through an underlay network.
+$dnsConnectDenied = @($directDnsNames | Where-Object {
+    $parsed[$_] -eq 'NO_VERIFIED_RESPONSE_ConnectException'
+}).Count -eq $directDnsNames.Count
 $noNetwork = $parsed['ACTIVE_NETWORK'] -eq 'NONE'
 $noTunBlocked = $noNetwork -and (-not $vpn) -and
     $parsed['IPV4_TCP'].StartsWith('BLOCKED_') -and
@@ -66,9 +83,9 @@ $syntheticTunBlocked = $vpn -and
     $parsed['IPV4_TLS_END_TO_END'].StartsWith('FAILED_') -and
     $parsed['IPV6_TCP'].StartsWith('BLOCKED_') -and
     $parsed['DNS_LOOKUP'].StartsWith('BLOCKED_')
-$verdict = if ($noTunBlocked) {
+$verdict = if ($noTunBlocked -and $dnsConnectDenied -and -not $verifiedDirectDnsReply) {
     'NO_TUN_UID_NETWORK_BLOCKING_OBSERVED'
-} elseif ($syntheticTunBlocked) {
+} elseif ($syntheticTunBlocked -and -not $verifiedDirectDnsReply) {
     'VPN_UID_DNS_IPV6_BLOCKED_IPV4_END_TO_END_UNPROVEN'
 } else {
     'INCONCLUSIVE_OR_POSSIBLE_ESCAPE_INVESTIGATE'
@@ -84,6 +101,13 @@ $verdict = if ($noTunBlocked) {
     ipv4_tls_end_to_end_result = $parsed['IPV4_TLS_END_TO_END']
     ipv6_result = $parsed['IPV6_TCP']
     dns_result = $parsed['DNS_LOOKUP']
+    direct_dns_a_udp53 = $parsed['DIRECT_DNS_A_UDP53']
+    direct_dns_aaaa_udp53 = $parsed['DIRECT_DNS_AAAA_UDP53']
+    direct_dns_a_tcp53 = $parsed['DIRECT_DNS_A_TCP53']
+    dot_dns_a_tls853 = $parsed['DOT_DNS_A_TLS853']
+    doh_dns_a_https443 = $parsed['DOH_DNS_A_HTTPS443']
+    direct_dns_valid_response_observed = [bool]$verifiedDirectDnsReply
+    all_direct_dns_attempts_denied_at_connect = [bool]$dnsConnectDenied
     verdict = $verdict
-    limitations = 'No physical underlay capture; local TCP connect is not server-backed forwarding evidence.'
+    limitations = 'A verified DNS response could be carried through a legitimate VPN, and no response cannot establish no underlay packets. Physical capture is mandatory; TCP connect acknowledgement is not end-to-end forwarding evidence.'
 } | ConvertTo-Json -Depth 3

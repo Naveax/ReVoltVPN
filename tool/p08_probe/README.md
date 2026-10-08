@@ -31,6 +31,27 @@ stop or start the VPN service, change routes, or install any package. It uses a
 random per-invocation log token so historical logcat lines cannot be mistaken
 for current acceptance evidence. Only redacted result types are returned.
 
+The extended independent-UID probe additionally sends bounded **test-only**
+`example.com` A and AAAA DNS wire queries directly to the public 1.1.1.1
+resolver over UDP/53; A over TCP/53; DNS-over-TLS to
+`cloudflare-dns.com` at 1.1.1.1:853; and DNS-over-HTTPS to the same name
+at 1.1.1.1:443. HTTPS/TLS certificate checks use the server hostname,
+not merely SNI. No user browsing data or session credentials are probed.
+
+`RESPONSE_VERIFIED` means an actual DNS wire response was read and its
+transaction ID/response flag matched; a TCP connect acknowledgment alone
+is not a DNS response. A reply may legitimately be carried by an active
+VPN. It is **not** by itself a leak. A timeout likewise does not prove a
+DNS packet did not escape. No-TUN network blocking requires all five
+direct DNS transport attempts to be denied at connect time in addition
+to the existing independent-UID IPv4/IPv6/DNS checks. Ambiguity yields
+`INCONCLUSIVE_OR_POSSIBLE_ESCAPE_INVESTIGATE` rather than a pass.
+
+Extended tests can take longer than the earlier probe. The script now
+uses a 45-second default deadline; use `-TimeoutSeconds 60` for a slow
+synthetic VPN. Production APK, VPN policies, routes and user DNS settings
+remain untouched.
+
 Expected scoped negative-path observations:
 - With lockdown active and no established TUN: no active network; IPv4, IPv6,
   TLS and default DNS fail.
