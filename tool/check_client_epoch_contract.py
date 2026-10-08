@@ -34,6 +34,7 @@ required = [
     (ads, "reserveSessionCandidate(nonce)"),
     (tests, "atomic admission rotates and owns exactly one candidate"),
     (tests, "stop intent and candidate claim share a serialization gate"),
+    (tests, "corrupt durable nonce and candidate still block a new epoch"),
     (timer, "await _doDisconnect('Server ended session');"),
     (timer, "await _doDisconnect('Data cap reached');"),
     (hivemind, "final stop = await stopSession();"),
@@ -49,6 +50,17 @@ required = [
 ]
 for source, phrase in required:
     assert phrase in source, f"Missing required client epoch invariant: {phrase}"
+
+# Corrupt durable possession/candidate values cannot be safely interpreted, but
+# must never be silently deleted: the reservation gate still blocks on them.
+for getter, following in (
+    ("getSessionNonce()", "clearSessionNonce()"),
+    ("getPendingSessionCandidate()", "clearPendingSessionCandidate()"),
+):
+    body = crypto.split("static Future<String?> " + getter, 1)[1].split(
+        "static Future<void> " + following, 1
+    )[0]
+    assert "_storage.delete" not in body, f"Corrupt {getter} must not be discarded"
 
 assert "rotateClientEpochBeforeNewSession" not in ads
 assert "rotateClientEpochBeforeNewSession" not in hivemind

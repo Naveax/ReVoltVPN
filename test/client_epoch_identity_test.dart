@@ -155,6 +155,24 @@ void main() {
     }
   });
 
+  test('corrupt durable nonce and candidate still block a new epoch', () async {
+    for (final blocker in [
+      ClientEpochIdentity.sessionNonceKey,
+      ClientEpochIdentity.candidateKey,
+    ]) {
+      final store = _MemoryEpochStorage()
+        ..values[ClientEpochIdentity.identityKey] = oldId
+        ..values[blocker] = 'corrupt-capability';
+      final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+      await epochs.acknowledgeTerminal();
+      expect(await epochs.beginCandidateReservation(candidate1), null);
+      final afterRestart = ClientEpochIdentity(store, newUuid: () => nextId);
+      expect(await afterRestart.beginCandidateReservation(candidate2), null);
+      expect(store.values[blocker], 'corrupt-capability');
+      expect(await afterRestart.current(), oldId);
+    }
+  });
+
   test('stop intent and candidate claim share a serialization gate', () async {
     final store = _MemoryEpochStorage()
       ..values[ClientEpochIdentity.identityKey] = oldId;

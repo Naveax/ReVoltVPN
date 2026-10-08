@@ -37,13 +37,15 @@ class CryptoService {
     });
   }
 
-  /// Return only a canonical 128-bit session nonce. Corrupt legacy values are discarded.
+  /// Return only a canonical 128-bit session nonce. Corrupt values must stay
+  /// durable: deleting unknown possession can orphan a live server credential.
   static Future<String?> getSessionNonce() =>
       _epoch.synchronizedStorage(() async {
         final nonce = await _storage.read(key: _sessionNoncePref);
         if (nonce == null) return null;
         if (!_sessionNoncePattern.hasMatch(nonce)) {
-          await _storage.delete(key: _sessionNoncePref);
+          // The atomic admission gate observes this non-null record and
+          // refuses any new identity/candidate until it is reconciled.
           return null;
         }
         return nonce;
@@ -61,7 +63,8 @@ class CryptoService {
         final nonce = await _storage.read(key: _pendingSessionCandidatePref);
         if (nonce == null) return null;
         if (!_sessionNoncePattern.hasMatch(nonce)) {
-          await _storage.delete(key: _pendingSessionCandidatePref);
+          // A malformed candidate can still correspond to a delayed SSV.
+          // Never silently remove the durable ownership blocker.
           return null;
         }
         return nonce;
