@@ -31,6 +31,51 @@ void main() {
     expect(fence.accepts(fence.current), true);
   });
 
+  test('same session permits only one active status request', () {
+    final fence = SessionSyncFence();
+    final first = fence.beginRequest();
+    expect(first, isNotNull);
+    expect(fence.beginRequest(), isNull);
+    fence.finishRequest(first!);
+    expect(fence.beginRequest(), first);
+  });
+
+  test('new session can poll while old HTTP request remains unresolved', () {
+    final fence = SessionSyncFence();
+    final old = fence.beginRequest()!;
+    fence.invalidate();
+    final fresh = fence.beginRequest()!;
+    expect(fresh, isNot(old));
+    expect(fence.accepts(old), false);
+    expect(fence.accepts(fresh), true);
+    expect(fence.beginRequest(), isNull);
+  });
+
+  test('old HTTP completion never releases new session request slot', () {
+    final fence = SessionSyncFence();
+    final old = fence.beginRequest()!;
+    fence.invalidate();
+    final fresh = fence.beginRequest()!;
+    fence.finishRequest(old);
+    expect(fence.beginRequest(), isNull);
+    fence.finishRequest(fresh);
+    expect(fence.beginRequest(), fresh);
+  });
+
+  test('two invalidations retire every earlier HTTP generation', () {
+    final fence = SessionSyncFence();
+    final first = fence.beginRequest()!;
+    fence.invalidate();
+    final second = fence.beginRequest()!;
+    fence.invalidate();
+    final third = fence.beginRequest()!;
+    fence.finishRequest(first);
+    fence.finishRequest(second);
+    expect(fence.beginRequest(), isNull);
+    fence.finishRequest(third);
+    expect(fence.beginRequest(), third);
+  });
+
   test('same-session concurrent requests retain the same generation', () {
     final fence = SessionSyncFence();
     final a = fence.current;

@@ -53,7 +53,7 @@ for test in (
 ):
     assert test in tests, f"Missing accounting regression: {test}"
 
-for token in ("int _generation = 0", "bool accepts(int generation)", "void invalidate()"):
+for token in ("int _generation = 0", "bool accepts(int generation)", "void invalidate()", "int? beginRequest()", "void finishRequest(int generation)", "_inFlightGeneration = null;"):
     assert token in fence, f"Missing epoch fence invariant: {token}"
 
 for test in (
@@ -61,14 +61,27 @@ for test in (
     "an old reply is rejected after disconnect and subsequent start",
     "later reconnect cannot revive either previous request",
     "same-session concurrent requests retain the same generation",
+    "same session permits only one active status request",
+    "new session can poll while old HTTP request remains unresolved",
+    "old HTTP completion never releases new session request slot",
+    "two invalidations retire every earlier HTTP generation",
 ):
     assert test in fence_tests, f"Missing stale-status regression: {test}"
 
 assert timer.count("_syncFence.invalidate();") >= 3
 sync = timer.split("Future<void> _syncWithHivemind() async {", 1)[1].split("void _markSyncFailure()", 1)[0]
-assert sync.index("final syncGeneration = _syncFence.current;") < sync.index("await HivemindService.authenticatedGet(url);")
-assert sync.index("await HivemindService.authenticatedGet(url);") < sync.index("if (_isDisconnecting || !_syncFence.accepts(syncGeneration)) return;") < sync.index("if (response.statusCode == 200) {")
-assert "if (_syncFence.accepts(syncGeneration) && !_isDisconnecting)" in sync
+assert "_syncInProgress" not in timer
+assert sync.index("final syncGeneration = _syncFence.beginRequest();") < sync.index("if (syncGeneration == null) return;") < sync.index("await HivemindService.authenticatedGet(url);")
+assert "_syncFence.finishRequest(syncGeneration);" in sync
+assert "if (_disposed || _isDisconnecting || !_syncFence.accepts(syncGeneration))" in sync
+assert "if (!_disposed &&" in sync
+assert "_syncFence.accepts(syncGeneration) &&" in sync
+assert "!_isDisconnecting) {" in sync
+assert "_notifyIfAlive();" in timer
+assert "if (!_disposed) notifyListeners();" in timer
+assert "_disposed = true;" in timer.split("void dispose() {", 1)[1]
+assert "_syncFence.invalidate();" in timer.split("void dispose() {", 1)[1]
+assert sync.index("await HivemindService.authenticatedGet(url);") < sync.index("if (_disposed || _isDisconnecting || !_syncFence.accepts(syncGeneration))") < sync.index("if (response.statusCode == 200) {")
 
 assert "python3 tool/check_session_status_snapshot_contract.py" in workflow
 print("[PASS] SessionTimer accepts only fully typed active Rust accounting; malformed and rolled-back counters cannot refresh its watchdog.")

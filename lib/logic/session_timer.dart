@@ -21,8 +21,8 @@ class SessionTimer extends ChangeNotifier {
   bool _hasSyncedOnce = false;
   int _consecutiveFailures = 0;
   bool _isDisconnecting = false;
-  bool _syncInProgress = false;
   final SessionSyncFence _syncFence = SessionSyncFence();
+  bool _disposed = false;
 
   static const int _maxConsecutiveFailures = 3;
   static const int _maxOfflineSeconds = 120;
@@ -53,6 +53,7 @@ class SessionTimer extends ChangeNotifier {
   }
 
   void _onVpnConnectionChanged() {
+    if (_disposed) return;
     // Restore timer if VPN was already running at app launch.
     if (vpnConnection.status == VpnStatus.connected &&
         !isRunning &&
@@ -77,6 +78,7 @@ class SessionTimer extends ChangeNotifier {
   }
 
   Future<void> start() async {
+    if (_disposed) return;
     // Responses from a prior session cannot affect this session's counters.
     _syncFence.invalidate();
     _remainingSeconds = 0;
@@ -92,12 +94,12 @@ class SessionTimer extends ChangeNotifier {
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), _tick);
 
-    notifyListeners();
+    _notifyIfAlive();
     _syncWithHivemind();
   }
 
   void _tick(Timer t) {
-    if (_isDisconnecting) return;
+    if (_disposed || _isDisconnecting) return;
     if (_hasSyncedOnce && _consecutiveFailures < _maxConsecutiveFailures) {
       if (_remainingSeconds > 0) {
         _remainingSeconds--;
@@ -122,7 +124,7 @@ class SessionTimer extends ChangeNotifier {
       _syncWithHivemind();
     }
 
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   Future<void> disconnect({String reason = 'User requested'}) async {
@@ -140,25 +142,26 @@ class SessionTimer extends ChangeNotifier {
     _currentSpeedKBps = 0.0;
     _remainingSeconds = 0;
     _hasSyncedOnce = false;
-    notifyListeners();
+    _notifyIfAlive();
 
     await vpnConnection.disconnect();
 
     if (!_isDisconnecting) return;
     _isDisconnecting = false;
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   Future<void> _syncWithHivemind() async {
-    if (_isDisconnecting || _syncInProgress) return;
-    _syncInProgress = true;
-    final syncGeneration = _syncFence.current;
+    if (_disposed || _isDisconnecting) return;
+    final syncGeneration = _syncFence.beginRequest();
+    if (syncGeneration == null) return;
     try {
       final deviceId = await CryptoService.getDeviceId();
       final url = Uri.parse(
           '${AppConfig.hivemindApiPublic}/session/status?device_id=$deviceId');
       final response = await HivemindService.authenticatedGet(url);
-      if (_isDisconnecting || !_syncFence.accepts(syncGeneration)) return;
+      if (_disposed || _isDisconnecting || !_syncFence.accepts(syncGeneration))
+        return;
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -204,7 +207,7 @@ class SessionTimer extends ChangeNotifier {
         _consecutiveFailures = 0;
         _offlineSeconds = 0;
         _hasSyncedOnce = true;
-        notifyListeners();
+        _notifyIfAlive();
       } else if (response.statusCode == 401) {
         // Authentication rejection can originate at an edge proxy and is not
         // evidence that the server removed this epoch's VLESS credential.
@@ -214,33 +217,42 @@ class SessionTimer extends ChangeNotifier {
       }
     } catch (e) {
       // An obsolete failed call cannot increment a new session's watchdog.
-      if (_syncFence.accepts(syncGeneration) && !_isDisconnecting) {
+      if (!_disposed &&
+          _syncFence.accepts(syncGeneration) &&
+          !_isDisconnecting) {
         debugPrint('Hivemind sync error: $e');
         _markSyncFailure();
       }
     } finally {
-      _syncInProgress = false;
+      _syncFence.finishRequest(syncGeneration);
     }
   }
 
   void _markSyncFailure() {
     _consecutiveFailures++;
     if (_consecutiveFailures >= _maxConsecutiveFailures) {
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
   void _resumeTicking() {
+    if (_disposed) return;
     _syncFence.invalidate();
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), _tick);
     _isDisconnecting = false;
     _syncWithHivemind();
-    notifyListeners();
+    _notifyIfAlive();
+  }
+
+  void _notifyIfAlive() {
+    if (!_disposed) notifyListeners();
   }
 
   @override
   void dispose() {
+    _disposed = true;
+    _syncFence.invalidate();
     vpnConnection.removeListener(_onVpnConnectionChanged);
     _timer?.cancel();
     super.dispose();
