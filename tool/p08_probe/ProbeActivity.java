@@ -206,6 +206,37 @@ public final class ProbeActivity extends Activity {
         }
     }
 
+    // Hold the OS network handle only in memory. Never log a handle, SSID,
+    // address, resolver IP or actual lookup. An endpoint response is otherwise
+    // easy to attribute to the WRONG VPN epoch after a handover.
+    private static final class NetworkSnapshot {
+        final Network handle;
+        final boolean vpn;
+        final int dnsCount;
+        NetworkSnapshot(Network handle, boolean vpn, int dnsCount) {
+            this.handle = handle;
+            this.vpn = vpn;
+            this.dnsCount = dnsCount;
+        }
+        boolean sameAs(NetworkSnapshot other) {
+            boolean sameHandle = handle == null ? other.handle == null :
+                handle.equals(other.handle);
+            return sameHandle && vpn == other.vpn && dnsCount == other.dnsCount;
+        }
+        String status() {
+            return handle == null ? "NONE" : "PRESENT";
+        }
+    }
+
+    private static NetworkSnapshot snapshot(ConnectivityManager cm) {
+        Network handle = cm.getActiveNetwork();
+        NetworkCapabilities caps = handle == null ? null : cm.getNetworkCapabilities(handle);
+        LinkProperties lp = handle == null ? null : cm.getLinkProperties(handle);
+        return new NetworkSnapshot(handle,
+                caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN),
+                lp == null ? -1 : lp.getDnsServers().size());
+    }
+
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         String runId = getIntent().getStringExtra("RUN_ID");
@@ -214,27 +245,40 @@ public final class ProbeActivity extends Activity {
         new Thread(() -> {
             try {
                 ConnectivityManager cm = (ConnectivityManager)getSystemService(CONNECTIVITY_SERVICE);
-                Network active = cm.getActiveNetwork();
-                NetworkCapabilities caps = active == null ? null : cm.getNetworkCapabilities(active);
-                LinkProperties lp = active == null ? null : cm.getLinkProperties(active);
-                Log.i(TAG, stamp + "ACTIVE_NETWORK=" + (active == null ? "NONE" : "PRESENT")
-                        + " VPN=" + (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN))
-                        + " DNS_COUNT=" + (lp == null ? -1 : lp.getDnsServers().size()));
+                NetworkSnapshot first = snapshot(cm);
+                boolean networkStable = true;
+                Log.i(TAG, stamp + "ACTIVE_NETWORK=" + first.status()
+                        + " VPN=" + first.vpn + " DNS_COUNT=" + first.dnsCount);
                 Log.i(TAG, stamp + "IPV4_TCP=" + socketResult(new byte[]{1,1,1,1},443));
+                networkStable &= first.sameAs(snapshot(cm));
                 Log.i(TAG, stamp + "IPV4_OTHER_TCP=" + socketResult(new byte[]{8,8,8,8},443));
+                networkStable &= first.sameAs(snapshot(cm));
                 Log.i(TAG, stamp + "IPV4_TLS_END_TO_END=" + tlsResult("one.one.one.one"));
+                networkStable &= first.sameAs(snapshot(cm));
                 Log.i(TAG, stamp + "DIRECT_DNS_A_UDP53=" + dnsUdpResult(1));
+                networkStable &= first.sameAs(snapshot(cm));
                 Log.i(TAG, stamp + "DIRECT_DNS_AAAA_UDP53=" + dnsUdpResult(28));
+                networkStable &= first.sameAs(snapshot(cm));
                 Log.i(TAG, stamp + "DIRECT_DNS_A_TCP53=" + dnsTcpResult());
+                networkStable &= first.sameAs(snapshot(cm));
                 Log.i(TAG, stamp + "DOT_DNS_A_TLS853=" + dotResult());
+                networkStable &= first.sameAs(snapshot(cm));
                 Log.i(TAG, stamp + "DOH_DNS_A_HTTPS443=" + dohResult());
+                networkStable &= first.sameAs(snapshot(cm));
                 Log.i(TAG, stamp + "IPV6_TCP=" + socketResult(new byte[]{0x26,0x06,0x47,0x00,0x47,0x00,0,0,0,0,0,0,0,0,0x11,0x11},443));
+                networkStable &= first.sameAs(snapshot(cm));
                 try {
                     InetAddress[] addresses=InetAddress.getAllByName("example.com");
                     Log.i(TAG, stamp + "DNS_LOOKUP=RESOLVED COUNT=" + addresses.length);
                 } catch (Exception e) {
                     Log.i(TAG, stamp + "DNS_LOOKUP=BLOCKED_" + e.getClass().getSimpleName());
                 }
+                networkStable &= first.sameAs(snapshot(cm));
+                NetworkSnapshot end = snapshot(cm);
+                networkStable &= first.sameAs(end);
+                Log.i(TAG, stamp + "NETWORK_END=" + end.status()
+                        + " VPN=" + end.vpn + " DNS_COUNT=" + end.dnsCount);
+                Log.i(TAG, stamp + "NETWORK_STABLE=" + networkStable);
                 Log.i(TAG, stamp + "PROBE_DONE");
             } catch (Throwable e) {
                 Log.e(TAG,stamp + "PROBE_FAILED="+e.getClass().getSimpleName());

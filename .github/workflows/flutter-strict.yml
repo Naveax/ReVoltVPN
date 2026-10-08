@@ -75,6 +75,10 @@ jobs:
           javac -encoding UTF-8 -d "$RUNNER_TEMP/p08-wire" tool/p08_probe/DnsEvidence.java tool/p08_probe/DnsEvidenceTest.java
           java -cp "$RUNNER_TEMP/p08-wire" dev.naveax.p08probe.DnsEvidenceTest
 
+      - name: Test P0.8 network change attribution with isolated mock ADB
+        shell: pwsh
+        run: ./tool/p08_probe/test-run-probe.ps1
+
       - name: Materialize sanitized CI config
         shell: bash
         run: |

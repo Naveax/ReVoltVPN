@@ -35,7 +35,20 @@ $key = Join-Path $OutputDir 'probe.jks'
 
 & $javac -source 8 -target 8 -classpath $platform -d $classes $source $wire
 if ($LASTEXITCODE -ne 0) { throw 'JAVAC_FAILED' }
-& $d8 --lib $platform --min-api 28 --output $dex (Join-Path $classes 'dev\naveax\p08probe\ProbeActivity.class') (Join-Path $classes 'dev\naveax\p08probe\DnsEvidence.class')
+# D8 only includes explicitly supplied .class files. ProbeActivity's
+# NetworkSnapshot is a nested class; omitting it compiles/signs an APK which
+# crashes at runtime with NoClassDefFoundError.
+$compiled = @(
+    (Join-Path $classes 'dev\naveax\p08probe\ProbeActivity.class')
+    (Join-Path $classes 'dev\naveax\p08probe\ProbeActivity$NetworkSnapshot.class')
+    (Join-Path $classes 'dev\naveax\p08probe\DnsEvidence.class')
+)
+foreach ($class in $compiled) {
+    if (-not (Test-Path -LiteralPath $class -PathType Leaf)) {
+        throw 'P0.8 probe required compiled class missing'
+    }
+}
+& $d8 --lib $platform --min-api 28 --output $dex @compiled
 if ($LASTEXITCODE -ne 0) { throw 'D8_FAILED' }
 & $aapt link -o $unsigned --manifest $manifest -I $platform
 if ($LASTEXITCODE -ne 0) { throw 'AAPT2_FAILED' }

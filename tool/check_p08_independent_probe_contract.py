@@ -11,6 +11,7 @@ wire = (root / "tool/p08_probe/DnsEvidence.java").read_text(encoding="utf-8")
 wire_tests = (root / "tool/p08_probe/DnsEvidenceTest.java").read_text(encoding="utf-8")
 runner = (root / "tool/p08_probe/run-probe.ps1").read_text(encoding="utf-8")
 build = (root / "tool/p08_probe/build-probe.ps1").read_text(encoding="utf-8")
+runner_tests = (root / "tool/p08_probe/test-run-probe.ps1").read_text(encoding="utf-8")
 readme = (root / "tool/p08_probe/README.md").read_text(encoding="utf-8")
 ci = (root / ".github/workflows/flutter-strict.yml").read_text(encoding="utf-8")
 
@@ -81,6 +82,28 @@ for token in (
     "direct_dns_valid_response_observed",
 ):
     assert token in runner, f"Missing fail-conservative independent UID evidence: {token}"
+
+# P0.8 observations need ownership of the SAME network throughout the
+# sequence. An isolated API35 app can switch networks while TCP/DNS runs.
+assert java.count("networkStable &= first.sameAs(snapshot(cm));") >= 10
+assert 'stamp + "NETWORK_END="' in java
+assert 'stamp + "NETWORK_STABLE="' in java
+assert "handle.equals(other.handle)" in java
+assert "sameHandle && vpn == other.vpn && dnsCount == other.dnsCount" in java
+assert "'NETWORK_END','NETWORK_STABLE'" in runner
+assert "$stableNetwork" in runner
+assert "($vpn -eq $endVpn)" in runner
+assert "$parsed['ACTIVE_NETWORK'] -ceq $parsed['NETWORK_END']" in runner
+assert "$stableNetwork -and $noTunBlocked" in runner
+assert "$stableNetwork -and $syntheticTunBlocked" in runner
+assert "network_stable_across_sampled_probes" in runner
+for scenario in ("stable", "intermediate_change", "vpn_flip", "missing_end", "duplicate_end", "probe_failed"):
+    assert scenario in runner_tests, f"Missing network change fake ADB scenario: {scenario}"
+assert 'ProbeActivity$NetworkSnapshot.class' in build
+assert 'PROBE_FAILED=' in runner
+assert "throw 'Independent P0.8 probe reported a runtime failure'" in runner
+assert "tool/p08_probe/test-run-probe.ps1" in ci
+assert "shell: pwsh" in ci
 
 assert "MANAGED_VPN_PRIVACY_PASS" not in runner
 assert "P0.8_ACCEPTED" not in runner

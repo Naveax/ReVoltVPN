@@ -59,6 +59,23 @@ uses a 45-second default deadline; use `-TimeoutSeconds 60` for a slow
 synthetic VPN. Production APK, VPN policies, routes and user DNS settings
 remain untouched.
 
+The probe now samples Android's current network handle, VPN transport
+classification and DNS server count **before and after each attempt**. Both
+the beginning and final network status are logged without device identifiers;
+`NETWORK_STABLE=true` is required for either limited positive verdict. A
+handover to another network (including another VPN instance), or any observed
+change in VPN classification/DNS count, results in
+`INCONCLUSIVE_OR_POSSIBLE_ESCAPE_INVESTIGATE`. Sampling is not continuous:
+a very brief transition between two snapshots may still be missed, so physical
+underlay capture remains mandatory. The pure mock-ADB regression script
+`test-run-probe.ps1` verifies stable, intermediate-change, VPN-to-no-network,
+missing-end, duplicate-end and runtime-failure scenarios and runs in GitHub
+Actions using PowerShell. It never launches ADB, changes settings or touches
+a real device. Any matching `PROBE_FAILED` event ends real runs immediately;
+they must not be confused with a successful test timeout. The APK build
+explicitly includes the nested `ProbeActivity$NetworkSnapshot.class` in D8
+inputs to prevent runtime `NoClassDefFoundError` after successful compilation.
+
 Expected scoped negative-path observations:
 - With lockdown active and no established TUN: no active network; IPv4, IPv6,
   TLS and default DNS fail.
