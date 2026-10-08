@@ -4,6 +4,34 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:revoltvpn/logic/vpn_start_guard.dart';
 
 void main() {
+  test('failed explicit native disconnect permanently denies reconnect',
+      () async {
+    final guard = VpnStartGuard();
+    guard.reset();
+    expect(await guard.start(() async {}), true);
+    guard.authorizeConnected();
+    expect(guard.mayReportConnected, true);
+    guard.cancel();
+    // Simulate stopVless throwing/timing out, even if server revoke succeeded.
+    guard.blockUnsafeRestart();
+    expect(guard.mayReportConnected, false);
+    expect(guard.cannotRestart, true);
+    expect(guard.reset, throwsStateError);
+    expect(await guard.start(() async {}), false);
+  });
+
+  test('failed startup revocation stop cannot be reset by status callbacks',
+      () async {
+    final guard = VpnStartGuard();
+    guard.blockUnsafeRestart();
+    expect(guard.cannotRestart, true);
+    expect(guard.authorizeConnected, throwsStateError);
+    expect(guard.reset, throwsStateError);
+    guard.cancel();
+    expect(guard.cannotRestart, true);
+    expect(guard.mayReportConnected, false);
+  });
+
   test('native connected callbacks are denied without authenticated state',
       () async {
     final guard = VpnStartGuard();

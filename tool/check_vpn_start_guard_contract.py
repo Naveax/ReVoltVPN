@@ -38,6 +38,8 @@ required = [
     (tests, "cancel during native start cannot report connected"),
     (tests, "timed out native start stays blocked through deferred cleanup"),
     (tests, "failed deferred native stop denies reconnection"),
+    (tests, "failed explicit native disconnect permanently denies reconnect"),
+    (tests, "failed startup revocation stop cannot be reset by status callbacks"),
     (workflow, "python3 tool/check_vpn_start_guard_contract.py"),
 ]
 for source, token in required:
@@ -60,4 +62,26 @@ assert disconnect.index("_startGuard.waitForStart(") < disconnect.index("_vless.
 assert disconnect.index("_vless.stopVless().timeout(") < disconnect.index("HivemindService.stopSession(markPending: false)")
 assert "await CryptoService.setSessionStopPending();" in disconnect
 
-print("[PASS] Native VPN start completion cannot override disconnect; late native stop is tracked and reconnect fails closed.")
+# A failed local stop is an unresolved TUN state, not merely a UI error.
+# Server revocation success does not prove the device's VPN engine stopped.
+local_failure = disconnect.split("if (localStopFailed) {", 1)[1].split("if (revocationPending) {", 1)[0]
+assert local_failure.index("_startGuard.blockUnsafeRestart();") < local_failure.index("_setStatus(VpnStatus.error, 'Shutdown failed');")
+assert disconnect.index("final stopResult = await HivemindService.stopSession(markPending: false);") < disconnect.index("if (localStopFailed) {")
+
+pending_startup = vpn.split("if (await CryptoService.isSessionStopPending()) {", 1)[1].split("final coreVersion =", 1)[0]
+assert pending_startup.index("if (!_initialized) {") < pending_startup.index("_startGuard.blockUnsafeRestart();") < pending_startup.index("await _vless.stopVless().timeout(")
+assert pending_startup.index("await _vless.stopVless().timeout(") < pending_startup.rindex("_startGuard.blockUnsafeRestart();")
+assert "var localStopFailed = !_initialized;" in pending_startup
+assert pending_startup.index("_startGuard.blockUnsafeRestart();") < pending_startup.index("final resolved = await HivemindService.retryPendingSessionStop();")
+assert pending_startup.index("if (localStopFailed) {") < pending_startup.index("if (resolved) {")
+
+# Initial health checks must never consume pending stop intent before local
+# engine shutdown and the first authenticated recovery decision have finished.
+init = vpn.split("Future<void> _init() async {", 1)[1].split("Future<void> _startEngine() async {", 1)[0]
+engine = vpn.split("Future<void> _startEngine() async {", 1)[1].split("void _mapStatus(", 1)[0]
+assert init.index("await _startEngine();") < init.index("unawaited(_checkHealth());")
+assert init.index("await _startEngine();") < init.index("_healthTimer ??=")
+assert "_checkHealth();" not in engine
+assert "Timer.periodic(" not in engine
+
+print("[PASS] Native VPN start completion cannot override disconnect; uncertain local shutdown denies restart and startup health waits for revocation handling.")

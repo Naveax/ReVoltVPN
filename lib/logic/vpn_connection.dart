@@ -49,6 +49,15 @@ class VpnConnection extends ChangeNotifier {
     } catch (e) {
       debugPrint('[VPN] Engine init failed: $e');
     } finally {
+      // Do not start background health/revocation recovery until the startup
+      // ownership gate and native restoration checks have fully settled.
+      // Earlier scheduling raced the initial pending-stop decision and could
+      // consume the marker before native teardown was checked.
+      if (!kIsWeb) {
+        _healthTimer ??=
+            Timer.periodic(const Duration(seconds: 30), (_) => _checkHealth());
+        unawaited(_checkHealth());
+      }
       if (!_readyCompleter.isCompleted) _readyCompleter.complete();
     }
   }
@@ -75,22 +84,36 @@ class VpnConnection extends ChangeNotifier {
       debugPrint('[VPN] VLESS init error (expected on emulator): $e');
     }
 
-    _checkHealth();
-    _healthTimer =
-        Timer.periodic(const Duration(seconds: 30), (_) => _checkHealth());
-
     // A prior explicit disconnect may have lost the network/process before the server confirmed
     // credential revocation. Honor that durable intent before attempting startup restoration.
     if (await CryptoService.isSessionStopPending()) {
-      if (_initialized) {
+      // An unavailable native engine cannot prove that the previous OS VPN
+      // has been torn down. Retain a fail-closed restart latch either way.
+      var localStopFailed = !_initialized;
+      if (!_initialized) {
+        _startGuard.blockUnsafeRestart();
+        debugPrint('[VPN] Pending revocation: native teardown unavailable.');
+      } else {
         try {
           await _vless.stopVless().timeout(const Duration(seconds: 5));
         } catch (e) {
+          localStopFailed = true;
+          _startGuard.blockUnsafeRestart();
           debugPrint('[VPN] Pending-revocation local stop failed: $e');
         }
       }
+      // Revoke the server capability even when local teardown is ambiguous.
+      // Never report a clean disconnect or allow a new native start if the
+      // previous engine did not confirm that it stopped.
       final resolved = await HivemindService.retryPendingSessionStop();
       _isStartupRestoration = false;
+      if (localStopFailed) {
+        _errorMessage = resolved
+            ? 'The previous VPN tunnel did not shut down cleanly. Restart the app.'
+            : 'VPN shutdown failed and server revocation is still pending.';
+        _setStatus(VpnStatus.error, 'Shutdown failed');
+        return;
+      }
       if (resolved) {
         _errorMessage = null;
         _setStatus(VpnStatus.disconnected, 'Tap to connect');
@@ -358,6 +381,9 @@ class VpnConnection extends ChangeNotifier {
 
     _isStartupRestoration = false;
     if (localStopFailed) {
+      // A failed native stop must not be treated as an ordinary UI error:
+      // the engine may still own the TUN. Deny any new start this process.
+      _startGuard.blockUnsafeRestart();
       _errorMessage = revocationPending
           ? 'VPN shutdown was ambiguous and server credential revocation is still pending.'
           : 'VPN did not shut down cleanly. Please restart the app.';
