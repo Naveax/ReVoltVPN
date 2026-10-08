@@ -32,6 +32,11 @@ required = [
     (tests, "failed partial-start cleanup locks down all future admissions"),
     (tests, "partial-start cleanup holds restart barrier until native stop settles"),
     (tests, "synchronous native stop failure is also fail closed"),
+    (tests, "synchronous native callback cannot reenter a second start"),
+    (tests, "synchronous cancellation during begin blocks an authenticated start"),
+    (tests, "direct native start is denied during failed cleanup latch"),
+    (tests, "direct native start cannot bypass unfinished local cleanup"),
+    (tests, "synchronous begin exception releases reservation after propagation"),
     (vpn, "if (!_startGuard.mayReportConnected) return;"),
     (vpn, "final probe = ownedNonce == null"),
     (vpn, "await HivemindService.probeCurrentSession();"),
@@ -52,6 +57,16 @@ required = [
 ]
 for source, token in required:
     assert token in source, f"Missing native VPN start/stop invariant: {token}"
+
+# An in-process caller can bypass the UI's connect() entrypoint. Guarding
+# only connect() is insufficient; the native start slot itself must reject
+# reentrant callbacks and forbidden post-teardown restart attempts.
+native_start = guard.split("Future<bool> start(Future<void> Function() begin) async {", 1)[1].split("Future<bool> waitForStart(", 1)[0]
+assert "if (_cancelled || cannotRestart) return false;" in native_start
+assert native_start.index("_starting = operation;") < native_start.index("Future<void>.sync(begin)")
+assert native_start.index("Future<void>.sync(begin)") < native_start.index("await operation;")
+assert "completion.completeError(error, trace);" in native_start
+assert "if (identical(_starting, operation)) _starting = null;" in native_start
 
 connect = vpn.split("Future<bool> _connectInner(", 1)[1].split("Future<void> disconnect()", 1)[0]
 assert connect.count("_vless.startVless(") == 1

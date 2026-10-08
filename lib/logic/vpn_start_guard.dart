@@ -45,14 +45,22 @@ class VpnStartGuard {
     _authenticatedTunnel = false;
   }
 
-  /// Registers the native Future synchronously, without an await gap.
+  /// Reserve the native start slot before invoking any platform code. The
+  /// platform callback may synchronously reenter start/cancel/disconnect.
   Future<bool> start(Future<void> Function() begin) async {
-    if (_cancelled || _starting != null) return false;
-    final operation = begin();
+    if (_cancelled || cannotRestart) return false;
+    final completion = Completer<void>();
+    final operation = completion.future;
     _starting = operation;
     try {
+      // Future.sync captures both synchronous platform exceptions and future
+      // failures while the reservation stays visible to reentrant callers.
+      Future<void>.sync(begin).then(completion.complete,
+          onError: (Object error, StackTrace trace) {
+        completion.completeError(error, trace);
+      });
       await operation;
-      return !_cancelled;
+      return !_cancelled && !_lateCleanupFailed;
     } finally {
       if (identical(_starting, operation)) _starting = null;
     }

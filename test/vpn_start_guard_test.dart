@@ -4,6 +4,88 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:revoltvpn/logic/vpn_start_guard.dart';
 
 void main() {
+  test('synchronous native callback cannot reenter a second start', () async {
+    final guard = VpnStartGuard();
+    final native = Completer<void>();
+    late final Future<bool> nested;
+    var invocations = 0;
+    final first = guard.start(() {
+      invocations++;
+      expect(guard.isStarting, true);
+      nested = guard.start(() {
+        invocations++;
+        return Future<void>.value();
+      });
+      return native.future;
+    });
+    expect(await nested, false);
+    expect(invocations, 1);
+    native.complete();
+    expect(await first, true);
+    expect(guard.isStarting, false);
+  });
+
+  test('synchronous cancellation during begin blocks an authenticated start',
+      () async {
+    final guard = VpnStartGuard();
+    final first = guard.start(() {
+      expect(guard.isStarting, true);
+      guard.cancel();
+      return Future<void>.value();
+    });
+    expect(await first, false);
+    expect(guard.mayReportConnected, false);
+    expect(guard.authorizeConnected, throwsStateError);
+  });
+
+  test('direct native start is denied during failed cleanup latch', () async {
+    final guard = VpnStartGuard();
+    guard.blockUnsafeRestart();
+    var called = false;
+    expect(
+        await guard.start(() {
+          called = true;
+          return Future<void>.value();
+        }),
+        false);
+    expect(called, false);
+  });
+
+  test('direct native start cannot bypass unfinished local cleanup', () async {
+    final guard = VpnStartGuard();
+    final pendingStop = Completer<void>();
+    final cleanup = guard.cleanupFailedStart(() => pendingStop.future);
+    var started = false;
+    expect(
+        await guard.start(() {
+          started = true;
+          return Future<void>.value();
+        }),
+        false);
+    expect(started, false);
+    pendingStop.complete();
+    expect(await cleanup, true);
+    expect(
+        await guard.start(() {
+          started = true;
+          return Future<void>.value();
+        }),
+        true);
+    expect(started, true);
+  });
+
+  test('synchronous begin exception releases reservation after propagation',
+      () async {
+    final guard = VpnStartGuard();
+    final started = guard.start(() {
+      expect(guard.isStarting, true);
+      throw StateError('platform start failed synchronously');
+    });
+    await expectLater(started, throwsStateError);
+    expect(guard.isStarting, false);
+    expect(await guard.start(() async {}), true);
+  });
+
   test('rejected native start stops partial VPN before retry', () async {
     final guard = VpnStartGuard();
     guard.reset();
