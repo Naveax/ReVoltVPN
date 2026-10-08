@@ -6,6 +6,8 @@ import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/session_terminal_evidence.dart';
+import 'package:revoltvpn/logic/session_status_snapshot.dart';
+import 'package:revoltvpn/logic/session_sync_fence.dart';
 
 class SessionTimer extends ChangeNotifier {
   Timer? _timer;
@@ -20,6 +22,7 @@ class SessionTimer extends ChangeNotifier {
   int _consecutiveFailures = 0;
   bool _isDisconnecting = false;
   bool _syncInProgress = false;
+  final SessionSyncFence _syncFence = SessionSyncFence();
 
   static const int _maxConsecutiveFailures = 3;
   static const int _maxOfflineSeconds = 120;
@@ -74,6 +77,8 @@ class SessionTimer extends ChangeNotifier {
   }
 
   Future<void> start() async {
+    // Responses from a prior session cannot affect this session's counters.
+    _syncFence.invalidate();
     _remainingSeconds = 0;
     _usedBytes = 0;
     _lastUsedBytes = 0;
@@ -127,6 +132,7 @@ class SessionTimer extends ChangeNotifier {
   Future<void> _doDisconnect(String reason) async {
     if (_isDisconnecting) return;
     _isDisconnecting = true;
+    _syncFence.invalidate();
     debugPrint('[Timer] Disconnecting: $reason');
 
     _timer?.cancel();
@@ -146,18 +152,20 @@ class SessionTimer extends ChangeNotifier {
   Future<void> _syncWithHivemind() async {
     if (_isDisconnecting || _syncInProgress) return;
     _syncInProgress = true;
+    final syncGeneration = _syncFence.current;
     try {
       final deviceId = await CryptoService.getDeviceId();
       final url = Uri.parse(
           '${AppConfig.hivemindApiPublic}/session/status?device_id=$deviceId');
       final response = await HivemindService.authenticatedGet(url);
+      if (_isDisconnecting || !_syncFence.accepts(syncGeneration)) return;
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
 
-        // Only an explicit server terminal state can authorize epoch retirement.
-        final activeValue = data['active'];
-        if (activeValue is! bool) {
+        // Status must be an object with a literal boolean state. A JSON list,
+        // string or malformed field cannot refresh the countdown/watchdog.
+        if (data is! Map<String, dynamic> || data['active'] is! bool) {
           _markSyncFailure();
           return;
         }
@@ -169,22 +177,29 @@ class SessionTimer extends ChangeNotifier {
           return;
         }
 
-        _remainingSeconds = data['expires_in_seconds'] ?? _remainingSeconds;
-        _usedBytes = data['used_bytes'] ?? _usedBytes;
-
-        final int deltaBytes = _usedBytes - _lastUsedBytes;
-        if (_hasSyncedOnce && deltaBytes > 0) {
-          _currentSpeedKBps = (deltaBytes / _pollIntervalSeconds) / 1000;
-        } else if (!_hasSyncedOnce) {
-          _currentSpeedKBps = 0.0;
-        }
-        _lastUsedBytes = _usedBytes;
-
-        final capExhausted = data['cap_exhausted'] ?? false;
-        if (capExhausted) {
-          await _doDisconnect('Data cap reached');
+        final snapshot = SessionStatusSnapshot.parseActive(data);
+        if (snapshot == null ||
+            (_hasSyncedOnce && snapshot.usedBytes < _usedBytes)) {
+          // The authenticated Rust response requires unsigned integral fields
+          // and a monotonic byte counter for the same session. Never retain an
+          // old expiry or mark malformed accounting as a successful sync.
+          _markSyncFailure();
           return;
         }
+        if (snapshot.mustStop) {
+          await _doDisconnect(snapshot.remainingSeconds == 0
+              ? 'Session expired'
+              : 'Data cap reached');
+          return;
+        }
+
+        final int deltaBytes = snapshot.usedBytes - _lastUsedBytes;
+        _currentSpeedKBps = _hasSyncedOnce && deltaBytes > 0
+            ? (deltaBytes / _pollIntervalSeconds) / 1000
+            : 0.0;
+        _remainingSeconds = snapshot.remainingSeconds;
+        _usedBytes = snapshot.usedBytes;
+        _lastUsedBytes = snapshot.usedBytes;
 
         _consecutiveFailures = 0;
         _offlineSeconds = 0;
@@ -198,8 +213,11 @@ class SessionTimer extends ChangeNotifier {
         _markSyncFailure();
       }
     } catch (e) {
-      debugPrint('Hivemind sync error: $e');
-      _markSyncFailure();
+      // An obsolete failed call cannot increment a new session's watchdog.
+      if (_syncFence.accepts(syncGeneration) && !_isDisconnecting) {
+        debugPrint('Hivemind sync error: $e');
+        _markSyncFailure();
+      }
     } finally {
       _syncInProgress = false;
     }
@@ -213,6 +231,7 @@ class SessionTimer extends ChangeNotifier {
   }
 
   void _resumeTicking() {
+    _syncFence.invalidate();
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), _tick);
     _isDisconnecting = false;

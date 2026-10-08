@@ -61,6 +61,9 @@ jobs:
       - name: Validate native VPN start and disconnect gate
         run: python3 tool/check_vpn_start_guard_contract.py
 
+      - name: Validate active session accounting contract
+        run: python3 tool/check_session_status_snapshot_contract.py
+
       - name: Materialize sanitized CI config
         shell: bash
         run: |
