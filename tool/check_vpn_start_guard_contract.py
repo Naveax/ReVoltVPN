@@ -185,10 +185,17 @@ health = vpn.split("Future<void> _checkHealthOnce() async {", 1)[1].split("void 
 assert "Future<void> _checkHealth() => _healthPollGate.run(_checkHealthOnce);" in vpn
 assert "final VpnHealthPollGate _healthPollGate = VpnHealthPollGate();" in vpn
 assert "Future<void>? _pending;" in health_gate
+assert "int? _pendingGeneration;" in health_gate
+assert "_pendingGeneration == _generation ? _pending : null" in health_gate
 assert "if (existing != null) return existing;" in health_gate
+assert "_pendingGeneration = _generation;" in health_gate
+assert "if (identical(_pending, current)) {" in health_gate
+assert health_gate.count("_pendingGeneration = null;") == 2
 assert health_gate.index("_pending = current;") < health_gate.index("Future<void>.sync(poll)")
 assert "timer reentry and overlapping ticks share one recovery operation" in health_tests
 assert "pending recovery error reaches every waiter then releases the gate" in health_tests
+assert "new epoch polls immediately while old network operation is hung" in health_tests
+assert "old epoch error cannot release a newer epoch recovery permit" in health_tests
 assert "if (_disposed || _disconnectBarrier.isStopping) return;" in health
 assert "final healthGeneration = _healthPollGate.generation;" in health
 assert "_healthPollGate.accepts(healthGeneration)" in health

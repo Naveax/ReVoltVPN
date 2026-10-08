@@ -4,6 +4,76 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:revoltvpn/logic/vpn_health_poll_gate.dart';
 
 void main() {
+  test('new epoch polls immediately while old network operation is hung',
+      () async {
+    final gate = VpnHealthPollGate();
+    final oldNetwork = Completer<void>();
+    final newNetwork = Completer<void>();
+    var oldCalls = 0;
+    var newCalls = 0;
+
+    final old = gate.run(() {
+      oldCalls++;
+      return oldNetwork.future;
+    });
+    expect(gate.isPolling, true);
+    gate.invalidate();
+    expect(gate.isPolling, false);
+
+    final fresh = gate.run(() {
+      newCalls++;
+      return newNetwork.future;
+    });
+    expect(identical(old, fresh), false);
+    expect(oldCalls, 1);
+    expect(newCalls, 1);
+    expect(gate.isPolling, true);
+    expect(
+        identical(fresh, gate.run(() async {
+          newCalls++;
+        })),
+        true);
+
+    // The old request completes before the new one, but cannot clear its slot.
+    oldNetwork.complete();
+    await old;
+    expect(gate.isPolling, true);
+    expect(newCalls, 1);
+
+    newNetwork.complete();
+    await fresh;
+    expect(gate.isPolling, false);
+  });
+
+  test('old epoch error cannot release a newer epoch recovery permit',
+      () async {
+    final gate = VpnHealthPollGate();
+    final oldFailure = Completer<void>();
+    final freshRecovery = Completer<void>();
+    final old = gate.run(() => oldFailure.future);
+    final oldFailed = expectLater(old, throwsStateError);
+    gate.invalidate();
+    var freshCalls = 0;
+    final fresh = gate.run(() {
+      freshCalls++;
+      return freshRecovery.future;
+    });
+    oldFailure.completeError(StateError('old request failed'));
+    await oldFailed;
+    expect(gate.isPolling, true);
+    expect(freshCalls, 1);
+    final joined = gate.run(() {
+      freshCalls++;
+      return Future<void>.value();
+    });
+    expect(identical(joined, fresh), true);
+    expect(freshCalls, 1);
+    freshRecovery.complete();
+    await fresh;
+    await joined;
+    expect(gate.isPolling, false);
+  });
+
   test('completed disconnect epoch invalidates delayed storage recovery',
       () async {
     final gate = VpnHealthPollGate();
