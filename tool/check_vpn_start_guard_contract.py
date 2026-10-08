@@ -4,6 +4,8 @@ root = Path(__file__).resolve().parents[1]
 vpn = (root / "lib/logic/vpn_connection.dart").read_text(encoding="utf-8")
 guard = (root / "lib/logic/vpn_start_guard.dart").read_text(encoding="utf-8")
 tests = (root / "test/vpn_start_guard_test.dart").read_text(encoding="utf-8")
+health_gate = (root / "lib/logic/vpn_health_poll_gate.dart").read_text(encoding="utf-8")
+health_tests = (root / "test/vpn_health_poll_gate_test.dart").read_text(encoding="utf-8")
 workflow = (root / ".github/workflows/flutter-strict.yml").read_text(encoding="utf-8")
 
 required = [
@@ -127,7 +129,7 @@ startup_init = vpn.split("Future<void> _init() async {", 1)[1].split("Future<voi
 assert "if (!kIsWeb && !_disposed)" in startup_init
 assert "if (_disposed) return;" in vpn.split("void _mapStatus(VlessStatus status)", 1)[1].split("switch (status.connectionState)", 1)[0]
 assert "if (_disposed) return;" in vpn.split("void _setStatus(VpnStatus s, String msg)", 1)[1].split("Future<void> _checkHealth()", 1)[0]
-assert "if (!_disposed) notifyListeners();" in vpn.split("Future<void> _checkHealth()", 1)[1].split("void dispose()", 1)[0]
+assert "if (stillCurrent()) notifyListeners();" in vpn.split("Future<void> _checkHealthOnce()", 1)[1].split("void dispose()", 1)[0]
 
 native_connected = vpn.split("case VlessConnectionState.connected:", 1)[1].split("case VlessConnectionState.disconnected:", 1)[0]
 assert native_connected.index("if (!_startGuard.mayReportConnected) return;") < native_connected.index("_setStatus(VpnStatus.connected, 'Secured');")
@@ -179,7 +181,27 @@ assert "Timer.periodic(" not in engine
 # A background recovery query is unawaited by the periodic timer. Storage
 # errors must produce a visible failure and no-restart latch, not an unhandled
 # Future which silently loses the stop-intent verification requirement.
-health = vpn.split("Future<void> _checkHealth() async {", 1)[1].split("void dispose()", 1)[0]
+health = vpn.split("Future<void> _checkHealthOnce() async {", 1)[1].split("void dispose()", 1)[0]
+assert "Future<void> _checkHealth() => _healthPollGate.run(_checkHealthOnce);" in vpn
+assert "final VpnHealthPollGate _healthPollGate = VpnHealthPollGate();" in vpn
+assert "Future<void>? _pending;" in health_gate
+assert "if (existing != null) return existing;" in health_gate
+assert health_gate.index("_pending = current;") < health_gate.index("Future<void>.sync(poll)")
+assert "timer reentry and overlapping ticks share one recovery operation" in health_tests
+assert "pending recovery error reaches every waiter then releases the gate" in health_tests
+assert "if (_disposed || _disconnectBarrier.isStopping) return;" in health
+assert "final healthGeneration = _healthPollGate.generation;" in health
+assert "_healthPollGate.accepts(healthGeneration)" in health
+assert health.count("if (!stillCurrent()) return;") >= 3
+assert "bool stillCurrent() =>" in health
+assert "if (!stillCurrent()) return;" in health.split("catch (e) {", 1)[1]
+assert "void invalidate() => _generation++;" in health_gate
+assert "bool accepts(int capturedGeneration) => capturedGeneration == _generation;" in health_gate
+assert "completed disconnect epoch invalidates delayed storage recovery" in health_tests
+assert "next connect epoch ignores obsolete health recovery errors" in health_tests
+assert "_healthPollGate.invalidate();" in vpn.split("Future<bool> connect(", 1)[1].split("Future<bool> _connectInner(", 1)[0]
+assert "_healthPollGate.invalidate();" in vpn.split("Future<void> disconnect() {", 1)[1].split("Future<void> _disconnectInner()", 1)[0]
+assert health.index("await CryptoService.isSessionStopPending()") < health.index("final resolved = await HivemindService.retryPendingSessionStop();")
 assert "try {" in health
 assert "await HivemindService.checkHealth();" in health
 assert "!_disconnectBarrier.isStopping &&" in health
@@ -187,6 +209,6 @@ assert "await CryptoService.isSessionStopPending()" in health
 assert "await HivemindService.retryPendingSessionStop();" in health
 assert "catch (e) {" in health
 assert health.index("catch (e) {") < health.index("_startGuard.blockUnsafeRestart();") < health.index("_setStatus(VpnStatus.error, 'Recovery unverified');")
-assert "if (_disposed) return;" in health.split("catch (e) {", 1)[1]
+assert "if (!stillCurrent()) return;" in health.split("catch (e) {", 1)[1]
 
 print("[PASS] Native start/stop and recovery checks reject reentrant callbacks, unverifiable health and ambiguous teardown.")

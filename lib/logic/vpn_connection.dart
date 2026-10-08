@@ -4,6 +4,7 @@ import 'package:flutter_vless/flutter_vless.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/vpn_start_guard.dart';
+import 'package:revoltvpn/logic/vpn_health_poll_gate.dart';
 import 'package:revoltvpn/logic/session_stop_barrier.dart';
 
 enum VpnStatus {
@@ -19,6 +20,7 @@ class VpnConnection extends ChangeNotifier {
   bool _connectInFlight = false;
   bool _disposed = false;
   final VpnStartGuard _startGuard = VpnStartGuard();
+  final VpnHealthPollGate _healthPollGate = VpnHealthPollGate();
   final SessionStopBarrier _disconnectBarrier = SessionStopBarrier();
   VpnStatus _status = VpnStatus.disconnected;
   VpnStatus get status => _status;
@@ -236,6 +238,7 @@ class VpnConnection extends ChangeNotifier {
         _status == VpnStatus.disconnecting ||
         _startGuard.cannotRestart) return false;
     _connectInFlight = true;
+    _healthPollGate.invalidate();
     try {
       _startGuard.reset();
       return await _connectInner(skipAdBypass: skipAdBypass);
@@ -360,6 +363,7 @@ class VpnConnection extends ChangeNotifier {
   }
 
   Future<void> disconnect() {
+    _healthPollGate.invalidate();
     // Cancel the native generation synchronously even when an existing stop
     // is underway; all callers must await that SAME exact teardown Future.
     _cancelled = true;
@@ -491,31 +495,43 @@ class VpnConnection extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _checkHealth() async {
-    if (_disposed) return;
+  Future<void> _checkHealth() => _healthPollGate.run(_checkHealthOnce);
+
+  Future<void> _checkHealthOnce() async {
+    if (_disposed || _disconnectBarrier.isStopping) return;
+    final healthGeneration = _healthPollGate.generation;
+    bool stillCurrent() =>
+        !_disposed &&
+        !_disconnectBarrier.isStopping &&
+        _healthPollGate.accepts(healthGeneration);
+
     try {
       final reachable = await HivemindService.checkHealth();
-      if (_disposed) return;
+      // A completed disconnect can release its barrier while this HTTP read
+      // is pending. The generation must still match before publishing state.
+      if (!stillCurrent()) return;
       _serverReachable = reachable;
-      // Explicit disconnect already owns this revocation. Health polling
-      // must not start a competing recovery operation while it is in flight.
-      if (_serverReachable &&
-          !_disconnectBarrier.isStopping &&
-          await CryptoService.isSessionStopPending()) {
-        if (_disposed) return;
-        final resolved = await HivemindService.retryPendingSessionStop();
-        if (_disposed) return;
-        if (resolved && _status == VpnStatus.disconnected) {
-          _errorMessage = null;
-          _setStatus(VpnStatus.disconnected, 'Tap to connect');
-          return;
+      // An in-flight storage read may finish AFTER an entire disconnect or
+      // reconnect. Neither a stale pending marker nor its errors may trigger
+      // recovery or lock a different session.
+      if (_serverReachable) {
+        final pending = await CryptoService.isSessionStopPending();
+        if (!stillCurrent()) return;
+        if (pending) {
+          final resolved = await HivemindService.retryPendingSessionStop();
+          if (!stillCurrent()) return;
+          if (resolved && _status == VpnStatus.disconnected) {
+            _errorMessage = null;
+            _setStatus(VpnStatus.disconnected, 'Tap to connect');
+            return;
+          }
         }
       }
-      if (!_disposed) notifyListeners();
+      if (stillCurrent()) notifyListeners();
     } catch (e) {
-      if (_disposed) return;
-      // This background Future is not awaited by the periodic timer. An
-      // unreadable stop marker / failed recovery is NOT terminal evidence.
+      if (!stillCurrent()) return;
+      // A current unreadable stop marker / failed recovery is NOT terminal
+      // evidence. Only current-session failures may deny new admissions.
       _startGuard.blockUnsafeRestart();
       _errorMessage =
           'Secure session recovery could not be verified. Reconnect is blocked.';
