@@ -154,8 +154,14 @@ class SessionTimer extends ChangeNotifier {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
 
-        final bool active = data['active'] ?? false;
-        if (!active) {
+        // Only an explicit server terminal state can authorize epoch retirement.
+        final activeValue = data['active'];
+        if (activeValue is! bool) {
+          _markSyncFailure();
+          return;
+        }
+        if (!activeValue) {
+          await CryptoService.acknowledgeClientEpochTerminal();
           await HivemindService.clearSessionNonce();
           await _doDisconnect('Server ended session');
           return;
@@ -174,6 +180,7 @@ class SessionTimer extends ChangeNotifier {
 
         final capExhausted = data['cap_exhausted'] ?? false;
         if (capExhausted) {
+          await CryptoService.acknowledgeClientEpochTerminal();
           await HivemindService.clearSessionNonce();
           await _doDisconnect('Data cap reached');
           return;
@@ -184,6 +191,7 @@ class SessionTimer extends ChangeNotifier {
         _hasSyncedOnce = true;
         notifyListeners();
       } else if (response.statusCode == 401) {
+        await CryptoService.acknowledgeClientEpochTerminal();
         await HivemindService.clearSessionNonce();
         await _doDisconnect('Session authorization expired');
       } else {

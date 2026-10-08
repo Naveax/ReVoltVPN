@@ -289,7 +289,10 @@ class HivemindService {
         }
         return SessionProbeResult.active;
       }
+      // Missing or malformed status is not proof of terminal teardown.
+      if (data['active'] != false) return SessionProbeResult.unavailable;
 
+      await CryptoService.acknowledgeClientEpochTerminal();
       await clearSessionNonce();
       return SessionProbeResult.inactive;
     } catch (_) {
@@ -383,10 +386,12 @@ class HivemindService {
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body);
           if (data is Map<String, dynamic> && data['ok'] == true) {
+            await CryptoService.acknowledgeClientEpochTerminal();
             await clearSessionNonce();
             return SessionStopResult.stopped;
           }
         } else if (response.statusCode == 401) {
+          await CryptoService.acknowledgeClientEpochTerminal();
           await clearSessionNonce();
           return SessionStopResult.alreadyInactive;
         }
@@ -410,7 +415,7 @@ class HivemindService {
     void Function(int attempt, int total)? onAttempt,
     bool skipAdBypass = false,
   }) async {
-    final deviceId = await CryptoService.getDeviceId();
+    var deviceId = await CryptoService.getDeviceId();
     final callId = ++_currentCallId;
 
     var nonce = await getSessionNonce();
@@ -423,6 +428,10 @@ class HivemindService {
       }
     }
     if (nonce == null && !skipAdBypass && kDebugMode) {
+      // The debug admission flow also observes the same epoch boundary.
+      // Do not rotate while candidate recovery is unresolved.
+      await CryptoService.rotateClientEpochBeforeNewSession();
+      deviceId = await CryptoService.getDeviceId();
       final candidate = newNonce();
       try {
         if (!await reserveSessionCandidate(candidate)) {

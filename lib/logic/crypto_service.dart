@@ -1,24 +1,26 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:uuid/uuid.dart';
+import 'package:revoltvpn/logic/client_epoch_identity.dart';
 
 class CryptoService {
-  static const String _deviceIdPref = 'device_uuid';
   static const String _sessionNoncePref = 'session_auth_nonce';
   static const String _pendingSessionCandidatePref =
       'pending_session_candidate_nonce';
   static const String _sessionStopPendingPref = 'session_stop_pending';
   static const _storage = FlutterSecureStorage();
+  static final ClientEpochIdentity _epoch =
+      ClientEpochIdentity(_SecureEpochStorage(_storage));
   static final RegExp _sessionNoncePattern = RegExp(r'^[0-9a-f]{32}$');
 
-  /// Get or create a persistent device UUID for server-side session tracking.
-  static Future<String> getDeviceId() async {
-    final existing = await _storage.read(key: _deviceIdPref);
-    if (existing != null) return existing;
+  /// Current server pseudonym; legacy wire field name is device_id.
+  static Future<String> getDeviceId() => _epoch.current();
 
-    final newId = const Uuid().v4();
-    await _storage.write(key: _deviceIdPref, value: newId);
-    return newId;
-  }
+  /// Call only after a server-authenticated final session state.
+  static Future<void> acknowledgeClientEpochTerminal() =>
+      _epoch.acknowledgeTerminal();
+
+  /// Called before minting the next main-session candidate, never on timeout.
+  static Future<bool> rotateClientEpochBeforeNewSession() =>
+      _epoch.rotateBeforeNewSession();
 
   /// Persist the current main-session possession token across app/process restarts.
   /// Promotion writes possession before clearing the pre-activation candidate. If the
@@ -90,4 +92,19 @@ class CryptoService {
       );
     }
   }
+}
+
+class _SecureEpochStorage implements ClientEpochStorage {
+  final FlutterSecureStorage _storage;
+  const _SecureEpochStorage(this._storage);
+
+  @override
+  Future<String?> read(String key) => _storage.read(key: key);
+
+  @override
+  Future<void> write(String key, String value) =>
+      _storage.write(key: key, value: value);
+
+  @override
+  Future<void> delete(String key) => _storage.delete(key: key);
 }
