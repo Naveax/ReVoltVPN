@@ -12,12 +12,18 @@ final class SessionStopBarrier {
     final existing = _pending;
     if (existing != null) return existing;
 
-    final operation = Future<void>.sync(stop);
-    late final Future<void> tracked;
-    tracked = operation.whenComplete(() {
-      if (identical(_pending, tracked)) _pending = null;
+    // Publish ownership BEFORE invoking the supplied action. The action may
+    // synchronously notify listeners which reenter disconnect on this stack.
+    final completer = Completer<void>();
+    final future = completer.future;
+    _pending = future;
+    Future<void>.sync(stop).then((_) {
+      if (identical(_pending, future)) _pending = null;
+      completer.complete();
+    }, onError: (Object error, StackTrace stack) {
+      if (identical(_pending, future)) _pending = null;
+      completer.completeError(error, stack);
     });
-    _pending = tracked;
-    return tracked;
+    return future;
   }
 }

@@ -4,6 +4,45 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:revoltvpn/logic/session_stop_barrier.dart';
 
 void main() {
+  test('synchronous listener reentrancy cannot start a second stop', () async {
+    final gate = SessionStopBarrier();
+    final pending = Completer<void>();
+    late Future<void> nested;
+    var calls = 0;
+    final first = gate.run(() {
+      calls++;
+      // Happens synchronously when a VpnConnection status listener fires.
+      nested = gate.run(() {
+        calls++;
+        return Future<void>.value();
+      });
+      return pending.future;
+    });
+    expect(identical(nested, first), true);
+    expect(calls, 1);
+    pending.complete();
+    await Future.wait([nested, first]);
+    expect(gate.isStopping, false);
+  });
+
+  test('synchronous reentrant failure is propagated to all callers', () async {
+    final gate = SessionStopBarrier();
+    late Future<void> nested;
+    var calls = 0;
+    final first = gate.run(() {
+      calls++;
+      nested = gate.run(() {
+        calls++;
+        return Future<void>.value();
+      });
+      throw StateError('storage marker failed');
+    });
+    expect(identical(first, nested), true);
+    expect(calls, 1);
+    await expectLater(first, throwsStateError);
+    expect(gate.isStopping, false);
+  });
+
   test('concurrent disconnect callers share one pending teardown', () async {
     final gate = SessionStopBarrier();
     final pending = Completer<void>();

@@ -98,7 +98,11 @@ assert "if (!_disposed) notifyListeners();" in vpn.split("Future<void> _checkHea
 native_connected = vpn.split("case VlessConnectionState.connected:", 1)[1].split("case VlessConnectionState.disconnected:", 1)[0]
 assert native_connected.index("if (!_startGuard.mayReportConnected) return;") < native_connected.index("_setStatus(VpnStatus.connected, 'Secured');")
 disconnect = vpn.split("Future<void> disconnect()", 1)[1].split("void _setStatus(", 1)[0]
-assert disconnect.index("_startGuard.cancel();") < disconnect.index("CryptoService.setSessionStopPending();")
+assert "final SessionStopBarrier _disconnectBarrier = SessionStopBarrier();" in vpn
+assert "_disconnectBarrier.isStopping ||" in vpn.split("Future<bool> connect(", 1)[1].split("Future<bool> _connectInner(", 1)[0]
+assert "return _disconnectBarrier.run(_disconnectInner);" in disconnect
+assert disconnect.index("_startGuard.cancel();") < disconnect.index("return _disconnectBarrier.run(_disconnectInner);") < disconnect.index("CryptoService.setSessionStopPending();")
+assert "if (_status == VpnStatus.disconnecting) return;" not in disconnect
 normal_disconnect = disconnect.split("bool localStopFailed = false;", 1)[1]
 assert normal_disconnect.index("_startGuard.waitForStart(") < normal_disconnect.index("_vless.stopVless().timeout(")
 assert normal_disconnect.index("_vless.stopVless().timeout(") < normal_disconnect.index("HivemindService.stopSession(markPending: false)")
@@ -116,7 +120,9 @@ assert persistence.index("await HivemindService.stopSession(markPending: false);
 # Server revocation success does not prove the device's VPN engine stopped.
 local_failure = disconnect.split("if (localStopFailed) {", 1)[1].split("if (revocationPending) {", 1)[0]
 assert local_failure.index("_startGuard.blockUnsafeRestart();") < local_failure.index("_setStatus(VpnStatus.error, 'Shutdown failed');")
-assert disconnect.index("final stopResult = await HivemindService.stopSession(markPending: false);") < disconnect.index("if (localStopFailed) {")
+assert disconnect.index("stopResult = await HivemindService.stopSession(markPending: false);") < disconnect.index("if (localStopFailed) {")
+stop_error = disconnect.split("stopResult = await HivemindService.stopSession(markPending: false);", 1)[1].split("final revocationPending =", 1)[0]
+assert stop_error.index("_startGuard.blockUnsafeRestart();") < stop_error.index("_setStatus(VpnStatus.error, 'Revocation unverified');") < stop_error.index("rethrow;")
 
 pending_startup = vpn.split("if (await CryptoService.isSessionStopPending()) {", 1)[1].split("final coreVersion =", 1)[0]
 assert pending_startup.index("if (!_initialized) {") < pending_startup.index("_startGuard.blockUnsafeRestart();") < pending_startup.index("await _vless.stopVless().timeout(")

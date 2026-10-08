@@ -91,7 +91,10 @@ for token in (
     "final existing = _pending;",
     "if (existing != null) return existing;",
     "Future<void>.sync(stop)",
-    "if (identical(_pending, tracked)) _pending = null;",
+    "final completer = Completer<void>();",
+    "_pending = future;",
+    "if (identical(_pending, future)) _pending = null;",
+    "completer.completeError(error, stack);",
 ):
     assert token in stop_barrier, f"Missing shared teardown barrier: {token}"
 
@@ -100,9 +103,12 @@ for test in (
     "a failed teardown rejects all waiters and clears the barrier",
     "a synchronous native exception is an observable stop error",
     "a subsequent stop cannot overlap the previous pending future",
+    "synchronous listener reentrancy cannot start a second stop",
+    "synchronous reentrant failure is propagated to all callers",
 ):
     assert test in stop_tests, f"Missing stop serialization regression: {test}"
 
+assert stop_barrier.index("_pending = future;") < stop_barrier.index("Future<void>.sync(stop)")
 assert "final SessionStopBarrier _stopBarrier = SessionStopBarrier();" in timer
 assert "if (_disposed || _stopBarrier.isStopping) return;" in timer
 stop = timer.split("Future<void> _doDisconnect(String reason)", 1)[1].split("Future<void> _syncWithHivemind()", 1)[0]

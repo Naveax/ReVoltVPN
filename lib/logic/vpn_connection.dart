@@ -4,6 +4,7 @@ import 'package:flutter_vless/flutter_vless.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/vpn_start_guard.dart';
+import 'package:revoltvpn/logic/session_stop_barrier.dart';
 
 enum VpnStatus {
   disconnected,
@@ -18,6 +19,7 @@ class VpnConnection extends ChangeNotifier {
   bool _connectInFlight = false;
   bool _disposed = false;
   final VpnStartGuard _startGuard = VpnStartGuard();
+  final SessionStopBarrier _disconnectBarrier = SessionStopBarrier();
   VpnStatus _status = VpnStatus.disconnected;
   VpnStatus get status => _status;
 
@@ -228,6 +230,7 @@ class VpnConnection extends ChangeNotifier {
 
   Future<bool> connect({bool skipAdBypass = false}) async {
     if (_connectInFlight ||
+        _disconnectBarrier.isStopping ||
         _status == VpnStatus.connected ||
         _status == VpnStatus.connecting ||
         _status == VpnStatus.disconnecting ||
@@ -356,12 +359,16 @@ class VpnConnection extends ChangeNotifier {
     return true;
   }
 
-  Future<void> disconnect() async {
+  Future<void> disconnect() {
+    // Cancel the native generation synchronously even when an existing stop
+    // is underway; all callers must await that SAME exact teardown Future.
     _cancelled = true;
     _startGuard.cancel();
     HivemindService.cancel();
-    if (_status == VpnStatus.disconnecting) return;
+    return _disconnectBarrier.run(_disconnectInner);
+  }
 
+  Future<void> _disconnectInner() async {
     final wasLocallyDisconnected = _status == VpnStatus.disconnected;
     _setStatus(VpnStatus.disconnecting, 'Tearing down…');
 
@@ -430,7 +437,21 @@ class VpnConnection extends ChangeNotifier {
 
     // Revoke the server credential even if local shutdown reported an error. Removing the Xray
     // identity is the safest fallback when the local engine's state is ambiguous.
-    final stopResult = await HivemindService.stopSession(markPending: false);
+    late final SessionStopResult stopResult;
+    try {
+      stopResult = await HivemindService.stopSession(markPending: false);
+    } catch (e) {
+      // An unexpected secure-store/control-plane error must not leave the UI
+      // in 'disconnecting' or make a fresh tunnel start seem permissible.
+      // The durable marker remains the retry authority after restart.
+      _startGuard.blockUnsafeRestart();
+      _isStartupRestoration = false;
+      _errorMessage =
+          'Server revocation could not be verified. Reconnect is blocked until recovery.';
+      _setStatus(VpnStatus.error, 'Revocation unverified');
+      debugPrint('[VPN] Session stop did not complete: $e');
+      rethrow;
+    }
     final revocationPending = stopResult == SessionStopResult.retryNeeded;
 
     _isStartupRestoration = false;
