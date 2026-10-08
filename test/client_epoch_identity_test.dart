@@ -36,6 +36,55 @@ void main() {
   const candidate1 = '11111111111111111111111111111111';
   const candidate2 = '22222222222222222222222222222222';
 
+  test('durable nonce reader observes promotion and authenticated teardown',
+      () async {
+    final store = _MemoryEpochStorage()
+      ..values[ClientEpochIdentity.identityKey] = oldId;
+    final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+    expect(await epochs.readSessionNonce(), null);
+    expect(await epochs.beginCandidateReservation(candidate1), oldId);
+    expect(await epochs.readSessionNonce(), null);
+    expect(await epochs.promoteCandidate(candidate1), true);
+    expect(await epochs.readSessionNonce(), candidate1);
+    await epochs.synchronizedStorage(
+        () => store.delete(ClientEpochIdentity.sessionNonceKey));
+    expect(await epochs.readSessionNonce(), null);
+    final restarted = ClientEpochIdentity(store, newUuid: () => nextId);
+    expect(await restarted.readSessionNonce(), null);
+  });
+
+  test('serialized nonce reader cannot retain stale possession after deletion',
+      () async {
+    final store = _MemoryEpochStorage()
+      ..values[ClientEpochIdentity.identityKey] = oldId
+      ..values[ClientEpochIdentity.sessionNonceKey] = candidate1;
+    final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+    // Read, revoke, and read again: all durable operations use one gate.
+    final firstRead = epochs.readSessionNonce();
+    final revoke = epochs.synchronizedStorage(
+        () => store.delete(ClientEpochIdentity.sessionNonceKey));
+    final afterRevoke = epochs.readSessionNonce();
+    expect(await firstRead, candidate1);
+    await revoke;
+    expect(await afterRevoke, null);
+    expect(await epochs.readSessionNonce(), null);
+  });
+
+  test('malformed possession is retained and blocks subsequent admission',
+      () async {
+    final store = _MemoryEpochStorage()
+      ..values[ClientEpochIdentity.identityKey] = oldId
+      ..values[ClientEpochIdentity.sessionNonceKey] = 'invalid-durable-nonce';
+    final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+    expect(await epochs.readSessionNonce(), null);
+    expect(store.values[ClientEpochIdentity.sessionNonceKey],
+        'invalid-durable-nonce');
+    expect(await epochs.beginCandidateReservation(candidate1), null);
+    final restarted = ClientEpochIdentity(store, newUuid: () => nextId);
+    expect(await restarted.readSessionNonce(), null);
+    expect(await restarted.beginCandidateReservation(candidate2), null);
+  });
+
   test('fresh install without durable ownership can initialize one epoch',
       () async {
     final store = _MemoryEpochStorage();

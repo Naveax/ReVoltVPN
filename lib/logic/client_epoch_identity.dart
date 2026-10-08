@@ -76,6 +76,18 @@ class ClientEpochIdentity {
         return fresh;
       });
 
+  /// Read possession from durable storage under the session serialization
+  /// gate. A process-level cached nonce can outlive an acknowledged revoke
+  /// or win a delayed read-vs-clear race, resurrecting stale authorization.
+  /// Corrupt records stay persisted to block a new session at admission.
+  Future<String?> readSessionNonce() => _exclusive(() async {
+        final nonce = await _storage.read(sessionNonceKey);
+        if (nonce == null || !RegExp(r'^[0-9a-f]{32}$').hasMatch(nonce)) {
+          return null;
+        }
+        return nonce;
+      });
+
   /// Only call after a server-authenticated terminal/stop acknowledgement.
   /// An offline timeout or a local disconnect does NOT make an epoch retirable.
   Future<void> acknowledgeTerminal() => _exclusive(() async {

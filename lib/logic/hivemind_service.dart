@@ -23,7 +23,6 @@ enum CandidateLifecycleState {
 enum PendingCandidateRecovery { none, active, unresolved }
 
 class HivemindService {
-  static String? _sessionNonce;
   static int _currentCallId = 0;
   static final Random _secureRandom = Random.secure();
   static Future<SessionStopResult>? _stopInFlight;
@@ -229,23 +228,15 @@ class HivemindService {
     _currentCallId++;
   }
 
-  static Future<bool> _promoteAndCacheSessionCandidate(String nonce) async {
-    // Ownership comparison and durable promotion must share the epoch gate;
-    // a separate read followed by an unconditional write can resurrect a
-    // cancelled reservation or overwrite another active credential.
-    if (!await CryptoService.promoteSessionCandidate(nonce)) return false;
-    _sessionNonce = nonce;
-    return true;
-  }
+  static Future<bool> _promoteSessionCandidate(String nonce) =>
+      CryptoService.promoteSessionCandidate(nonce);
 
-  static Future<String?> getSessionNonce() async {
-    if (_sessionNonce != null) return _sessionNonce;
-    _sessionNonce = await CryptoService.getSessionNonce();
-    return _sessionNonce;
-  }
+  // Do not cache the durable possession token in process memory. A delayed
+  // read racing terminal cleanup must never resurrect an already removed
+  // authorization credential for later authenticated calls.
+  static Future<String?> getSessionNonce() => CryptoService.getSessionNonce();
 
   static Future<void> clearSessionNonce() async {
-    _sessionNonce = null;
     await CryptoService.clearSessionNonce();
     await CryptoService.clearSessionStopPending();
   }
@@ -327,7 +318,7 @@ class HivemindService {
           if (data is Map<String, dynamic> && data['active'] == true) {
             final serverNonce = data['nonce'] as String?;
             if (serverNonce == null || serverNonce == nonce) {
-              if (!await _promoteAndCacheSessionCandidate(nonce)) {
+              if (!await _promoteSessionCandidate(nonce)) {
                 return false;
               }
               // A concurrent user disconnect is authoritative. Do not erase

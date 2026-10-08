@@ -40,7 +40,13 @@ required = [
     (epoch, "Future<bool> clearStopIntentIfNoOwnership()"),
     (crypto, "promoteSessionCandidate(String nonce)"),
     (crypto, "releaseCandidateIfOwned(String nonce)"),
-    (hivemind, "if (!await _promoteAndCacheSessionCandidate(nonce))"),
+    (hivemind, "if (!await _promoteSessionCandidate(nonce))"),
+    (epoch, "Future<String?> readSessionNonce()"),
+    (crypto, "static Future<String?> getSessionNonce() => _epoch.readSessionNonce();"),
+    (hivemind, "static Future<String?> getSessionNonce() => CryptoService.getSessionNonce();"),
+    (tests, "durable nonce reader observes promotion and authenticated teardown"),
+    (tests, "serialized nonce reader cannot retain stale possession after deletion"),
+    (tests, "malformed possession is retained and blocks subsequent admission"),
     (hivemind, "await CryptoService.clearStopIntentIfNoOwnership()"),
     (tests, "cancel and promotion compete without losing a live credential"),
     (tests, "a concurrent stop marker is never erased by promotion"),
@@ -84,6 +90,10 @@ assert "rotateClientEpochBeforeNewSession" not in hivemind
 assert "setPendingSessionCandidate(String nonce)" not in crypto
 assert "clearPendingSessionCandidate()" not in crypto
 assert "setSessionNonce(String nonce)" not in crypto
+assert "static String? _sessionNonce;" not in hivemind
+assert "_sessionNonce = nonce" not in hivemind
+assert "if (_sessionNonce != null)" not in hivemind
+assert "return _sessionNonce;" not in hivemind
 assert "await CryptoService.clearSessionStopPending();" not in hivemind.split("static Future<bool> confirmAndSetSessionNonce", 1)[1].split("static Future<SessionStopResult> stopSession", 1)[0]
 
 # Rotation must be local-only. The public API must not gain a linkable

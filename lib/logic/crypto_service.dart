@@ -38,17 +38,7 @@ class CryptoService {
 
   /// Return only a canonical 128-bit session nonce. Corrupt values must stay
   /// durable: deleting unknown possession can orphan a live server credential.
-  static Future<String?> getSessionNonce() =>
-      _epoch.synchronizedStorage(() async {
-        final nonce = await _storage.read(key: _sessionNoncePref);
-        if (nonce == null) return null;
-        if (!_sessionNoncePattern.hasMatch(nonce)) {
-          // The atomic admission gate observes this non-null record and
-          // refuses any new identity/candidate until it is reconciled.
-          return null;
-        }
-        return nonce;
-      });
+  static Future<String?> getSessionNonce() => _epoch.readSessionNonce();
 
   static Future<void> clearSessionNonce() =>
       _epoch.synchronizedStorage(() => _storage.delete(key: _sessionNoncePref));

@@ -151,7 +151,7 @@ confirm_end = hive.index("\n  static Future<SessionStopResult> stopSession", con
 confirm = hive[confirm_start:confirm_end]
 if "getPendingSessionCandidate()" not in confirm:
     fail("confirmation must verify candidate ownership before server status polling")
-if "_promoteAndCacheSessionCandidate(nonce)" not in confirm:
+if "_promoteSessionCandidate(nonce)" not in confirm:
     fail("confirmed candidate must be atomically compared and promoted")
 if "isSessionStopPending()" not in confirm:
     fail("confirmation must honor a concurrent disconnect instead of erasing stop intent")
