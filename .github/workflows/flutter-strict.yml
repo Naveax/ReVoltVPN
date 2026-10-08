@@ -58,6 +58,9 @@ jobs:
       - name: Validate client epoch rotation boundary
         run: python3 tool/check_client_epoch_contract.py
 
+      - name: Validate native VPN start and disconnect gate
+        run: python3 tool/check_vpn_start_guard_contract.py
+
       - name: Materialize sanitized CI config
         shell: bash
         run: |

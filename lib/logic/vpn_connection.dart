@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_vless/flutter_vless.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
+import 'package:revoltvpn/logic/vpn_start_guard.dart';
 
 enum VpnStatus {
   disconnected,
@@ -14,6 +15,8 @@ enum VpnStatus {
 
 class VpnConnection extends ChangeNotifier {
   bool _cancelled = false;
+  bool _connectInFlight = false;
+  final VpnStartGuard _startGuard = VpnStartGuard();
   VpnStatus _status = VpnStatus.disconnected;
   VpnStatus get status => _status;
 
@@ -112,6 +115,8 @@ class VpnConnection extends ChangeNotifier {
   }
 
   void _mapStatus(VlessStatus status) {
+    // Late native events must not resurrect a tunnel after user disconnect.
+    if (_cancelled || _status == VpnStatus.disconnecting) return;
     switch (status.connectionState) {
       case VlessConnectionState.connected:
         _setStatus(VpnStatus.connected, 'Secured');
@@ -145,12 +150,22 @@ class VpnConnection extends ChangeNotifier {
   // shortId (needed for every Reality handshake — unavoidable).
   // The tunnel UUID is per-user, assigned by Hivemind via AdMob SSV.
 
-  Future<bool> connect({
-    bool skipAdBypass = false,
-  }) async {
-    if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
-      return false;
+  Future<bool> connect({bool skipAdBypass = false}) async {
+    if (_connectInFlight ||
+        _status == VpnStatus.connected ||
+        _status == VpnStatus.connecting ||
+        _status == VpnStatus.disconnecting ||
+        _startGuard.cannotRestart) return false;
+    _connectInFlight = true;
+    try {
+      _startGuard.reset();
+      return await _connectInner(skipAdBypass: skipAdBypass);
+    } finally {
+      _connectInFlight = false;
     }
+  }
+
+  Future<bool> _connectInner({required bool skipAdBypass}) async {
     _cancelled = false;
 
     // Defense in depth for callers that bypass AdManager: never reconnect while an explicit
@@ -161,6 +176,8 @@ class VpnConnection extends ChangeNotifier {
       return false;
     }
 
+    if (_cancelled) return false;
+
     if (!kIsWeb && !_initialized) {
       _errorMessage = 'VPN service unavailable.';
       _setStatus(VpnStatus.error, 'Service unavailable');
@@ -169,6 +186,7 @@ class VpnConnection extends ChangeNotifier {
 
     if (!kIsWeb) {
       final ok = await _vless.requestPermission();
+      if (_cancelled) return false;
       if (!ok) {
         _errorMessage = 'VPN permission denied.';
         _setStatus(VpnStatus.error, 'Permission required');
@@ -181,6 +199,7 @@ class VpnConnection extends ChangeNotifier {
 
     if (kIsWeb) {
       await Future.delayed(const Duration(seconds: 1));
+      if (_cancelled) return false;
       _setStatus(VpnStatus.connected, 'Secured (dev mode)');
       return true;
     }
@@ -192,6 +211,7 @@ class VpnConnection extends ChangeNotifier {
       realUrl = await HivemindService.fetchConfigDirectly(
         skipAdBypass: skipAdBypass,
         onAttempt: (attempt, total) {
+          if (_cancelled) return;
           _setStatus(
               VpnStatus.connecting, 'Contacting server ($attempt/$total)…');
         },
@@ -199,7 +219,7 @@ class VpnConnection extends ChangeNotifier {
     } catch (e) {
       debugPrint('[VPN] Config fetch error: $e');
       final raw = e.toString().replaceAll('Exception: ', '');
-      if (raw.contains('Cancelled')) return false;
+      if (_cancelled || raw.contains('Cancelled')) return false;
       if (raw.contains('timed out') || raw.contains('Session not activated')) {
         _errorMessage =
             'The server did not respond in time.\nCheck your connection and try again.';
@@ -211,40 +231,41 @@ class VpnConnection extends ChangeNotifier {
       return false;
     }
 
-    if (_cancelled) {
-      _setStatus(VpnStatus.disconnected, 'Tap to connect');
-      return false;
-    }
+    if (_cancelled) return false;
 
     _setStatus(VpnStatus.connecting, 'Securing connection…');
 
     try {
       final parsed = FlutterVless.parse(realUrl);
 
-      await _vless.startVless(
-        remark: parsed.remark.isNotEmpty ? parsed.remark : 'Revolt VPN',
-        config: parsed.getFullConfiguration(),
-        // Privacy v2: no application/subnet bypass is permitted in the managed
-        // ReVoltVPN profile. AndroidDnsPolicy.proxy installs a virtual resolver
-        // whose queries are forwarded through the selected VLESS outbound.
-        blockedApps: const <String>[],
-        bypassSubnets: const <String>[],
-        proxyOnly: false,
-        androidDnsPolicy: AndroidDnsPolicy.proxy,
-      );
+      final started = await _startGuard.start(() => _vless.startVless(
+            remark: parsed.remark.isNotEmpty ? parsed.remark : 'Revolt VPN',
+            config: parsed.getFullConfiguration(),
+            // Privacy v2: no application/subnet bypass is permitted in the managed
+            // ReVoltVPN profile. AndroidDnsPolicy.proxy installs a virtual resolver
+            // whose queries are forwarded through the selected VLESS outbound.
+            blockedApps: const <String>[],
+            bypassSubnets: const <String>[],
+            proxyOnly: false,
+            androidDnsPolicy: AndroidDnsPolicy.proxy,
+          ));
+      if (!started || _cancelled) return false;
     } catch (e) {
+      if (_cancelled) return false;
       debugPrint('[VPN] Tunnel start error: $e');
       _errorMessage = 'Tunnel failed to start.\nTry reconnecting.';
       _setStatus(VpnStatus.error, 'Connection failed');
       return false;
     }
 
+    if (_cancelled) return false;
     _setStatus(VpnStatus.connected, 'Secured');
     return true;
   }
 
   Future<void> disconnect() async {
     _cancelled = true;
+    _startGuard.cancel();
     HivemindService.cancel();
     if (_status == VpnStatus.disconnecting) return;
 
@@ -256,7 +277,19 @@ class VpnConnection extends ChangeNotifier {
     await CryptoService.setSessionStopPending();
 
     bool localStopFailed = false;
-    if (!kIsWeb && _initialized && !wasLocallyDisconnected) {
+    final nativeStartWasPending = _startGuard.isStarting;
+    if (nativeStartWasPending &&
+        !await _startGuard.waitForStart(const Duration(seconds: 6))) {
+      localStopFailed = true;
+      // Native start may complete after our timeout. Tear it down again when
+      // that future finally settles, without claiming a successful shutdown.
+      _startGuard.stopAfterLateStart(() => _vless.stopVless().timeout(
+            const Duration(seconds: 5),
+          ));
+    }
+    if (!kIsWeb &&
+        _initialized &&
+        (!wasLocallyDisconnected || nativeStartWasPending)) {
       bool timedOut = false;
       try {
         await _vless.stopVless().timeout(
