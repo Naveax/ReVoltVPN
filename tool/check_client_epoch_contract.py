@@ -51,6 +51,10 @@ required = [
     (tests, "reservation write failure retains rotation proof and old epoch"),
     (tests, "marker deletion failure cannot expose retired epoch to new candidate"),
     (tests, "malformed rotation marker blocks main admission and legacy rotation"),
+    (tests, "missing epoch with any durable ownership fails closed across restart"),
+    (tests, "unowned corrupted stop marker cannot silently disappear"),
+    (tests, "missing identity and rejected concurrent admission cannot mint a UUID"),
+    (epoch, "Missing client epoch with durable session state"),
     (epoch, "Corrupt client epoch rotation marker"),
     (tests, "keeps epoch when a session, candidate or stop remains durable"),
     (evidence, "statusCode == 200"),
@@ -118,5 +122,13 @@ assert admission.index("await _storage.write(identityKey, identity);") < admissi
     "await _storage.delete(rotationReadyKey);"
 ) < admission.index("await _storage.write(candidateKey, nonce);")
 assert "if (rotationMarker != null && rotationMarker != '1')" in admission
+
+current = epoch.split("Future<String> current()", 1)[1].split("Future<void> acknowledgeTerminal()", 1)[0]
+assert current.index("for (final key in [") < current.index("_checkedNewId(null)")
+for key in ("sessionNonceKey", "candidateKey", "stopPendingKey", "rotationReadyKey"):
+    assert key in current, f"Missing pseudonym must preserve durable {key}"
+assert "await _storage.read(key) != null" in current
+assert "if (stopRecord != null && stopRecord != '1') return false;" in epoch
+assert "await _storage.read(key: _sessionStopPendingPref) != null" in crypto
 
 print("[PASS] client epoch rotation requires terminal proof, checks all durable blockers, and has no server-side mapping.")

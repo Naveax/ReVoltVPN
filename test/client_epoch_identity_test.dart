@@ -33,6 +33,66 @@ class _MemoryEpochStorage implements ClientEpochStorage {
 void main() {
   const oldId = '12345678-1234-4234-8234-123456789abc';
   const nextId = 'deadbeef-abcd-4000-8000-123456789abc';
+  const candidate1 = '11111111111111111111111111111111';
+  const candidate2 = '22222222222222222222222222222222';
+
+  test('fresh install without durable ownership can initialize one epoch',
+      () async {
+    final store = _MemoryEpochStorage();
+    final epochs = ClientEpochIdentity(store, newUuid: () => oldId);
+    expect(await epochs.current(), oldId);
+    expect(store.values[ClientEpochIdentity.identityKey], oldId);
+    expect(await epochs.beginCandidateReservation(candidate1), oldId);
+  });
+
+  test('missing epoch with any durable ownership fails closed across restart',
+      () async {
+    for (final key in [
+      ClientEpochIdentity.sessionNonceKey,
+      ClientEpochIdentity.candidateKey,
+      ClientEpochIdentity.stopPendingKey,
+      ClientEpochIdentity.rotationReadyKey,
+    ]) {
+      final store = _MemoryEpochStorage()..values[key] = 'unresolved';
+      final epochs = ClientEpochIdentity(store, newUuid: () => oldId);
+      await expectLater(epochs.current(), throwsA(isA<StateError>()),
+          reason: 'missing identity must not mint a new ID with $key');
+      expect(store.values.containsKey(ClientEpochIdentity.identityKey), false);
+      final restarted = ClientEpochIdentity(store, newUuid: () => nextId);
+      await expectLater(restarted.current(), throwsA(isA<StateError>()));
+      expect(store.values[key], 'unresolved');
+      expect(store.values.containsKey(ClientEpochIdentity.identityKey), false);
+    }
+  });
+
+  test('unowned corrupted stop marker cannot silently disappear', () async {
+    final store = _MemoryEpochStorage()
+      ..values[ClientEpochIdentity.identityKey] = oldId
+      ..values[ClientEpochIdentity.stopPendingKey] = 'garbage';
+    final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+    expect(await epochs.clearStopIntentIfNoOwnership(), false);
+    expect(await epochs.beginCandidateReservation(candidate1), null);
+    expect(store.values[ClientEpochIdentity.stopPendingKey], 'garbage');
+    expect(await epochs.current(), oldId);
+  });
+
+  test('missing identity and rejected concurrent admission cannot mint a UUID',
+      () async {
+    final store = _MemoryEpochStorage()
+      ..values[ClientEpochIdentity.candidateKey] = candidate1;
+    final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+    final reads = Future.wait([
+      epochs
+          .current()
+          .then<Object?>((v) => v, onError: (Object error) => error),
+      epochs.beginCandidateReservation(candidate2),
+    ]);
+    final results = await reads;
+    expect(results.first, isA<StateError>());
+    expect(results.last, null);
+    expect(store.values.containsKey(ClientEpochIdentity.identityKey), false);
+    expect(store.values[ClientEpochIdentity.candidateKey], candidate1);
+  });
 
   test('creates one stable UUID for simultaneous consumers', () async {
     final store = _MemoryEpochStorage();
@@ -110,9 +170,6 @@ void main() {
     expect(await epochs.current(), oldId);
     expect(store.values[ClientEpochIdentity.rotationReadyKey], '1');
   });
-
-  const candidate1 = '11111111111111111111111111111111';
-  const candidate2 = '22222222222222222222222222222222';
 
   test('atomic admission rotates and owns exactly one candidate', () async {
     final store = _MemoryEpochStorage()

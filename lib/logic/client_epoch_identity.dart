@@ -58,6 +58,19 @@ class ClientEpochIdentity {
           }
           return existing;
         }
+        // A lost pseudonym with surviving possession/candidate/stop records
+        // cannot be replaced: the new identity could never revoke the old
+        // server capability and would incorrectly treat the old epoch as gone.
+        for (final key in [
+          sessionNonceKey,
+          candidateKey,
+          stopPendingKey,
+          rotationReadyKey,
+        ]) {
+          if (await _storage.read(key) != null) {
+            throw StateError('Missing client epoch with durable session state');
+          }
+        }
         final fresh = _checkedNewId(null);
         await _storage.write(identityKey, fresh);
         return fresh;
@@ -140,6 +153,8 @@ class ClientEpochIdentity {
   Future<bool> clearStopIntentIfNoOwnership() => _exclusive(() async {
         if (await _storage.read(sessionNonceKey) != null ||
             await _storage.read(candidateKey) != null) return false;
+        final stopRecord = await _storage.read(stopPendingKey);
+        if (stopRecord != null && stopRecord != '1') return false;
         await _storage.delete(stopPendingKey);
         return true;
       });

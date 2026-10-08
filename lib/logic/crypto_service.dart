@@ -80,8 +80,10 @@ class CryptoService {
   static Future<void> setSessionStopPending() => _epoch.synchronizedStorage(
       () => _storage.write(key: _sessionStopPendingPref, value: '1'));
 
+  // Unknown durable stop records cannot mean 'safe to reconnect'. A
+  // malformed marker may still represent an unresolved revocation intent.
   static Future<bool> isSessionStopPending() => _epoch.synchronizedStorage(
-      () async => await _storage.read(key: _sessionStopPendingPref) == '1');
+      () async => await _storage.read(key: _sessionStopPendingPref) != null);
 
   static Future<void> clearSessionStopPending() => _epoch
       .synchronizedStorage(() => _storage.delete(key: _sessionStopPendingPref));
