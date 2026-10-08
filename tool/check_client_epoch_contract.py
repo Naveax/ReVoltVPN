@@ -26,7 +26,14 @@ required = [
     (crypto, "acknowledgeClientEpochTerminal()"),
     (hivemind, "await CryptoService.acknowledgeClientEpochTerminal();"),
     (hivemind, "return SessionStopResult.retryNeeded;"),
-    (ads, "await CryptoService.rotateClientEpochBeforeNewSession();"),
+    (crypto, "beginMainSessionCandidate(String nonce)"),
+    (epoch, "Future<String?> beginCandidateReservation(String nonce)"),
+    (epoch, "await _storage.write(candidateKey, nonce);"),
+    (epoch, "synchronizedStorage<T>"),
+    (hivemind, "await CryptoService.beginMainSessionCandidate(nonce);"),
+    (ads, "reserveSessionCandidate(nonce)"),
+    (tests, "atomic admission rotates and owns exactly one candidate"),
+    (tests, "stop intent and candidate claim share a serialization gate"),
     (timer, "await _doDisconnect('Server ended session');"),
     (timer, "await _doDisconnect('Data cap reached');"),
     (hivemind, "final stop = await stopSession();"),
@@ -42,6 +49,10 @@ required = [
 ]
 for source, phrase in required:
     assert phrase in source, f"Missing required client epoch invariant: {phrase}"
+
+assert "rotateClientEpochBeforeNewSession" not in ads
+assert "rotateClientEpochBeforeNewSession" not in hivemind
+assert "setPendingSessionCandidate(String nonce)" not in crypto
 
 # Rotation must be local-only. The public API must not gain a linkable
 # old/new epoch mapping or an endpoint for pseudonym exchange.

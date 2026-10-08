@@ -92,11 +92,11 @@ class HivemindService {
     if (!_canonicalSessionNonce.hasMatch(nonce)) return false;
 
     try {
-      if (await CryptoService.getPendingSessionCandidate() != null)
-        return false;
-
-      final deviceId = await CryptoService.getDeviceId();
-      await CryptoService.setPendingSessionCandidate(nonce);
+      // This lock-protected claim rotates an eligible epoch and persists its
+      // candidate together. No competing caller can mint a second nonce or
+      // see the new pseudonym without its durable candidate owner.
+      final deviceId = await CryptoService.beginMainSessionCandidate(nonce);
+      if (deviceId == null) return false;
 
       try {
         final response = await directPost(
@@ -437,15 +437,15 @@ class HivemindService {
       }
     }
     if (nonce == null && !skipAdBypass && kDebugMode) {
-      // The debug admission flow also observes the same epoch boundary.
-      // Do not rotate while candidate recovery is unresolved.
-      await CryptoService.rotateClientEpochBeforeNewSession();
-      deviceId = await CryptoService.getDeviceId();
+      // Reservation below atomically rotates and persists a fresh candidate.
+      // Candidate recovery above must finish before entering that operation.
       final candidate = newNonce();
       try {
         if (!await reserveSessionCandidate(candidate)) {
           throw Exception('Session candidate reservation unavailable.');
         }
+        // After the atomic reservation, read the claimed epoch for SSV.
+        deviceId = await CryptoService.getDeviceId();
         final customData = jsonEncode({
           'device_id': deviceId,
           'nonce': candidate,

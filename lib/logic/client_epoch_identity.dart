@@ -44,6 +44,12 @@ class ClientEpochIdentity {
     return result;
   }
 
+  /// Share the identity gate with all durable session/candidate/stop records.
+  /// No external I/O is allowed inside this callback beyond secure storage;
+  /// notably, never hold this gate during a network request.
+  Future<T> synchronizedStorage<T>(Future<T> Function() action) =>
+      _exclusive(action);
+
   Future<String> current() => _exclusive(() async {
         final existing = await _storage.read(identityKey);
         if (existing != null) {
@@ -61,6 +67,42 @@ class ClientEpochIdentity {
   /// An offline timeout or a local disconnect does NOT make an epoch retirable.
   Future<void> acknowledgeTerminal() => _exclusive(() async {
         await _storage.write(rotationReadyKey, '1');
+      });
+
+  /// Reserve exactly one candidate and its epoch together, before any network I/O.
+  /// A separate rotate-then-reserve pair is unsafe: another admission could
+  /// claim a nonce for the previous or newly minted epoch between those awaits.
+  /// Return null when possession, pending cancellation or another candidate
+  /// still exists; never overwrite a durable candidate or stop intent.
+  Future<String?> beginCandidateReservation(String nonce) =>
+      _exclusive(() async {
+        if (!RegExp(r'^[0-9a-f]{32}$').hasMatch(nonce)) {
+          throw ArgumentError.value(nonce, 'nonce', 'invalid candidate nonce');
+        }
+        for (final key in [sessionNonceKey, candidateKey, stopPendingKey]) {
+          if (await _storage.read(key) != null) return null;
+        }
+        final existing = await _storage.read(identityKey);
+        if (existing != null && !_uuidV4.hasMatch(existing)) {
+          throw StateError('Invalid stored client epoch');
+        }
+        var identity = existing ?? _checkedNewId(null);
+        if (await _storage.read(rotationReadyKey) == '1') {
+          // A terminal marker with no old pseudonym is an inconsistent store,
+          // not permission to silently create an unrelated replacement.
+          if (existing == null) {
+            throw StateError('Missing or invalid old client epoch');
+          }
+          // Validate/generate before consuming the marker, so a bad RNG value
+          // cannot silently erase the only evidence authorizing rotation.
+          identity = _checkedNewId(existing);
+          await _storage.delete(rotationReadyKey);
+        }
+        // Persist the identity before the nonce, so any crash after nonce
+        // persistence still leaves one unambiguous owned epoch.
+        if (identity != existing) await _storage.write(identityKey, identity);
+        await _storage.write(candidateKey, nonce);
+        return identity;
       });
 
   /// Rotate at the start of the next main-session admission, not in the

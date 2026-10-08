@@ -18,9 +18,12 @@ class CryptoService {
   static Future<void> acknowledgeClientEpochTerminal() =>
       _epoch.acknowledgeTerminal();
 
-  /// Called before minting the next main-session candidate, never on timeout.
-  static Future<bool> rotateClientEpochBeforeNewSession() =>
-      _epoch.rotateBeforeNewSession();
+  /// Atomically claim a new main candidate and any eligible epoch rotation.
+  /// Returns the exact pseudonym to use for the server registration request.
+  static Future<String?> beginMainSessionCandidate(String nonce) {
+    _validateSessionNonce(nonce);
+    return _epoch.beginCandidateReservation(nonce);
+  }
 
   /// Persist the current main-session possession token across app/process restarts.
   /// Promotion writes possession before clearing the pre-activation candidate. If the
@@ -28,60 +31,57 @@ class CryptoService {
   /// still retained and a later main flow must converge the stale candidate first.
   static Future<void> setSessionNonce(String nonce) async {
     _validateSessionNonce(nonce);
-    await _storage.write(key: _sessionNoncePref, value: nonce);
-    await _storage.delete(key: _pendingSessionCandidatePref);
+    await _epoch.synchronizedStorage(() async {
+      await _storage.write(key: _sessionNoncePref, value: nonce);
+      await _storage.delete(key: _pendingSessionCandidatePref);
+    });
   }
 
   /// Return only a canonical 128-bit session nonce. Corrupt legacy values are discarded.
-  static Future<String?> getSessionNonce() async {
-    final nonce = await _storage.read(key: _sessionNoncePref);
-    if (nonce == null) return null;
-    if (!_sessionNoncePattern.hasMatch(nonce)) {
-      await _storage.delete(key: _sessionNoncePref);
-      return null;
-    }
-    return nonce;
-  }
+  static Future<String?> getSessionNonce() =>
+      _epoch.synchronizedStorage(() async {
+        final nonce = await _storage.read(key: _sessionNoncePref);
+        if (nonce == null) return null;
+        if (!_sessionNoncePattern.hasMatch(nonce)) {
+          await _storage.delete(key: _sessionNoncePref);
+          return null;
+        }
+        return nonce;
+      });
 
-  static Future<void> clearSessionNonce() async {
-    await _storage.delete(key: _sessionNoncePref);
-  }
+  static Future<void> clearSessionNonce() =>
+      _epoch.synchronizedStorage(() => _storage.delete(key: _sessionNoncePref));
 
-  /// Persist the exact server-acknowledged pre-activation capability independently
-  /// from active possession so a process restart cannot silently forget an orphan.
-  static Future<void> setPendingSessionCandidate(String nonce) async {
-    _validateSessionNonce(nonce);
-    await _storage.write(key: _pendingSessionCandidatePref, value: nonce);
-  }
+  // Candidate creation is deliberately only exposed through
+  // beginMainSessionCandidate. A separate setter would bypass the atomic
+  // rotate-and-reserve gate and reintroduce the two-admission race.
 
-  static Future<String?> getPendingSessionCandidate() async {
-    final nonce = await _storage.read(key: _pendingSessionCandidatePref);
-    if (nonce == null) return null;
-    if (!_sessionNoncePattern.hasMatch(nonce)) {
-      await _storage.delete(key: _pendingSessionCandidatePref);
-      return null;
-    }
-    return nonce;
-  }
+  static Future<String?> getPendingSessionCandidate() =>
+      _epoch.synchronizedStorage(() async {
+        final nonce = await _storage.read(key: _pendingSessionCandidatePref);
+        if (nonce == null) return null;
+        if (!_sessionNoncePattern.hasMatch(nonce)) {
+          await _storage.delete(key: _pendingSessionCandidatePref);
+          return null;
+        }
+        return nonce;
+      });
 
-  static Future<void> clearPendingSessionCandidate() async {
-    await _storage.delete(key: _pendingSessionCandidatePref);
-  }
+  static Future<void> clearPendingSessionCandidate() =>
+      _epoch.synchronizedStorage(
+          () => _storage.delete(key: _pendingSessionCandidatePref));
 
   /// Persist an explicit user-requested server revocation until the server confirms it.
   /// This prevents a process restart or transient network failure from silently forgetting
   /// that the current possession token still needs to be revoked server-side.
-  static Future<void> setSessionStopPending() async {
-    await _storage.write(key: _sessionStopPendingPref, value: '1');
-  }
+  static Future<void> setSessionStopPending() => _epoch.synchronizedStorage(
+      () => _storage.write(key: _sessionStopPendingPref, value: '1'));
 
-  static Future<bool> isSessionStopPending() async {
-    return await _storage.read(key: _sessionStopPendingPref) == '1';
-  }
+  static Future<bool> isSessionStopPending() => _epoch.synchronizedStorage(
+      () async => await _storage.read(key: _sessionStopPendingPref) == '1');
 
-  static Future<void> clearSessionStopPending() async {
-    await _storage.delete(key: _sessionStopPendingPref);
-  }
+  static Future<void> clearSessionStopPending() => _epoch
+      .synchronizedStorage(() => _storage.delete(key: _sessionStopPendingPref));
 
   static void _validateSessionNonce(String nonce) {
     if (!_sessionNoncePattern.hasMatch(nonce)) {

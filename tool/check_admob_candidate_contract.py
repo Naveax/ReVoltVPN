@@ -8,11 +8,12 @@ def fail(message: str) -> None:
 
 hive = Path("lib/logic/hivemind_service.dart").read_text()
 crypto = Path("lib/logic/crypto_service.dart").read_text()
+epoch = Path("lib/logic/client_epoch_identity.dart").read_text()
 ads = Path("lib/logic/ad_manager.dart").read_text()
 
 for needle in (
     "_pendingSessionCandidatePref",
-    "setPendingSessionCandidate(String nonce)",
+    "beginMainSessionCandidate(String nonce)",
     "getPendingSessionCandidate()",
     "clearPendingSessionCandidate()",
     "await _storage.write(key: _sessionNoncePref, value: nonce);",
@@ -31,8 +32,7 @@ reserve_end = hive.index(
 reserve = hive[reserve_start:reserve_end]
 for needle in (
     "_canonicalSessionNonce.hasMatch(nonce)",
-    "getPendingSessionCandidate() != null",
-    "setPendingSessionCandidate(nonce)",
+    "beginMainSessionCandidate(nonce)",
     "_publicUrl('/session/candidate')",
     "'operation': 'register'",
     "headers: {_sessionNonceHeader: nonce}",
@@ -43,13 +43,27 @@ for needle in (
     if needle not in reserve:
         fail(f"reservation method is missing: {needle}")
 
-durable_index = reserve.index("await CryptoService.setPendingSessionCandidate(nonce);")
+durable_index = reserve.index("await CryptoService.beginMainSessionCandidate(nonce);")
 register_index = reserve.index("_publicUrl('/session/candidate')")
 cleanup_index = reserve.index("await cancelSessionCandidate(nonce);")
 if not durable_index < register_index < cleanup_index:
     fail(
         "candidate ownership must be durable before remote reservation and retained until candidate-only cleanup converges"
     )
+if "setPendingSessionCandidate(String nonce)" in crypto:
+    fail("non-atomic candidate setter must not bypass epoch reservation gate")
+if "rotateClientEpochBeforeNewSession" in ads or "rotateClientEpochBeforeNewSession" in hive:
+    fail("standalone epoch rotation in main admission can race reservation")
+claim_method = epoch.split("Future<String?> beginCandidateReservation(String nonce)", 1)
+if len(claim_method) != 2:
+    fail("atomic candidate reservation must be owned by ClientEpochIdentity")
+claim = claim_method[1].split("/// Rotate at the start of the next main-session", 1)[0]
+for needle in ("sessionNonceKey", "candidateKey", "stopPendingKey", "rotationReadyKey",
+               "await _storage.write(identityKey, identity);", "await _storage.write(candidateKey, nonce);"):
+    if needle not in claim:
+        fail(f"atomic candidate reservation invariant missing: {needle}")
+if claim.index("await _storage.write(identityKey, identity);") >= claim.index("await _storage.write(candidateKey, nonce);"):
+    fail("epoch must be persisted before candidate ownership")
 if "cancelSessionCandidate(pending)" in reserve:
     fail("reservation must never blindly cancel an older candidate")
 if "_cancelSessionCandidateRemote" in reserve:

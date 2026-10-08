@@ -131,14 +131,8 @@ class AdManager extends ChangeNotifier {
       if (existing == SessionProbeResult.unavailable) {
         return false;
       }
-      // Previous epoch rotates only after a confirmed terminal server state,
-      // and only while there is no durable nonce/candidate/stop operation.
-      try {
-        await CryptoService.rotateClientEpochBeforeNewSession();
-      } catch (_) {
-        // No candidate can be minted against an uncertain secure-store epoch.
-        return false;
-      }
+      // reserveSessionCandidate below atomically rotates the eligible epoch
+      // and writes its exact candidate nonce. No rotate/reserve race window.
       nonce = HivemindService.newNonce();
     } else {
       // Support rewards authorize an extension of the exact active generation. The server
