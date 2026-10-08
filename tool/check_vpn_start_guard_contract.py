@@ -32,6 +32,8 @@ required = [
     (tests, "failed partial-start cleanup locks down all future admissions"),
     (tests, "partial-start cleanup holds restart barrier until native stop settles"),
     (tests, "synchronous native stop failure is also fail closed"),
+    (tests, "synchronous partial cleanup callback cannot start another cleanup"),
+    (tests, "synchronous cleanup callback cannot reenter native start"),
     (tests, "synchronous native callback cannot reenter a second start"),
     (tests, "synchronous cancellation during begin blocks an authenticated start"),
     (tests, "direct native start is denied during failed cleanup latch"),
@@ -68,6 +70,14 @@ assert native_start.index("_starting = operation;") < native_start.index("Future
 assert native_start.index("Future<void>.sync(begin)") < native_start.index("await operation;")
 assert "completion.completeError(error, trace);" in native_start
 assert "if (identical(_starting, operation)) _starting = null;" in native_start
+
+# Partial failed-start teardown must also acquire its own reservation before
+# invoking platform stop, or a synchronous status event can start a second stop.
+native_cleanup = guard.split("Future<bool> cleanupFailedStart(Future<void> Function() stop) async {", 1)[1].split("void stopAfterLateStart(", 1)[0]
+assert "if (_lateCleanup != null || _lateCleanupFailed) return false;" in native_cleanup
+assert native_cleanup.index("_lateCleanup = cleanup;") < native_cleanup.index("Future<void>.sync(stop)")
+assert "completion.completeError(error, trace);" in native_cleanup
+assert "if (identical(_lateCleanup, cleanup)) _lateCleanup = null;" in native_cleanup
 
 connect = vpn.split("Future<bool> _connectInner(", 1)[1].split("Future<void> disconnect()", 1)[0]
 assert connect.count("_vless.startVless(") == 1
@@ -158,4 +168,17 @@ assert init.index("await _startEngine();") < init.index("_healthTimer ??=")
 assert "_checkHealth();" not in engine
 assert "Timer.periodic(" not in engine
 
-print("[PASS] Native VPN start completion cannot override disconnect; uncertain local shutdown denies restart and startup health waits for revocation handling.")
+# A background recovery query is unawaited by the periodic timer. Storage
+# errors must produce a visible failure and no-restart latch, not an unhandled
+# Future which silently loses the stop-intent verification requirement.
+health = vpn.split("Future<void> _checkHealth() async {", 1)[1].split("void dispose()", 1)[0]
+assert "try {" in health
+assert "await HivemindService.checkHealth();" in health
+assert "!_disconnectBarrier.isStopping &&" in health
+assert "await CryptoService.isSessionStopPending()" in health
+assert "await HivemindService.retryPendingSessionStop();" in health
+assert "catch (e) {" in health
+assert health.index("catch (e) {") < health.index("_startGuard.blockUnsafeRestart();") < health.index("_setStatus(VpnStatus.error, 'Recovery unverified');")
+assert "if (_disposed) return;" in health.split("catch (e) {", 1)[1]
+
+print("[PASS] Native start/stop and recovery checks reject reentrant callbacks, unverifiable health and ambiguous teardown.")

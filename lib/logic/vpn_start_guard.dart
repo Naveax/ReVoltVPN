@@ -87,9 +87,16 @@ class VpnStartGuard {
   /// barrier, and an error permanently denies restart in this process.
   Future<bool> cleanupFailedStart(Future<void> Function() stop) async {
     if (_lateCleanup != null || _lateCleanupFailed) return false;
-    final cleanup = Future<void>.sync(stop);
+    // Reserve cleanup ownership BEFORE a platform stop call. Native status
+    // callbacks can synchronously reenter cleanup or attempt another start.
+    final completion = Completer<void>();
+    final cleanup = completion.future;
     _lateCleanup = cleanup;
     try {
+      Future<void>.sync(stop).then(completion.complete,
+          onError: (Object error, StackTrace trace) {
+        completion.completeError(error, trace);
+      });
       await cleanup;
       return true;
     } catch (_) {

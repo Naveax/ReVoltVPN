@@ -493,19 +493,35 @@ class VpnConnection extends ChangeNotifier {
 
   Future<void> _checkHealth() async {
     if (_disposed) return;
-    final reachable = await HivemindService.checkHealth();
-    if (_disposed) return;
-    _serverReachable = reachable;
-    if (_serverReachable && await CryptoService.isSessionStopPending()) {
+    try {
+      final reachable = await HivemindService.checkHealth();
       if (_disposed) return;
-      final resolved = await HivemindService.retryPendingSessionStop();
-      if (resolved && _status == VpnStatus.disconnected) {
-        _errorMessage = null;
-        _setStatus(VpnStatus.disconnected, 'Tap to connect');
-        return;
+      _serverReachable = reachable;
+      // Explicit disconnect already owns this revocation. Health polling
+      // must not start a competing recovery operation while it is in flight.
+      if (_serverReachable &&
+          !_disconnectBarrier.isStopping &&
+          await CryptoService.isSessionStopPending()) {
+        if (_disposed) return;
+        final resolved = await HivemindService.retryPendingSessionStop();
+        if (_disposed) return;
+        if (resolved && _status == VpnStatus.disconnected) {
+          _errorMessage = null;
+          _setStatus(VpnStatus.disconnected, 'Tap to connect');
+          return;
+        }
       }
+      if (!_disposed) notifyListeners();
+    } catch (e) {
+      if (_disposed) return;
+      // This background Future is not awaited by the periodic timer. An
+      // unreadable stop marker / failed recovery is NOT terminal evidence.
+      _startGuard.blockUnsafeRestart();
+      _errorMessage =
+          'Secure session recovery could not be verified. Reconnect is blocked.';
+      _setStatus(VpnStatus.error, 'Recovery unverified');
+      debugPrint('[VPN] Health recovery verification failed: $e');
     }
-    if (!_disposed) notifyListeners();
   }
 
   @override

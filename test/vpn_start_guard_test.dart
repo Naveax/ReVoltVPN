@@ -4,6 +4,46 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:revoltvpn/logic/vpn_start_guard.dart';
 
 void main() {
+  test('synchronous partial cleanup callback cannot start another cleanup',
+      () async {
+    final guard = VpnStartGuard();
+    final nativeStop = Completer<void>();
+    late Future<bool> nested;
+    var nativeStops = 0;
+    final first = guard.cleanupFailedStart(() {
+      nativeStops++;
+      expect(guard.cannotRestart, true);
+      nested = guard.cleanupFailedStart(() {
+        nativeStops++;
+        return Future<void>.value();
+      });
+      return nativeStop.future;
+    });
+    expect(await nested, false);
+    expect(nativeStops, 1);
+    expect(guard.cannotRestart, true);
+    nativeStop.complete();
+    expect(await first, true);
+    expect(guard.cannotRestart, false);
+  });
+
+  test('synchronous cleanup callback cannot reenter native start', () async {
+    final guard = VpnStartGuard();
+    late Future<bool> nestedStart;
+    var nativeStarts = 0;
+    final cleanup = guard.cleanupFailedStart(() {
+      nestedStart = guard.start(() {
+        nativeStarts++;
+        return Future<void>.value();
+      });
+      return Future<void>.value();
+    });
+    expect(await nestedStart, false);
+    expect(nativeStarts, 0);
+    expect(await cleanup, true);
+    expect(guard.cannotRestart, false);
+  });
+
   test('stop marker write fault still stops native tunnel after a late start',
       () async {
     final guard = VpnStartGuard();
