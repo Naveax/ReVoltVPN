@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/network_privacy.dart';
+import 'package:revoltvpn/logic/session_terminal_evidence.dart';
 
 enum SessionProbeResult { active, inactive, unavailable }
 
@@ -290,7 +291,10 @@ class HivemindService {
         return SessionProbeResult.active;
       }
       // Missing or malformed status is not proof of terminal teardown.
-      if (data['active'] != false) return SessionProbeResult.unavailable;
+      if (!SessionTerminalEvidence.confirmedInactive(
+          response.statusCode, data)) {
+        return SessionProbeResult.unavailable;
+      }
 
       await CryptoService.acknowledgeClientEpochTerminal();
       await clearSessionNonce();
@@ -385,15 +389,17 @@ class HivemindService {
 
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body);
-          if (data is Map<String, dynamic> && data['ok'] == true) {
+          if (SessionTerminalEvidence.confirmedStopped(
+              response.statusCode, data)) {
             await CryptoService.acknowledgeClientEpochTerminal();
             await clearSessionNonce();
             return SessionStopResult.stopped;
           }
         } else if (response.statusCode == 401) {
-          await CryptoService.acknowledgeClientEpochTerminal();
-          await clearSessionNonce();
-          return SessionStopResult.alreadyInactive;
+          // HTTP authentication rejection is not a teardown receipt. The edge
+          // can reject a request without touching the live Xray credential.
+          // Retain the possession nonce and durable stop intent for retry.
+          return SessionStopResult.retryNeeded;
         }
       } catch (_) {}
 

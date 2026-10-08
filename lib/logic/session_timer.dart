@@ -5,6 +5,7 @@ import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/vpn_connection.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
+import 'package:revoltvpn/logic/session_terminal_evidence.dart';
 
 class SessionTimer extends ChangeNotifier {
   Timer? _timer;
@@ -160,7 +161,8 @@ class SessionTimer extends ChangeNotifier {
           _markSyncFailure();
           return;
         }
-        if (!activeValue) {
+        if (SessionTerminalEvidence.confirmedInactive(
+            response.statusCode, data)) {
           await CryptoService.acknowledgeClientEpochTerminal();
           await HivemindService.clearSessionNonce();
           await _doDisconnect('Server ended session');
@@ -191,9 +193,9 @@ class SessionTimer extends ChangeNotifier {
         _hasSyncedOnce = true;
         notifyListeners();
       } else if (response.statusCode == 401) {
-        await CryptoService.acknowledgeClientEpochTerminal();
-        await HivemindService.clearSessionNonce();
-        await _doDisconnect('Session authorization expired');
+        // Authentication rejection can originate at an edge proxy and is not
+        // evidence that the server removed this epoch's VLESS credential.
+        _markSyncFailure();
       } else {
         _markSyncFailure();
       }
