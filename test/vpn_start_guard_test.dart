@@ -44,6 +44,62 @@ void main() {
     expect(guard.cannotRestart, false);
   });
 
+  test('duplicate deferred native stop cannot replace cleanup barrier',
+      () async {
+    final guard = VpnStartGuard();
+    final nativeStart = Completer<void>();
+    final nativeStop = Completer<void>();
+    final starting = guard.start(() => nativeStart.future);
+    guard.cancel();
+    var primaryStops = 0;
+    var duplicateStops = 0;
+    guard.stopAfterLateStart(() {
+      primaryStops++;
+      return nativeStop.future;
+    });
+    guard.stopAfterLateStart(() {
+      duplicateStops++;
+      return Future<void>.value();
+    });
+    nativeStart.complete();
+    expect(await starting, false);
+    await Future<void>.delayed(Duration.zero);
+    expect(primaryStops, 1);
+    expect(duplicateStops, 0);
+    expect(guard.cannotRestart, true);
+    expect(guard.reset, throwsStateError);
+    nativeStop.complete();
+    await Future<void>.delayed(Duration.zero);
+    expect(guard.cannotRestart, false);
+    guard.reset();
+  });
+
+  test('duplicate deferred cleanup cannot conceal first native stop failure',
+      () async {
+    final guard = VpnStartGuard();
+    final nativeStart = Completer<void>();
+    final starting = guard.start(() => nativeStart.future);
+    guard.cancel();
+    var primaryStops = 0;
+    var duplicateStops = 0;
+    guard.stopAfterLateStart(() {
+      primaryStops++;
+      throw StateError('native teardown failed');
+    });
+    guard.stopAfterLateStart(() {
+      duplicateStops++;
+      return Future<void>.value();
+    });
+    nativeStart.complete();
+    expect(await starting, false);
+    await Future<void>.delayed(Duration.zero);
+    expect(primaryStops, 1);
+    expect(duplicateStops, 0);
+    expect(guard.cannotRestart, true);
+    expect(guard.reset, throwsStateError);
+    expect(await guard.start(() async {}), false);
+  });
+
   test('stop marker write fault still stops native tunnel after a late start',
       () async {
     final guard = VpnStartGuard();

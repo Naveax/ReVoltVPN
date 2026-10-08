@@ -40,6 +40,8 @@ required = [
     (tests, "direct native start cannot bypass unfinished local cleanup"),
     (tests, "synchronous begin exception releases reservation after propagation"),
     (tests, "stop marker write fault still stops native tunnel after a late start"),
+    (tests, "duplicate deferred native stop cannot replace cleanup barrier"),
+    (tests, "duplicate deferred cleanup cannot conceal first native stop failure"),
     (vpn, "if (!_startGuard.mayReportConnected) return;"),
     (vpn, "final probe = ownedNonce == null"),
     (vpn, "await HivemindService.probeCurrentSession();"),
@@ -78,6 +80,12 @@ assert "if (_lateCleanup != null || _lateCleanupFailed) return false;" in native
 assert native_cleanup.index("_lateCleanup = cleanup;") < native_cleanup.index("Future<void>.sync(stop)")
 assert "completion.completeError(error, trace);" in native_cleanup
 assert "if (identical(_lateCleanup, cleanup)) _lateCleanup = null;" in native_cleanup
+
+deferred_cleanup = guard.split("void stopAfterLateStart(Future<void> Function() stop) {", 1)[1]
+assert "if (operation == null || _lateCleanup != null) return;" in deferred_cleanup
+assert deferred_cleanup.index("if (operation == null || _lateCleanup != null) return;") < deferred_cleanup.index("final cleanup = operation.then<void>(") < deferred_cleanup.index("_lateCleanup = cleanup;")
+assert "if (operation == null || _lateCleanupFailed) return;" not in deferred_cleanup
+assert "if (identical(_lateCleanup, cleanup)) _lateCleanup = null;" in deferred_cleanup
 
 connect = vpn.split("Future<bool> _connectInner(", 1)[1].split("Future<void> disconnect()", 1)[0]
 assert connect.count("_vless.startVless(") == 1

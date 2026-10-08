@@ -111,7 +111,12 @@ class VpnStartGuard {
   /// schedule one further native stop. Never claim that it succeeded early.
   void stopAfterLateStart(Future<void> Function() stop) {
     final operation = _starting;
-    if (operation == null) return;
+    // Only one deferred cleanup may own a native start generation. A second
+    // stopVless call can race the first, and replacing _lateCleanup would
+    // release the restart barrier before the original teardown finishes.
+    // _lateCleanupFailed is intentionally NOT checked: failure to persist a
+    // durable stop marker sets that latch before scheduling this cleanup.
+    if (operation == null || _lateCleanup != null) return;
     // Keep this barrier until late cleanup finishes, even if start already
     // settled. Otherwise a fresh connect can race a delayed stopVless().
     final cleanup = operation.then<void>((_) => stop(),
