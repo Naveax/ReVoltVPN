@@ -99,9 +99,18 @@ native_connected = vpn.split("case VlessConnectionState.connected:", 1)[1].split
 assert native_connected.index("if (!_startGuard.mayReportConnected) return;") < native_connected.index("_setStatus(VpnStatus.connected, 'Secured');")
 disconnect = vpn.split("Future<void> disconnect()", 1)[1].split("void _setStatus(", 1)[0]
 assert disconnect.index("_startGuard.cancel();") < disconnect.index("CryptoService.setSessionStopPending();")
-assert disconnect.index("_startGuard.waitForStart(") < disconnect.index("_vless.stopVless().timeout(")
-assert disconnect.index("_vless.stopVless().timeout(") < disconnect.index("HivemindService.stopSession(markPending: false)")
+normal_disconnect = disconnect.split("bool localStopFailed = false;", 1)[1]
+assert normal_disconnect.index("_startGuard.waitForStart(") < normal_disconnect.index("_vless.stopVless().timeout(")
+assert normal_disconnect.index("_vless.stopVless().timeout(") < normal_disconnect.index("HivemindService.stopSession(markPending: false)")
 assert "await CryptoService.setSessionStopPending();" in disconnect
+
+# Failure to persist stop intent must not strand the UI in disconnecting or
+# permit a new native start. Best-effort local + remote stop still execute.
+persistence = disconnect.split("await CryptoService.setSessionStopPending();", 1)[1].split("bool localStopFailed = false;", 1)[0]
+assert "catch (e) {" in persistence
+assert persistence.index("_startGuard.blockUnsafeRestart();") < persistence.index("await _vless.stopVless().timeout(")
+assert persistence.index("await _vless.stopVless().timeout(") < persistence.index("await HivemindService.stopSession(markPending: false);")
+assert persistence.index("await HivemindService.stopSession(markPending: false);") < persistence.index("_setStatus(VpnStatus.error, 'Shutdown not durable');")
 
 # A failed local stop is an unresolved TUN state, not merely a UI error.
 # Server revocation success does not prove the device's VPN engine stopped.

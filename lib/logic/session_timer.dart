@@ -8,6 +8,7 @@ import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/session_terminal_evidence.dart';
 import 'package:revoltvpn/logic/session_status_snapshot.dart';
 import 'package:revoltvpn/logic/session_sync_fence.dart';
+import 'package:revoltvpn/logic/session_stop_barrier.dart';
 
 class SessionTimer extends ChangeNotifier {
   Timer? _timer;
@@ -22,6 +23,7 @@ class SessionTimer extends ChangeNotifier {
   int _consecutiveFailures = 0;
   bool _isDisconnecting = false;
   final SessionSyncFence _syncFence = SessionSyncFence();
+  final SessionStopBarrier _stopBarrier = SessionStopBarrier();
   bool _disposed = false;
 
   static const int _maxConsecutiveFailures = 3;
@@ -73,12 +75,13 @@ class SessionTimer extends ChangeNotifier {
     }
 
     if (vpnConnection.status == VpnStatus.disconnected && !_isDisconnecting) {
-      _doDisconnect('VPN tunnel dropped');
+      _requestDisconnect('VPN tunnel dropped');
     }
   }
 
   Future<void> start() async {
-    if (_disposed) return;
+    // Never start a fresh polling session during unresolved server revocation.
+    if (_disposed || _stopBarrier.isStopping) return;
     // Responses from a prior session cannot affect this session's counters.
     _syncFence.invalidate();
     _remainingSeconds = 0;
@@ -109,13 +112,13 @@ class SessionTimer extends ChangeNotifier {
     if (_consecutiveFailures >= _maxConsecutiveFailures) {
       _offlineSeconds++;
       if (_offlineSeconds >= _maxOfflineSeconds) {
-        _doDisconnect('Server unreachable');
+        _requestDisconnect('Server unreachable');
         return;
       }
     }
 
     if (_hasSyncedOnce && _remainingSeconds <= 0) {
-      _doDisconnect('Session expired');
+      _requestDisconnect('Session expired');
       return;
     }
 
@@ -131,24 +134,34 @@ class SessionTimer extends ChangeNotifier {
     await _doDisconnect(reason);
   }
 
-  Future<void> _doDisconnect(String reason) async {
-    if (_isDisconnecting) return;
-    _isDisconnecting = true;
-    _syncFence.invalidate();
-    debugPrint('[Timer] Disconnecting: $reason');
+  Future<void> _doDisconnect(String reason) => _stopBarrier.run(() async {
+        if (_disposed) return;
+        _isDisconnecting = true;
+        _syncFence.invalidate();
+        debugPrint('[Timer] Disconnecting: $reason');
 
-    _timer?.cancel();
-    _timer = null;
-    _currentSpeedKBps = 0.0;
-    _remainingSeconds = 0;
-    _hasSyncedOnce = false;
-    _notifyIfAlive();
+        _timer?.cancel();
+        _timer = null;
+        _currentSpeedKBps = 0.0;
+        _remainingSeconds = 0;
+        _hasSyncedOnce = false;
+        _notifyIfAlive();
 
-    await vpnConnection.disconnect();
+        try {
+          await vpnConnection.disconnect();
+        } finally {
+          _isDisconnecting = false;
+          _notifyIfAlive();
+        }
+      });
 
-    if (!_isDisconnecting) return;
-    _isDisconnecting = false;
-    _notifyIfAlive();
+  // Timer/native callbacks have no awaiter. Observe errors instead of letting
+  // an unhandled Future leave the UI unaware of a failed server revocation.
+  void _requestDisconnect(String reason) {
+    unawaited(_doDisconnect(reason).then<void>((_) {},
+        onError: (Object error, StackTrace stack) {
+      debugPrint('[Timer] Disconnect could not complete: $error');
+    }));
   }
 
   Future<void> _syncWithHivemind() async {

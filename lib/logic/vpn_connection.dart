@@ -367,7 +367,34 @@ class VpnConnection extends ChangeNotifier {
 
     // Persist user intent before touching the local tunnel. If the process dies anywhere below,
     // the next launch will retry the authenticated server revoke instead of forgetting it.
-    await CryptoService.setSessionStopPending();
+    try {
+      await CryptoService.setSessionStopPending();
+    } catch (e) {
+      // The durable stop marker is required for crash recovery. If secure
+      // storage rejects the write, do not leave the UI in 'disconnecting' and
+      // never permit a new native start in this process. Still attempt local
+      // shutdown and authenticated remote revocation as best-effort cleanup.
+      _startGuard.blockUnsafeRestart();
+      debugPrint('[VPN] Cannot persist stop intent: $e');
+      if (!kIsWeb && _initialized) {
+        try {
+          await _vless.stopVless().timeout(const Duration(seconds: 5));
+        } catch (stopError) {
+          debugPrint('[VPN] Local stop after storage error failed: $stopError');
+        }
+      }
+      try {
+        await HivemindService.stopSession(markPending: false);
+      } catch (stopError) {
+        debugPrint(
+            '[VPN] Remote revoke after storage error failed: $stopError');
+      }
+      _isStartupRestoration = false;
+      _errorMessage =
+          'VPN stop intent could not be saved. Shutdown is unverified; restart the app after checking the connection.';
+      _setStatus(VpnStatus.error, 'Shutdown not durable');
+      return;
+    }
 
     bool localStopFailed = false;
     final nativeStartWasPending = _startGuard.isStarting;

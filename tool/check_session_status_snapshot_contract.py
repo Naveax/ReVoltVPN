@@ -7,6 +7,8 @@ tests = (root / "test/session_status_snapshot_test.dart").read_text(encoding="ut
 workflow = (root / ".github/workflows/flutter-strict.yml").read_text(encoding="utf-8")
 fence = (root / "lib/logic/session_sync_fence.dart").read_text(encoding="utf-8")
 fence_tests = (root / "test/session_sync_fence_test.dart").read_text(encoding="utf-8")
+stop_barrier = (root / "lib/logic/session_stop_barrier.dart").read_text(encoding="utf-8")
+stop_tests = (root / "test/session_stop_barrier_test.dart").read_text(encoding="utf-8")
 
 for token in (
     "body is! Map<String, dynamic>",
@@ -82,6 +84,35 @@ assert "if (!_disposed) notifyListeners();" in timer
 assert "_disposed = true;" in timer.split("void dispose() {", 1)[1]
 assert "_syncFence.invalidate();" in timer.split("void dispose() {", 1)[1]
 assert sync.index("await HivemindService.authenticatedGet(url);") < sync.index("if (_disposed || _isDisconnecting || !_syncFence.accepts(syncGeneration))") < sync.index("if (response.statusCode == 200) {")
+
+for token in (
+    "Future<void>? _pending;",
+    "bool get isStopping => _pending != null;",
+    "final existing = _pending;",
+    "if (existing != null) return existing;",
+    "Future<void>.sync(stop)",
+    "if (identical(_pending, tracked)) _pending = null;",
+):
+    assert token in stop_barrier, f"Missing shared teardown barrier: {token}"
+
+for test in (
+    "concurrent disconnect callers share one pending teardown",
+    "a failed teardown rejects all waiters and clears the barrier",
+    "a synchronous native exception is an observable stop error",
+    "a subsequent stop cannot overlap the previous pending future",
+):
+    assert test in stop_tests, f"Missing stop serialization regression: {test}"
+
+assert "final SessionStopBarrier _stopBarrier = SessionStopBarrier();" in timer
+assert "if (_disposed || _stopBarrier.isStopping) return;" in timer
+stop = timer.split("Future<void> _doDisconnect(String reason)", 1)[1].split("Future<void> _syncWithHivemind()", 1)[0]
+assert "_stopBarrier.run(() async" in stop
+assert "await vpnConnection.disconnect();" in stop
+assert "finally {" in stop
+assert "_isDisconnecting = false;" in stop
+assert "_requestDisconnect(String reason)" in stop
+assert "unawaited(_doDisconnect(reason).then<void>" in stop
+assert "_doDisconnect(String reason) async" not in timer
 
 assert "python3 tool/check_session_status_snapshot_contract.py" in workflow
 print("[PASS] SessionTimer accepts only fully typed active Rust accounting; malformed and rolled-back counters cannot refresh its watchdog.")
