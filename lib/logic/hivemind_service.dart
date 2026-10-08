@@ -180,8 +180,9 @@ class HivemindService {
         }
         return PendingCandidateRecovery.unresolved;
       case CandidateLifecycleState.absent:
-        await CryptoService.clearPendingSessionCandidate();
-        return PendingCandidateRecovery.none;
+        return await CryptoService.releaseCandidateIfOwned(pending)
+            ? PendingCandidateRecovery.none
+            : PendingCandidateRecovery.unresolved;
       case CandidateLifecycleState.pending:
       case CandidateLifecycleState.activating:
       case CandidateLifecycleState.unavailable:
@@ -199,11 +200,7 @@ class HivemindService {
       final deviceId = await CryptoService.getDeviceId();
       if (!await _cancelSessionCandidateRemote(deviceId, nonce)) return false;
 
-      final pending = await CryptoService.getPendingSessionCandidate();
-      if (pending == nonce) {
-        await CryptoService.clearPendingSessionCandidate();
-      }
-      return true;
+      return await CryptoService.releaseCandidateIfOwned(nonce);
     } catch (_) {
       return false;
     }
@@ -232,9 +229,13 @@ class HivemindService {
     _currentCallId++;
   }
 
-  static Future<void> setSessionNonce(String nonce) async {
-    await CryptoService.setSessionNonce(nonce);
+  static Future<bool> _promoteAndCacheSessionCandidate(String nonce) async {
+    // Ownership comparison and durable promotion must share the epoch gate;
+    // a separate read followed by an unconditional write can resurrect a
+    // cancelled reservation or overwrite another active credential.
+    if (!await CryptoService.promoteSessionCandidate(nonce)) return false;
     _sessionNonce = nonce;
+    return true;
   }
 
   static Future<String?> getSessionNonce() async {
@@ -326,11 +327,13 @@ class HivemindService {
           if (data is Map<String, dynamic> && data['active'] == true) {
             final serverNonce = data['nonce'] as String?;
             if (serverNonce == null || serverNonce == nonce) {
-              if (await CryptoService.getPendingSessionCandidate() != nonce) {
+              if (!await _promoteAndCacheSessionCandidate(nonce)) {
                 return false;
               }
-              await setSessionNonce(nonce);
-              await CryptoService.clearSessionStopPending();
+              // A concurrent user disconnect is authoritative. Do not erase
+              // its durable stop marker merely because SSV became active.
+              // The retry path will revoke the promoted server capability.
+              if (await CryptoService.isSessionStopPending()) return false;
               return true;
             }
             return false;
@@ -366,14 +369,15 @@ class HivemindService {
   static Future<SessionStopResult> _stopSessionInner({
     required bool markPending,
   }) async {
+    // Persist stop intent before inspecting possession. A candidate may be
+    // promoting concurrently; absence of a readable nonce is not proof that
+    // the server has no credential or delayed SSV activation.
+    if (markPending) await CryptoService.setSessionStopPending();
     final nonce = await getSessionNonce();
     if (nonce == null) {
-      await CryptoService.clearSessionStopPending();
-      return SessionStopResult.alreadyInactive;
-    }
-
-    if (markPending) {
-      await CryptoService.setSessionStopPending();
+      return await CryptoService.clearStopIntentIfNoOwnership()
+          ? SessionStopResult.alreadyInactive
+          : SessionStopResult.retryNeeded;
     }
 
     final deviceId = await CryptoService.getDeviceId();
@@ -416,6 +420,13 @@ class HivemindService {
 
   static Future<bool> retryPendingSessionStop() async {
     if (!await CryptoService.isSessionStopPending()) return true;
+    // A prior disconnect can race signed SSV before an active token is
+    // persisted. Recover the exact candidate, then stop its live credential.
+    // Pending/activating/unavailable states keep durable stop intent.
+    if (await getSessionNonce() == null &&
+        await CryptoService.getPendingSessionCandidate() != null) {
+      await recoverPendingSessionCandidate();
+    }
     final result = await stopSession(markPending: false);
     return result != SessionStopResult.retryNeeded;
   }

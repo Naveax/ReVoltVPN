@@ -15,9 +15,9 @@ for needle in (
     "_pendingSessionCandidatePref",
     "beginMainSessionCandidate(String nonce)",
     "getPendingSessionCandidate()",
-    "clearPendingSessionCandidate()",
-    "await _storage.write(key: _sessionNoncePref, value: nonce);",
-    "await _storage.delete(key: _pendingSessionCandidatePref);",
+    "releaseCandidateIfOwned(String nonce)",
+    "return _epoch.promoteCandidate(nonce);",
+    "return _epoch.clearCandidateIfMatches(nonce);",
 ):
     if needle not in crypto:
         fail(f"durable pending-candidate storage is missing: {needle}")
@@ -103,7 +103,7 @@ for needle in (
     "getPendingSessionCandidate()",
     "probeSessionCandidate(pending)",
     "confirmAndSetSessionNonce(pending)",
-    "clearPendingSessionCandidate()",
+    "releaseCandidateIfOwned(pending)",
     "PendingCandidateRecovery.active",
     "PendingCandidateRecovery.none",
     "PendingCandidateRecovery.unresolved",
@@ -124,8 +124,7 @@ cancel = hive[cancel_start:cancel_end]
 for needle in (
     "_canonicalSessionNonce.hasMatch(nonce)",
     "_cancelSessionCandidateRemote(deviceId, nonce)",
-    "getPendingSessionCandidate()",
-    "clearPendingSessionCandidate()",
+    "releaseCandidateIfOwned(nonce)",
 ):
     if needle not in cancel:
         fail(f"candidate cancellation method is missing: {needle}")
@@ -150,10 +149,12 @@ if "/session/stop" in remote:
 confirm_start = hive.index("static Future<bool> confirmAndSetSessionNonce")
 confirm_end = hive.index("\n  static Future<SessionStopResult> stopSession", confirm_start)
 confirm = hive[confirm_start:confirm_end]
-if confirm.count("getPendingSessionCandidate()") < 2:
-    fail("confirmation must verify durable candidate ownership before and at promotion")
-if "await setSessionNonce(nonce);" not in confirm:
-    fail("confirmed candidate is not promoted to active possession")
+if "getPendingSessionCandidate()" not in confirm:
+    fail("confirmation must verify candidate ownership before server status polling")
+if "_promoteAndCacheSessionCandidate(nonce)" not in confirm:
+    fail("confirmed candidate must be atomically compared and promoted")
+if "isSessionStopPending()" not in confirm:
+    fail("confirmation must honor a concurrent disconnect instead of erasing stop intent")
 
 main_start = ads.index("if (adType == 'main') {")
 recovery_call = ads.index(

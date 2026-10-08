@@ -35,6 +35,15 @@ required = [
     (tests, "atomic admission rotates and owns exactly one candidate"),
     (tests, "stop intent and candidate claim share a serialization gate"),
     (tests, "corrupt durable nonce and candidate still block a new epoch"),
+    (epoch, "Future<bool> promoteCandidate(String nonce)"),
+    (epoch, "Future<bool> clearCandidateIfMatches(String nonce)"),
+    (epoch, "Future<bool> clearStopIntentIfNoOwnership()"),
+    (crypto, "promoteSessionCandidate(String nonce)"),
+    (crypto, "releaseCandidateIfOwned(String nonce)"),
+    (hivemind, "if (!await _promoteAndCacheSessionCandidate(nonce))"),
+    (hivemind, "await CryptoService.clearStopIntentIfNoOwnership()"),
+    (tests, "cancel and promotion compete without losing a live credential"),
+    (tests, "a concurrent stop marker is never erased by promotion"),
     (timer, "await _doDisconnect('Server ended session');"),
     (timer, "await _doDisconnect('Data cap reached');"),
     (hivemind, "final stop = await stopSession();"),
@@ -55,16 +64,19 @@ for source, phrase in required:
 # must never be silently deleted: the reservation gate still blocks on them.
 for getter, following in (
     ("getSessionNonce()", "clearSessionNonce()"),
-    ("getPendingSessionCandidate()", "clearPendingSessionCandidate()"),
+    ("getPendingSessionCandidate()", "releaseCandidateIfOwned(String nonce)"),
 ):
     body = crypto.split("static Future<String?> " + getter, 1)[1].split(
-        "static Future<void> " + following, 1
+        ("static Future<bool> " if following.startswith("release") else "static Future<void> ") + following, 1
     )[0]
     assert "_storage.delete" not in body, f"Corrupt {getter} must not be discarded"
 
 assert "rotateClientEpochBeforeNewSession" not in ads
 assert "rotateClientEpochBeforeNewSession" not in hivemind
 assert "setPendingSessionCandidate(String nonce)" not in crypto
+assert "clearPendingSessionCandidate()" not in crypto
+assert "setSessionNonce(String nonce)" not in crypto
+assert "await CryptoService.clearSessionStopPending();" not in hivemind.split("static Future<bool> confirmAndSetSessionNonce", 1)[1].split("static Future<SessionStopResult> stopSession", 1)[0]
 
 # Rotation must be local-only. The public API must not gain a linkable
 # old/new epoch mapping or an endpoint for pseudonym exchange.

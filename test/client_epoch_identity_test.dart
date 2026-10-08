@@ -5,6 +5,7 @@ class _MemoryEpochStorage implements ClientEpochStorage {
   final values = <String, String>{};
   bool rejectIdentityWrite = false;
   bool rejectCandidateWrite = false;
+  bool rejectNonceWrite = false;
 
   @override
   Future<String?> read(String key) async => values[key];
@@ -12,7 +13,8 @@ class _MemoryEpochStorage implements ClientEpochStorage {
   @override
   Future<void> write(String key, String value) async {
     if ((rejectIdentityWrite && key == ClientEpochIdentity.identityKey) ||
-        (rejectCandidateWrite && key == ClientEpochIdentity.candidateKey)) {
+        (rejectCandidateWrite && key == ClientEpochIdentity.candidateKey) ||
+        (rejectNonceWrite && key == ClientEpochIdentity.sessionNonceKey)) {
       throw StateError('simulated secure storage failure');
     }
     values[key] = value;
@@ -210,6 +212,95 @@ void main() {
         throwsA(isA<StateError>()));
     expect(store.values.containsKey(ClientEpochIdentity.identityKey), false);
     expect(store.values.containsKey(ClientEpochIdentity.candidateKey), false);
+  });
+
+  test('atomic promotion consumes only the exact durable candidate', () async {
+    final store = _MemoryEpochStorage()
+      ..values[ClientEpochIdentity.identityKey] = oldId;
+    final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+    expect(await epochs.beginCandidateReservation(candidate1), oldId);
+    expect(await epochs.promoteCandidate(candidate2), false);
+    expect(store.values[ClientEpochIdentity.candidateKey], candidate1);
+    expect(await epochs.promoteCandidate(candidate1), true);
+    expect(store.values[ClientEpochIdentity.sessionNonceKey], candidate1);
+    expect(store.values.containsKey(ClientEpochIdentity.candidateKey), false);
+    expect(await epochs.beginCandidateReservation(candidate2), null);
+  });
+
+  test('cancel and promotion compete without losing a live credential',
+      () async {
+    for (final cancelFirst in [true, false]) {
+      final store = _MemoryEpochStorage()
+        ..values[ClientEpochIdentity.identityKey] = oldId;
+      final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+      await epochs.beginCandidateReservation(candidate1);
+      final operations = cancelFirst
+          ? [
+              epochs.clearCandidateIfMatches(candidate1),
+              epochs.promoteCandidate(candidate1)
+            ]
+          : [
+              epochs.promoteCandidate(candidate1),
+              epochs.clearCandidateIfMatches(candidate1)
+            ];
+      final outcomes = await Future.wait(operations);
+      expect(outcomes, [true, false]);
+      expect(store.values.containsKey(ClientEpochIdentity.candidateKey), false);
+      if (cancelFirst) {
+        expect(store.values.containsKey(ClientEpochIdentity.sessionNonceKey),
+            false);
+      } else {
+        expect(store.values[ClientEpochIdentity.sessionNonceKey], candidate1);
+      }
+    }
+  });
+
+  test('stale candidate cleanup cannot delete another reservation', () async {
+    final store = _MemoryEpochStorage()
+      ..values[ClientEpochIdentity.identityKey] = oldId;
+    final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+    await epochs.beginCandidateReservation(candidate1);
+    expect(await epochs.clearCandidateIfMatches(candidate2), false);
+    expect(store.values[ClientEpochIdentity.candidateKey], candidate1);
+    expect(await epochs.clearCandidateIfMatches(candidate1), true);
+    await epochs.beginCandidateReservation(candidate2);
+    expect(await epochs.clearCandidateIfMatches(candidate1), false);
+    expect(store.values[ClientEpochIdentity.candidateKey], candidate2);
+  });
+
+  test('a concurrent stop marker is never erased by promotion', () async {
+    final store = _MemoryEpochStorage()
+      ..values[ClientEpochIdentity.identityKey] = oldId;
+    final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+    await epochs.beginCandidateReservation(candidate1);
+    await epochs.synchronizedStorage(
+        () => store.write(ClientEpochIdentity.stopPendingKey, '1'));
+    expect(await epochs.clearStopIntentIfNoOwnership(), false);
+    expect(await epochs.promoteCandidate(candidate1), true);
+    expect(await epochs.clearStopIntentIfNoOwnership(), false);
+    expect(store.values[ClientEpochIdentity.stopPendingKey], '1');
+    await epochs.synchronizedStorage(
+        () => store.delete(ClientEpochIdentity.sessionNonceKey));
+    expect(await epochs.clearStopIntentIfNoOwnership(), true);
+    expect(store.values.containsKey(ClientEpochIdentity.stopPendingKey), false);
+  });
+
+  test(
+      'promotion failure retains candidate and never replaces other possession',
+      () async {
+    final store = _MemoryEpochStorage()
+      ..values[ClientEpochIdentity.identityKey] = oldId;
+    final epochs = ClientEpochIdentity(store, newUuid: () => nextId);
+    await epochs.beginCandidateReservation(candidate1);
+    store.rejectNonceWrite = true;
+    await expectLater(
+        epochs.promoteCandidate(candidate1), throwsA(isA<StateError>()));
+    expect(store.values[ClientEpochIdentity.candidateKey], candidate1);
+    store.rejectNonceWrite = false;
+    store.values[ClientEpochIdentity.sessionNonceKey] = candidate2;
+    expect(await epochs.promoteCandidate(candidate1), false);
+    expect(store.values[ClientEpochIdentity.sessionNonceKey], candidate2);
+    expect(store.values[ClientEpochIdentity.candidateKey], candidate1);
   });
 
   test('failed secure write never creates repeated untracked rotations',

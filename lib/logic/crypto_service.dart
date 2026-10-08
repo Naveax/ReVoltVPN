@@ -25,17 +25,16 @@ class CryptoService {
     return _epoch.beginCandidateReservation(nonce);
   }
 
-  /// Persist the current main-session possession token across app/process restarts.
-  /// Promotion writes possession before clearing the pre-activation candidate. If the
-  /// second write fails, both records remain, which is fail-closed: the active token is
-  /// still retained and a later main flow must converge the stale candidate first.
-  static Future<void> setSessionNonce(String nonce) async {
+  /// Atomic compare-and-promote after authenticated server SSV status.
+  /// Never expose a standalone setter that could overwrite different possession.
+  static Future<bool> promoteSessionCandidate(String nonce) {
     _validateSessionNonce(nonce);
-    await _epoch.synchronizedStorage(() async {
-      await _storage.write(key: _sessionNoncePref, value: nonce);
-      await _storage.delete(key: _pendingSessionCandidatePref);
-    });
+    return _epoch.promoteCandidate(nonce);
   }
+
+  /// Forget an empty stop intent only if no unresolved capability exists.
+  static Future<bool> clearStopIntentIfNoOwnership() =>
+      _epoch.clearStopIntentIfNoOwnership();
 
   /// Return only a canonical 128-bit session nonce. Corrupt values must stay
   /// durable: deleting unknown possession can orphan a live server credential.
@@ -70,9 +69,10 @@ class CryptoService {
         return nonce;
       });
 
-  static Future<void> clearPendingSessionCandidate() =>
-      _epoch.synchronizedStorage(
-          () => _storage.delete(key: _pendingSessionCandidatePref));
+  static Future<bool> releaseCandidateIfOwned(String nonce) {
+    _validateSessionNonce(nonce);
+    return _epoch.clearCandidateIfMatches(nonce);
+  }
 
   /// Persist an explicit user-requested server revocation until the server confirms it.
   /// This prevents a process restart or transient network failure from silently forgetting

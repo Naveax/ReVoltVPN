@@ -105,6 +105,39 @@ class ClientEpochIdentity {
         return identity;
       });
 
+  /// Promote the exact server-confirmed candidate under the same gate that
+  /// protects reservations, stop intent and all durable nonce mutations.
+  /// Writing possession first intentionally retains both records on a crash.
+  /// Stop intent is never cleared by promotion: a concurrent disconnect must
+  /// still revoke the promoted capability before allowing a new admission.
+  Future<bool> promoteCandidate(String nonce) => _exclusive(() async {
+        if (!RegExp(r'^[0-9a-f]{32}$').hasMatch(nonce)) return false;
+        if (await _storage.read(candidateKey) != nonce) return false;
+        final currentNonce = await _storage.read(sessionNonceKey);
+        if (currentNonce != null && currentNonce != nonce) return false;
+        await _storage.write(sessionNonceKey, nonce);
+        await _storage.delete(candidateKey);
+        return true;
+      });
+
+  /// Remove only the exact cancelled/absent candidate. A stale response must
+  /// not delete a later reservation or a token that was already promoted.
+  Future<bool> clearCandidateIfMatches(String nonce) => _exclusive(() async {
+        if (await _storage.read(candidateKey) != nonce) return false;
+        await _storage.delete(candidateKey);
+        return true;
+      });
+
+  /// Whether a durable capability may still be owned, even when malformed.
+  /// Keep this and the stop-marker deletion inside one lock to prevent
+  /// treating an in-flight promotion as proof of an inactive session.
+  Future<bool> clearStopIntentIfNoOwnership() => _exclusive(() async {
+        if (await _storage.read(sessionNonceKey) != null ||
+            await _storage.read(candidateKey) != null) return false;
+        await _storage.delete(stopPendingKey);
+        return true;
+      });
+
   /// Rotate at the start of the next main-session admission, not in the
   /// middle of an existing authenticated request. Never persist a mapping.
   Future<bool> rotateBeforeNewSession() => _exclusive(() async {
