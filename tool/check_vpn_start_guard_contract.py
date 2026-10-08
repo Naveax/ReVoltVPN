@@ -6,6 +6,8 @@ guard = (root / "lib/logic/vpn_start_guard.dart").read_text(encoding="utf-8")
 tests = (root / "test/vpn_start_guard_test.dart").read_text(encoding="utf-8")
 health_gate = (root / "lib/logic/vpn_health_poll_gate.dart").read_text(encoding="utf-8")
 health_tests = (root / "test/vpn_health_poll_gate_test.dart").read_text(encoding="utf-8")
+startup_recovery = (root / "lib/logic/vpn_startup_recovery.dart").read_text(encoding="utf-8")
+startup_tests = (root / "test/vpn_startup_recovery_test.dart").read_text(encoding="utf-8")
 workflow = (root / ".github/workflows/flutter-strict.yml").read_text(encoding="utf-8")
 
 required = [
@@ -168,6 +170,40 @@ assert pending_startup.index("await _vless.stopVless().timeout(") < pending_star
 assert "var localStopFailed = !_initialized;" in pending_startup
 assert pending_startup.index("_startGuard.blockUnsafeRestart();") < pending_startup.index("final resolved = await HivemindService.retryPendingSessionStop();")
 assert pending_startup.index("if (localStopFailed) {") < pending_startup.index("if (resolved) {")
+
+# Startup attestation errors cannot be swallowed. Failed native version,
+# delay, nonce, server probe or secure-store inspection cannot prove the old
+# TUN is absent. Block native admission synchronously before persistence/stop.
+start_engine = vpn.split("Future<void> _startEngine() async {", 1)[1].split("void _mapStatus(", 1)[0]
+assert "    } catch (_) {}" not in start_engine
+assert "await _quarantineUnverifiedStartup();" in start_engine
+assert "Future<void> _quarantineUnverifiedStartup() async {" in vpn
+assert "_startGuard.blockUnsafeRestart" in vpn
+quarantine = vpn.split("Future<void> _quarantineUnverifiedStartup() async {", 1)[1].split("void _mapStatus(", 1)[0]
+for required in (
+    "VpnStartupRecovery.quarantine(",
+    "denyRestart: _startGuard.blockUnsafeRestart",
+    "persistStopIntent: CryptoService.setSessionStopPending",
+    "return _vless.stopVless().timeout(const Duration(seconds: 5));",
+    "HivemindService.stopSession(markPending: false)",
+    "SessionStopResult.retryNeeded",
+    "_setStatus(VpnStatus.error, 'Startup verification failed');",
+):
+    assert required in quarantine, required
+assert "denyRestart();" in startup_recovery
+assert startup_recovery.index("denyRestart();") < startup_recovery.index("await persistStopIntent()")
+assert startup_recovery.index("await persistStopIntent()") < startup_recovery.index("await stopNative()") < startup_recovery.index("await revokeRemote()")
+assert "bool get completelyVerified =>" in startup_recovery
+for required in (
+    "startup verification failure latches before any secure storage await",
+    "missing durable marker still executes local and remote shutdown",
+    "native stop rejection does not skip credential revocation",
+    "server revocation failure stays unverified after successful OS stop",
+    "pending remote revocation cannot be treated as terminal proof",
+):
+    assert required in startup_tests, required
+init_early = vpn.split("Future<void> _init() async {", 1)[1].split("Future<void> _startEngine() async {", 1)[0]
+assert "if (!_cancelled && !_disposed) await _quarantineUnverifiedStartup();" in init_early
 
 # Initial health checks must never consume pending stop intent before local
 # engine shutdown and the first authenticated recovery decision have finished.

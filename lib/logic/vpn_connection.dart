@@ -5,6 +5,7 @@ import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
 import 'package:revoltvpn/logic/vpn_start_guard.dart';
 import 'package:revoltvpn/logic/vpn_health_poll_gate.dart';
+import 'package:revoltvpn/logic/vpn_startup_recovery.dart';
 import 'package:revoltvpn/logic/session_stop_barrier.dart';
 
 enum VpnStatus {
@@ -51,8 +52,10 @@ class VpnConnection extends ChangeNotifier {
   Future<void> _init() async {
     try {
       await _startEngine();
-    } catch (e) {
-      debugPrint('[VPN] Engine init failed: $e');
+    } catch (_) {
+      // Startup secure-store / native status errors are not evidence that a
+      // previously restored OS VPN has stopped. Refuse fresh admissions.
+      if (!_cancelled && !_disposed) await _quarantineUnverifiedStartup();
     } finally {
       // Do not start background health/revocation recovery until the startup
       // ownership gate and native restoration checks have fully settled.
@@ -171,7 +174,35 @@ class VpnConnection extends ChangeNotifier {
           }
         }
       }
-    } catch (_) {}
+    } catch (_) {
+      // A failed getCoreVersion/getConnectedServerDelay/nonce/probe is not
+      // a negative tunnel attestation. The native OS tunnel may still exist.
+      if (!_cancelled && !_disposed && !_disconnectBarrier.isStopping) {
+        await _quarantineUnverifiedStartup();
+      }
+    }
+  }
+
+  Future<void> _quarantineUnverifiedStartup() async {
+    final result = await VpnStartupRecovery.quarantine(
+      denyRestart: _startGuard.blockUnsafeRestart,
+      persistStopIntent: CryptoService.setSessionStopPending,
+      stopNative: () {
+        if (!_initialized) {
+          throw StateError('Native VPN status unavailable');
+        }
+        return _vless.stopVless().timeout(const Duration(seconds: 5));
+      },
+      revokeRemote: () async =>
+          await HivemindService.stopSession(markPending: false) !=
+          SessionStopResult.retryNeeded,
+    );
+    _isStartupRestoration = false;
+    _errorMessage = result.completelyVerified
+        ? 'VPN startup could not verify the previous tunnel. Restart the app.'
+        : 'VPN startup verification failed. Local shutdown or server revocation remains unverified.';
+    _setStatus(VpnStatus.error, 'Startup verification failed');
+    debugPrint('[VPN] Startup attestation failed; restart blocked.');
   }
 
   void _mapStatus(VlessStatus status) {
