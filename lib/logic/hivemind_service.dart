@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:revoltvpn/logic/app_config.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
+import 'package:revoltvpn/logic/network_privacy.dart';
+import 'package:revoltvpn/logic/session_terminal_evidence.dart';
 
 enum SessionProbeResult { active, inactive, unavailable }
 
@@ -21,7 +23,6 @@ enum CandidateLifecycleState {
 enum PendingCandidateRecovery { none, active, unresolved }
 
 class HivemindService {
-  static String? _sessionNonce;
   static int _currentCallId = 0;
   static final Random _secureRandom = Random.secure();
   static Future<SessionStopResult>? _stopInFlight;
@@ -90,11 +91,11 @@ class HivemindService {
     if (!_canonicalSessionNonce.hasMatch(nonce)) return false;
 
     try {
-      if (await CryptoService.getPendingSessionCandidate() != null)
-        return false;
-
-      final deviceId = await CryptoService.getDeviceId();
-      await CryptoService.setPendingSessionCandidate(nonce);
+      // This lock-protected claim rotates an eligible epoch and persists its
+      // candidate together. No competing caller can mint a second nonce or
+      // see the new pseudonym without its durable candidate owner.
+      final deviceId = await CryptoService.beginMainSessionCandidate(nonce);
+      if (deviceId == null) return false;
 
       try {
         final response = await directPost(
@@ -178,8 +179,9 @@ class HivemindService {
         }
         return PendingCandidateRecovery.unresolved;
       case CandidateLifecycleState.absent:
-        await CryptoService.clearPendingSessionCandidate();
-        return PendingCandidateRecovery.none;
+        return await CryptoService.releaseCandidateIfOwned(pending)
+            ? PendingCandidateRecovery.none
+            : PendingCandidateRecovery.unresolved;
       case CandidateLifecycleState.pending:
       case CandidateLifecycleState.activating:
       case CandidateLifecycleState.unavailable:
@@ -197,11 +199,7 @@ class HivemindService {
       final deviceId = await CryptoService.getDeviceId();
       if (!await _cancelSessionCandidateRemote(deviceId, nonce)) return false;
 
-      final pending = await CryptoService.getPendingSessionCandidate();
-      if (pending == nonce) {
-        await CryptoService.clearPendingSessionCandidate();
-      }
-      return true;
+      return await CryptoService.releaseCandidateIfOwned(nonce);
     } catch (_) {
       return false;
     }
@@ -230,22 +228,13 @@ class HivemindService {
     _currentCallId++;
   }
 
-  static Future<void> setSessionNonce(String nonce) async {
-    await CryptoService.setSessionNonce(nonce);
-    _sessionNonce = nonce;
-  }
+  static Future<bool> _promoteSessionCandidate(String nonce) =>
+      CryptoService.promoteSessionCandidate(nonce);
 
-  static Future<String?> getSessionNonce() async {
-    if (_sessionNonce != null) return _sessionNonce;
-    _sessionNonce = await CryptoService.getSessionNonce();
-    return _sessionNonce;
-  }
-
-  static Future<void> clearSessionNonce() async {
-    _sessionNonce = null;
-    await CryptoService.clearSessionNonce();
-    await CryptoService.clearSessionStopPending();
-  }
+  // Do not cache the durable possession token in process memory. A delayed
+  // read racing terminal cleanup must never resurrect an already removed
+  // authorization credential for later authenticated calls.
+  static Future<String?> getSessionNonce() => CryptoService.getSessionNonce();
 
   static Future<http.Response> authenticatedGet(
     Uri uri, {
@@ -288,9 +277,18 @@ class HivemindService {
         }
         return SessionProbeResult.active;
       }
+      // Missing or malformed status is not proof of terminal teardown.
+      if (!SessionTerminalEvidence.reportsInactive(response.statusCode, data)) {
+        return SessionProbeResult.unavailable;
+      }
 
-      await clearSessionNonce();
-      return SessionProbeResult.inactive;
+      // The public status endpoint returns active:false for missing/mismatched
+      // auth and fail-closed latch states too. Only the explicit stop operation
+      // converges teardown/cancellation under the server's device gate.
+      final stop = await stopSession();
+      return stop == SessionStopResult.retryNeeded
+          ? SessionProbeResult.unavailable
+          : SessionProbeResult.inactive;
     } catch (_) {
       return SessionProbeResult.unavailable;
     }
@@ -315,11 +313,13 @@ class HivemindService {
           if (data is Map<String, dynamic> && data['active'] == true) {
             final serverNonce = data['nonce'] as String?;
             if (serverNonce == null || serverNonce == nonce) {
-              if (await CryptoService.getPendingSessionCandidate() != nonce) {
+              if (!await _promoteSessionCandidate(nonce)) {
                 return false;
               }
-              await setSessionNonce(nonce);
-              await CryptoService.clearSessionStopPending();
+              // A concurrent user disconnect is authoritative. Do not erase
+              // its durable stop marker merely because SSV became active.
+              // The retry path will revoke the promoted server capability.
+              if (await CryptoService.isSessionStopPending()) return false;
               return true;
             }
             return false;
@@ -355,14 +355,15 @@ class HivemindService {
   static Future<SessionStopResult> _stopSessionInner({
     required bool markPending,
   }) async {
+    // Persist stop intent before inspecting possession. A candidate may be
+    // promoting concurrently; absence of a readable nonce is not proof that
+    // the server has no credential or delayed SSV activation.
+    if (markPending) await CryptoService.setSessionStopPending();
     final nonce = await getSessionNonce();
     if (nonce == null) {
-      await CryptoService.clearSessionStopPending();
-      return SessionStopResult.alreadyInactive;
-    }
-
-    if (markPending) {
-      await CryptoService.setSessionStopPending();
+      return await CryptoService.clearStopIntentIfNoOwnership()
+          ? SessionStopResult.alreadyInactive
+          : SessionStopResult.retryNeeded;
     }
 
     final deviceId = await CryptoService.getDeviceId();
@@ -381,13 +382,21 @@ class HivemindService {
 
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body);
-          if (data is Map<String, dynamic> && data['ok'] == true) {
-            await clearSessionNonce();
-            return SessionStopResult.stopped;
+          if (SessionTerminalEvidence.confirmedStopped(
+              response.statusCode, data)) {
+            // Bind this receipt to the exact durable capability. A stale
+            // response must not retire another nonce or clear a newer stop
+            // intent. Partial secure-store failures remain retryable.
+            if (await CryptoService.completeAcknowledgedSessionStop(nonce)) {
+              return SessionStopResult.stopped;
+            }
+            return SessionStopResult.retryNeeded;
           }
         } else if (response.statusCode == 401) {
-          await clearSessionNonce();
-          return SessionStopResult.alreadyInactive;
+          // HTTP authentication rejection is not a teardown receipt. The edge
+          // can reject a request without touching the live Xray credential.
+          // Retain the possession nonce and durable stop intent for retry.
+          return SessionStopResult.retryNeeded;
         }
       } catch (_) {}
 
@@ -401,6 +410,13 @@ class HivemindService {
 
   static Future<bool> retryPendingSessionStop() async {
     if (!await CryptoService.isSessionStopPending()) return true;
+    // A prior disconnect can race signed SSV before an active token is
+    // persisted. Recover the exact candidate, then stop its live credential.
+    // Pending/activating/unavailable states keep durable stop intent.
+    if (await getSessionNonce() == null &&
+        await CryptoService.getPendingSessionCandidate() != null) {
+      await recoverPendingSessionCandidate();
+    }
     final result = await stopSession(markPending: false);
     return result != SessionStopResult.retryNeeded;
   }
@@ -409,7 +425,7 @@ class HivemindService {
     void Function(int attempt, int total)? onAttempt,
     bool skipAdBypass = false,
   }) async {
-    final deviceId = await CryptoService.getDeviceId();
+    var deviceId = await CryptoService.getDeviceId();
     final callId = ++_currentCallId;
 
     var nonce = await getSessionNonce();
@@ -422,11 +438,15 @@ class HivemindService {
       }
     }
     if (nonce == null && !skipAdBypass && kDebugMode) {
+      // Reservation below atomically rotates and persists a fresh candidate.
+      // Candidate recovery above must finish before entering that operation.
       final candidate = newNonce();
       try {
         if (!await reserveSessionCandidate(candidate)) {
           throw Exception('Session candidate reservation unavailable.');
         }
+        // After the atomic reservation, read the claimed epoch for SSV.
+        deviceId = await CryptoService.getDeviceId();
         final customData = jsonEncode({
           'device_id': deviceId,
           'nonce': candidate,
@@ -469,8 +489,10 @@ class HivemindService {
             );
           } else if (data['active'] == true && data['vless_uuid'] != null) {
             final vlessUuid = data['vless_uuid'];
-            final vlessIp = data['vless_ip'] ?? AppConfig.serverIp;
-            final vlessPort = data['vless_port'] ?? 443;
+            final vlessHost = NetworkPrivacy.vlessAuthorityHost(
+              data['vless_ip'] ?? AppConfig.serverIp,
+            );
+            final vlessPort = NetworkPrivacy.vlessPort(data['vless_port']);
             final pbk = data['reality_pbk'] ?? '';
             final sid = data['reality_sid'] ?? '';
             final sni = data['reality_sni'];
@@ -480,7 +502,7 @@ class HivemindService {
             final fp = data['reality_fp'] ?? AppConfig.realityFp;
             final xhttpPath = data['xhttp_path'] ?? AppConfig.vlessPath;
 
-            final vlessUrl = 'vless://$vlessUuid@$vlessIp:$vlessPort'
+            final vlessUrl = 'vless://$vlessUuid@$vlessHost:$vlessPort'
                 '?security=${AppConfig.vlessSecurity}'
                 '&type=${AppConfig.vlessType}'
                 '&path=$xhttpPath'

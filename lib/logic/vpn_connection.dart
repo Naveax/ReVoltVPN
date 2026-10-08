@@ -3,6 +3,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_vless/flutter_vless.dart';
 import 'package:revoltvpn/logic/crypto_service.dart';
 import 'package:revoltvpn/logic/hivemind_service.dart';
+import 'package:revoltvpn/logic/vpn_start_guard.dart';
+import 'package:revoltvpn/logic/vpn_health_poll_gate.dart';
+import 'package:revoltvpn/logic/vpn_startup_recovery.dart';
+import 'package:revoltvpn/logic/session_stop_barrier.dart';
 
 enum VpnStatus {
   disconnected,
@@ -14,6 +18,11 @@ enum VpnStatus {
 
 class VpnConnection extends ChangeNotifier {
   bool _cancelled = false;
+  bool _connectInFlight = false;
+  bool _disposed = false;
+  final VpnStartGuard _startGuard = VpnStartGuard();
+  final VpnHealthPollGate _healthPollGate = VpnHealthPollGate();
+  final SessionStopBarrier _disconnectBarrier = SessionStopBarrier();
   VpnStatus _status = VpnStatus.disconnected;
   VpnStatus get status => _status;
 
@@ -43,9 +52,20 @@ class VpnConnection extends ChangeNotifier {
   Future<void> _init() async {
     try {
       await _startEngine();
-    } catch (e) {
-      debugPrint('[VPN] Engine init failed: $e');
+    } catch (_) {
+      // Startup secure-store / native status errors are not evidence that a
+      // previously restored OS VPN has stopped. Refuse fresh admissions.
+      if (!_cancelled && !_disposed) await _quarantineUnverifiedStartup();
     } finally {
+      // Do not start background health/revocation recovery until the startup
+      // ownership gate and native restoration checks have fully settled.
+      // Earlier scheduling raced the initial pending-stop decision and could
+      // consume the marker before native teardown was checked.
+      if (!kIsWeb && !_disposed) {
+        _healthTimer ??=
+            Timer.periodic(const Duration(seconds: 30), (_) => _checkHealth());
+        unawaited(_checkHealth());
+      }
       if (!_readyCompleter.isCompleted) _readyCompleter.complete();
     }
   }
@@ -72,22 +92,36 @@ class VpnConnection extends ChangeNotifier {
       debugPrint('[VPN] VLESS init error (expected on emulator): $e');
     }
 
-    _checkHealth();
-    _healthTimer =
-        Timer.periodic(const Duration(seconds: 30), (_) => _checkHealth());
-
     // A prior explicit disconnect may have lost the network/process before the server confirmed
     // credential revocation. Honor that durable intent before attempting startup restoration.
     if (await CryptoService.isSessionStopPending()) {
-      if (_initialized) {
+      // An unavailable native engine cannot prove that the previous OS VPN
+      // has been torn down. Retain a fail-closed restart latch either way.
+      var localStopFailed = !_initialized;
+      if (!_initialized) {
+        _startGuard.blockUnsafeRestart();
+        debugPrint('[VPN] Pending revocation: native teardown unavailable.');
+      } else {
         try {
           await _vless.stopVless().timeout(const Duration(seconds: 5));
         } catch (e) {
+          localStopFailed = true;
+          _startGuard.blockUnsafeRestart();
           debugPrint('[VPN] Pending-revocation local stop failed: $e');
         }
       }
+      // Revoke the server capability even when local teardown is ambiguous.
+      // Never report a clean disconnect or allow a new native start if the
+      // previous engine did not confirm that it stopped.
       final resolved = await HivemindService.retryPendingSessionStop();
       _isStartupRestoration = false;
+      if (localStopFailed) {
+        _errorMessage = resolved
+            ? 'The previous VPN tunnel did not shut down cleanly. Restart the app.'
+            : 'VPN shutdown failed and server revocation is still pending.';
+        _setStatus(VpnStatus.error, 'Shutdown failed');
+        return;
+      }
       if (resolved) {
         _errorMessage = null;
         _setStatus(VpnStatus.disconnected, 'Tap to connect');
@@ -105,27 +139,94 @@ class VpnConnection extends ChangeNotifier {
 
       final delay = await _vless.getConnectedServerDelay();
       if (delay > 0) {
-        _isStartupRestoration = true;
-        _setStatus(VpnStatus.connected, 'Secured');
+        // Native delay is NOT proof of current server authorization: an old
+        // tunnel may survive process restart after its nonce was revoked.
+        final ownedNonce = await CryptoService.getSessionNonce();
+        final probe = ownedNonce == null
+            ? SessionProbeResult.inactive
+            : await HivemindService.probeCurrentSession();
+        // An explicit revoke intent outranks an earlier status response.
+        // This read also closes the initialization-vs-health-recovery window.
+        final stopPending = await CryptoService.isSessionStopPending();
+        if (_cancelled) return;
+        if (probe == SessionProbeResult.active && !stopPending) {
+          _startGuard.authorizeConnected();
+          _isStartupRestoration = true;
+          _setStatus(VpnStatus.connected, 'Secured');
+        } else {
+          _startGuard.invalidateConnected();
+          try {
+            await _vless.stopVless().timeout(const Duration(seconds: 5));
+            _setStatus(
+                stopPending || probe == SessionProbeResult.unavailable
+                    ? VpnStatus.error
+                    : VpnStatus.disconnected,
+                stopPending
+                    ? 'Revocation pending'
+                    : probe == SessionProbeResult.unavailable
+                        ? 'Session verification unavailable'
+                        : 'Tap to connect');
+          } catch (e) {
+            _startGuard.blockUnsafeRestart();
+            _errorMessage = 'Unverified native VPN shutdown failed.';
+            _setStatus(VpnStatus.error, 'Shutdown failed');
+            debugPrint('[VPN] Unverified startup cleanup failed: $e');
+          }
+        }
       }
-    } catch (_) {}
+    } catch (_) {
+      // A failed getCoreVersion/getConnectedServerDelay/nonce/probe is not
+      // a negative tunnel attestation. The native OS tunnel may still exist.
+      if (!_cancelled && !_disposed && !_disconnectBarrier.isStopping) {
+        await _quarantineUnverifiedStartup();
+      }
+    }
+  }
+
+  Future<void> _quarantineUnverifiedStartup() async {
+    final result = await VpnStartupRecovery.quarantine(
+      denyRestart: _startGuard.blockUnsafeRestart,
+      persistStopIntent: CryptoService.setSessionStopPending,
+      stopNative: () {
+        if (!_initialized) {
+          throw StateError('Native VPN status unavailable');
+        }
+        return _vless.stopVless().timeout(const Duration(seconds: 5));
+      },
+      revokeRemote: () async =>
+          await HivemindService.stopSession(markPending: false) !=
+          SessionStopResult.retryNeeded,
+    );
+    _isStartupRestoration = false;
+    _errorMessage = result.completelyVerified
+        ? 'VPN startup could not verify the previous tunnel. Restart the app.'
+        : 'VPN startup verification failed. Local shutdown or server revocation remains unverified.';
+    _setStatus(VpnStatus.error, 'Startup verification failed');
+    debugPrint('[VPN] Startup attestation failed; restart blocked.');
   }
 
   void _mapStatus(VlessStatus status) {
+    if (_disposed) return;
+    // Late native events must not resurrect a tunnel after user disconnect.
+    if (_cancelled || _status == VpnStatus.disconnecting) return;
     switch (status.connectionState) {
       case VlessConnectionState.connected:
+        // A stale native callback is untrusted until the current start future
+        // or authenticated startup restoration authorizes this generation.
+        if (!_startGuard.mayReportConnected) return;
         _setStatus(VpnStatus.connected, 'Secured');
         break;
       case VlessConnectionState.disconnected:
-        _isStartupRestoration = false;
-        _setStatus(VpnStatus.disconnected, 'Tap to connect');
+        if (!_startGuard.mayReportConnected) return;
+        _revokeUnexpectedNativeDrop();
         break;
       case VlessConnectionState.connecting:
+        if (_status != VpnStatus.connecting) return;
         _setStatus(VpnStatus.connecting, 'Establishing tunnel…');
         break;
       case VlessConnectionState.disconnecting:
-        _isStartupRestoration = false;
-        _setStatus(VpnStatus.disconnecting, 'Tearing down…');
+        if (!_startGuard.mayReportConnected) return;
+        _revokeUnexpectedNativeDrop();
         break;
       case VlessConnectionState.unknown:
         if (_status != VpnStatus.connected &&
@@ -134,6 +235,21 @@ class VpnConnection extends ChangeNotifier {
         }
         break;
     }
+  }
+
+  /// A native tunnel loss does not authenticate terminal server teardown.
+  /// Invoke the same persisted, explicit revoke path as user disconnect;
+  /// disconnect synchronously cancels this native generation before its first
+  /// storage await. Do not rely on SessionTimer having a live UI listener.
+  void _revokeUnexpectedNativeDrop() {
+    unawaited(disconnect().catchError((Object error, StackTrace trace) {
+      _startGuard.blockUnsafeRestart();
+      _isStartupRestoration = false;
+      _errorMessage =
+          'Native tunnel dropped and server revocation could not be confirmed.';
+      _setStatus(VpnStatus.error, 'Revocation failed');
+      debugPrint('[VPN] Unexpected native drop cleanup failed: $error');
+    }));
   }
 
   // ── Connect ────────────────────────────────────────────────────────
@@ -145,12 +261,24 @@ class VpnConnection extends ChangeNotifier {
   // shortId (needed for every Reality handshake — unavoidable).
   // The tunnel UUID is per-user, assigned by Hivemind via AdMob SSV.
 
-  Future<bool> connect({
-    bool skipAdBypass = false,
-  }) async {
-    if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
-      return false;
+  Future<bool> connect({bool skipAdBypass = false}) async {
+    if (_connectInFlight ||
+        _disconnectBarrier.isStopping ||
+        _status == VpnStatus.connected ||
+        _status == VpnStatus.connecting ||
+        _status == VpnStatus.disconnecting ||
+        _startGuard.cannotRestart) return false;
+    _connectInFlight = true;
+    _healthPollGate.invalidate();
+    try {
+      _startGuard.reset();
+      return await _connectInner(skipAdBypass: skipAdBypass);
+    } finally {
+      _connectInFlight = false;
     }
+  }
+
+  Future<bool> _connectInner({required bool skipAdBypass}) async {
     _cancelled = false;
 
     // Defense in depth for callers that bypass AdManager: never reconnect while an explicit
@@ -161,6 +289,8 @@ class VpnConnection extends ChangeNotifier {
       return false;
     }
 
+    if (_cancelled) return false;
+
     if (!kIsWeb && !_initialized) {
       _errorMessage = 'VPN service unavailable.';
       _setStatus(VpnStatus.error, 'Service unavailable');
@@ -169,6 +299,7 @@ class VpnConnection extends ChangeNotifier {
 
     if (!kIsWeb) {
       final ok = await _vless.requestPermission();
+      if (_cancelled) return false;
       if (!ok) {
         _errorMessage = 'VPN permission denied.';
         _setStatus(VpnStatus.error, 'Permission required');
@@ -181,6 +312,7 @@ class VpnConnection extends ChangeNotifier {
 
     if (kIsWeb) {
       await Future.delayed(const Duration(seconds: 1));
+      if (_cancelled) return false;
       _setStatus(VpnStatus.connected, 'Secured (dev mode)');
       return true;
     }
@@ -192,6 +324,7 @@ class VpnConnection extends ChangeNotifier {
       realUrl = await HivemindService.fetchConfigDirectly(
         skipAdBypass: skipAdBypass,
         onAttempt: (attempt, total) {
+          if (_cancelled) return;
           _setStatus(
               VpnStatus.connecting, 'Contacting server ($attempt/$total)…');
         },
@@ -199,7 +332,7 @@ class VpnConnection extends ChangeNotifier {
     } catch (e) {
       debugPrint('[VPN] Config fetch error: $e');
       final raw = e.toString().replaceAll('Exception: ', '');
-      if (raw.contains('Cancelled')) return false;
+      if (_cancelled || raw.contains('Cancelled')) return false;
       if (raw.contains('timed out') || raw.contains('Session not activated')) {
         _errorMessage =
             'The server did not respond in time.\nCheck your connection and try again.';
@@ -211,45 +344,121 @@ class VpnConnection extends ChangeNotifier {
       return false;
     }
 
-    if (_cancelled) {
-      _setStatus(VpnStatus.disconnected, 'Tap to connect');
-      return false;
-    }
+    if (_cancelled) return false;
 
     _setStatus(VpnStatus.connecting, 'Securing connection…');
 
+    var nativeStartAttempted = false;
     try {
       final parsed = FlutterVless.parse(realUrl);
 
-      await _vless.startVless(
-        remark: parsed.remark.isNotEmpty ? parsed.remark : 'Revolt VPN',
-        config: parsed.getFullConfiguration(),
-      );
+      nativeStartAttempted = true;
+      final started = await _startGuard.start(() => _vless.startVless(
+            remark: parsed.remark.isNotEmpty ? parsed.remark : 'Revolt VPN',
+            config: parsed.getFullConfiguration(),
+            // Privacy v2: no application/subnet bypass is permitted in the managed
+            // ReVoltVPN profile. AndroidDnsPolicy.proxy installs a virtual resolver
+            // whose queries are forwarded through the selected VLESS outbound.
+            blockedApps: const <String>[],
+            bypassSubnets: const <String>[],
+            proxyOnly: false,
+            androidDnsPolicy: AndroidDnsPolicy.proxy,
+          ));
+      if (!started || _cancelled) return false;
     } catch (e) {
+      // A rejected native start may still have established part of a TUN.
+      // The user's concurrent disconnect owns cleanup if already cancelled.
+      if (_cancelled) return false;
       debugPrint('[VPN] Tunnel start error: $e');
+      if (nativeStartAttempted) {
+        final cleaned = await _startGuard.cleanupFailedStart(
+          () => _vless.stopVless().timeout(const Duration(seconds: 5)),
+        );
+        if (!cleaned) {
+          _errorMessage =
+              'VPN shutdown could not be confirmed. Restart the app.';
+          _setStatus(VpnStatus.error, 'Shutdown failed');
+          return false;
+        }
+      }
+      if (_cancelled) return false;
       _errorMessage = 'Tunnel failed to start.\nTry reconnecting.';
       _setStatus(VpnStatus.error, 'Connection failed');
       return false;
     }
 
+    if (_cancelled) return false;
+    _startGuard.authorizeConnected();
     _setStatus(VpnStatus.connected, 'Secured');
     return true;
   }
 
-  Future<void> disconnect() async {
+  Future<void> disconnect() {
+    _healthPollGate.invalidate();
+    // Cancel the native generation synchronously even when an existing stop
+    // is underway; all callers must await that SAME exact teardown Future.
     _cancelled = true;
+    _startGuard.cancel();
     HivemindService.cancel();
-    if (_status == VpnStatus.disconnecting) return;
+    return _disconnectBarrier.run(_disconnectInner);
+  }
 
+  Future<void> _disconnectInner() async {
     final wasLocallyDisconnected = _status == VpnStatus.disconnected;
     _setStatus(VpnStatus.disconnecting, 'Tearing down…');
 
     // Persist user intent before touching the local tunnel. If the process dies anywhere below,
     // the next launch will retry the authenticated server revoke instead of forgetting it.
-    await CryptoService.setSessionStopPending();
+    try {
+      await CryptoService.setSessionStopPending();
+    } catch (e) {
+      // The durable stop marker is required for crash recovery. If secure
+      // storage rejects the write, do not leave the UI in 'disconnecting' and
+      // never permit a new native start in this process. Still attempt local
+      // shutdown and authenticated remote revocation as best-effort cleanup.
+      _startGuard.blockUnsafeRestart();
+      debugPrint('[VPN] Cannot persist stop intent: $e');
+      if (!kIsWeb && _initialized) {
+        if (_startGuard.isStarting) {
+          // A start can settle after this immediate stop. Repeat teardown
+          // once it settles, even though the durable marker write failed.
+          // Keep the no-restart latch regardless of the cleanup outcome.
+          _startGuard.stopAfterLateStart(
+              () => _vless.stopVless().timeout(const Duration(seconds: 5)));
+        }
+        try {
+          await _vless.stopVless().timeout(const Duration(seconds: 5));
+        } catch (stopError) {
+          debugPrint('[VPN] Local stop after storage error failed: $stopError');
+        }
+      }
+      try {
+        await HivemindService.stopSession(markPending: false);
+      } catch (stopError) {
+        debugPrint(
+            '[VPN] Remote revoke after storage error failed: $stopError');
+      }
+      _isStartupRestoration = false;
+      _errorMessage =
+          'VPN stop intent could not be saved. Shutdown is unverified; restart the app after checking the connection.';
+      _setStatus(VpnStatus.error, 'Shutdown not durable');
+      return;
+    }
 
     bool localStopFailed = false;
-    if (!kIsWeb && _initialized && !wasLocallyDisconnected) {
+    final nativeStartWasPending = _startGuard.isStarting;
+    if (nativeStartWasPending &&
+        !await _startGuard.waitForStart(const Duration(seconds: 6))) {
+      localStopFailed = true;
+      // Native start may complete after our timeout. Tear it down again when
+      // that future finally settles, without claiming a successful shutdown.
+      _startGuard.stopAfterLateStart(() => _vless.stopVless().timeout(
+            const Duration(seconds: 5),
+          ));
+    }
+    if (!kIsWeb &&
+        _initialized &&
+        (!wasLocallyDisconnected || nativeStartWasPending)) {
       bool timedOut = false;
       try {
         await _vless.stopVless().timeout(
@@ -270,11 +479,28 @@ class VpnConnection extends ChangeNotifier {
 
     // Revoke the server credential even if local shutdown reported an error. Removing the Xray
     // identity is the safest fallback when the local engine's state is ambiguous.
-    final stopResult = await HivemindService.stopSession(markPending: false);
+    late final SessionStopResult stopResult;
+    try {
+      stopResult = await HivemindService.stopSession(markPending: false);
+    } catch (e) {
+      // An unexpected secure-store/control-plane error must not leave the UI
+      // in 'disconnecting' or make a fresh tunnel start seem permissible.
+      // The durable marker remains the retry authority after restart.
+      _startGuard.blockUnsafeRestart();
+      _isStartupRestoration = false;
+      _errorMessage =
+          'Server revocation could not be verified. Reconnect is blocked until recovery.';
+      _setStatus(VpnStatus.error, 'Revocation unverified');
+      debugPrint('[VPN] Session stop did not complete: $e');
+      rethrow;
+    }
     final revocationPending = stopResult == SessionStopResult.retryNeeded;
 
     _isStartupRestoration = false;
     if (localStopFailed) {
+      // A failed native stop must not be treated as an ordinary UI error:
+      // the engine may still own the TUN. Deny any new start this process.
+      _startGuard.blockUnsafeRestart();
       _errorMessage = revocationPending
           ? 'VPN shutdown was ambiguous and server credential revocation is still pending.'
           : 'VPN did not shut down cleanly. Please restart the app.';
@@ -294,32 +520,64 @@ class VpnConnection extends ChangeNotifier {
   }
 
   void _setStatus(VpnStatus s, String msg) {
+    if (_disposed) return;
     _status = s;
     _statusMessage = msg;
     notifyListeners();
   }
 
-  Future<void> _checkHealth() async {
-    _serverReachable = await HivemindService.checkHealth();
-    if (_serverReachable && await CryptoService.isSessionStopPending()) {
-      final resolved = await HivemindService.retryPendingSessionStop();
-      if (resolved && _status == VpnStatus.disconnected) {
-        _errorMessage = null;
-        _setStatus(VpnStatus.disconnected, 'Tap to connect');
-        return;
+  Future<void> _checkHealth() => _healthPollGate.run(_checkHealthOnce);
+
+  Future<void> _checkHealthOnce() async {
+    if (_disposed || _disconnectBarrier.isStopping) return;
+    final healthGeneration = _healthPollGate.generation;
+    bool stillCurrent() =>
+        !_disposed &&
+        !_disconnectBarrier.isStopping &&
+        _healthPollGate.accepts(healthGeneration);
+
+    try {
+      final reachable = await HivemindService.checkHealth();
+      // A completed disconnect can release its barrier while this HTTP read
+      // is pending. The generation must still match before publishing state.
+      if (!stillCurrent()) return;
+      _serverReachable = reachable;
+      // An in-flight storage read may finish AFTER an entire disconnect or
+      // reconnect. Neither a stale pending marker nor its errors may trigger
+      // recovery or lock a different session.
+      if (_serverReachable) {
+        final pending = await CryptoService.isSessionStopPending();
+        if (!stillCurrent()) return;
+        if (pending) {
+          final resolved = await HivemindService.retryPendingSessionStop();
+          if (!stillCurrent()) return;
+          if (resolved && _status == VpnStatus.disconnected) {
+            _errorMessage = null;
+            _setStatus(VpnStatus.disconnected, 'Tap to connect');
+            return;
+          }
+        }
       }
+      if (stillCurrent()) notifyListeners();
+    } catch (e) {
+      if (!stillCurrent()) return;
+      // A current unreadable stop marker / failed recovery is NOT terminal
+      // evidence. Only current-session failures may deny new admissions.
+      _startGuard.blockUnsafeRestart();
+      _errorMessage =
+          'Secure session recovery could not be verified. Reconnect is blocked.';
+      _setStatus(VpnStatus.error, 'Recovery unverified');
+      debugPrint('[VPN] Health recovery verification failed: $e');
     }
-    notifyListeners();
   }
 
   @override
   void dispose() {
+    _disposed = true;
     _healthTimer?.cancel();
-    if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
-      try {
-        _vless.stopVless();
-      } catch (_) {}
-    }
+    // UI provider disposal is not an authenticated session stop. Do not fire
+    // an unawaited native stop that can strand a live server credential.
+    // Explicit disconnect and native drop own durable revoke + local cleanup.
     super.dispose();
   }
 }

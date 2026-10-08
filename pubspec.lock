@@ -207,42 +207,42 @@ packages:
     dependency: "direct main"
     description:
       name: flutter_vless
-      sha256: db242f7fe007d35b4d51c5bd5b895d816f141e4d4afc7038c3b6228c1c66dfb5
+      sha256: ccda63e67218c99f134a338d904264b9772bf289966fafb5067801d547b27f51
       url: "https://pub.dev"
     source: hosted
-    version: "1.1.5"
+    version: "1.1.6"
   flutter_vless_android:
     dependency: transitive
     description:
       name: flutter_vless_android
-      sha256: "5e6fe73d3606ed8c73e87fac15efa7631e12ce18d39a4bd4e13b6c097c6d52b9"
+      sha256: "9dfcdfe74ba6c0c4f3569cc9c1089e0011f36ee94c69ce3960067dc02115e245"
       url: "https://pub.dev"
     source: hosted
-    version: "1.1.5"
+    version: "1.1.6"
   flutter_vless_macos:
     dependency: transitive
     description:
       name: flutter_vless_macos
-      sha256: "2651eda1ae75aff8d0acd74f3d38980c71e7629075eee7aa57e52897479f973f"
+      sha256: eac0c6508c44d757a9d5b2e4c21d8ea8da01e79c9c6e4fffdd0d4981bef17f9a
       url: "https://pub.dev"
     source: hosted
-    version: "1.1.5"
+    version: "1.1.6"
   flutter_vless_platform_interface:
     dependency: transitive
     description:
       name: flutter_vless_platform_interface
-      sha256: "5f14b7c0052a3457ec1eff1ab5f77a48963b96ea83895f0337a1f5bfc5346137"
+      sha256: ead87ef2dc5987d7e3a83c9554a27ba7f8e914e9b2b72477eda3ba0b639fe7e8
       url: "https://pub.dev"
     source: hosted
-    version: "1.1.0"
+    version: "1.1.2"
   flutter_vless_windows:
     dependency: transitive
     description:
       name: flutter_vless_windows
-      sha256: aa436a361c5933f10d0c179b0db0c7d1c7565cbd43863c3d436e1e4daaaed33a
+      sha256: a5cf5c0525a0a5d876e9cff7d921e3ff75c50d7b2ae8768cc976ffc5e8b7357a
       url: "https://pub.dev"
     source: hosted
-    version: "1.1.0"
+    version: "1.1.6"
   flutter_web_plugins:
     dependency: transitive
     description: flutter

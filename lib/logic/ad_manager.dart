@@ -131,6 +131,8 @@ class AdManager extends ChangeNotifier {
       if (existing == SessionProbeResult.unavailable) {
         return false;
       }
+      // reserveSessionCandidate below atomically rotates the eligible epoch
+      // and writes its exact candidate nonce. No rotate/reserve race window.
       nonce = HivemindService.newNonce();
     } else {
       // Support rewards authorize an extension of the exact active generation. The server
