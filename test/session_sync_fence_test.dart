@@ -1,7 +1,38 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:revoltvpn/logic/session_sync_fence.dart';
 
 void main() {
+  test('old identity preflight cannot dispatch status for a new session',
+      () async {
+    final fence = SessionSyncFence();
+    final identityRead = Completer<void>();
+    final old = fence.beginRequest()!;
+    var networkDispatches = 0;
+
+    Future<void> pendingPoll() async {
+      try {
+        await identityRead.future;
+        if (!fence.accepts(old)) return;
+        networkDispatches++;
+      } finally {
+        fence.finishRequest(old);
+      }
+    }
+
+    final obsolete = pendingPoll();
+    fence.invalidate();
+    final fresh = fence.beginRequest()!;
+    identityRead.complete();
+    await obsolete;
+    expect(networkDispatches, 0);
+    expect(fence.accepts(fresh), true);
+    // The old completion must not unlock the new session's permit.
+    expect(fence.beginRequest(), isNull);
+    fence.finishRequest(fresh);
+  });
+
   test('a status reply belongs to the generation which requested it', () {
     final fence = SessionSyncFence();
     final request = fence.current;

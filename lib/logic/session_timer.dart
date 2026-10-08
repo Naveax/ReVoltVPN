@@ -59,6 +59,8 @@ class SessionTimer extends ChangeNotifier {
     // Restore timer if VPN was already running at app launch.
     if (vpnConnection.status == VpnStatus.connected &&
         !isRunning &&
+        !_stopBarrier.isStopping &&
+        !_isDisconnecting &&
         vpnConnection.isStartupRestoration) {
       _resumeTicking();
       return;
@@ -81,7 +83,9 @@ class SessionTimer extends ChangeNotifier {
 
   Future<void> start() async {
     // Never start a fresh polling session during unresolved server revocation.
-    if (_disposed || _stopBarrier.isStopping) return;
+    if (_disposed ||
+        _stopBarrier.isStopping ||
+        vpnConnection.status != VpnStatus.connected) return;
     // Responses from a prior session cannot affect this session's counters.
     _syncFence.invalidate();
     _remainingSeconds = 0;
@@ -170,6 +174,14 @@ class SessionTimer extends ChangeNotifier {
     if (syncGeneration == null) return;
     try {
       final deviceId = await CryptoService.getDeviceId();
+      // Device identity may be gated by secure-store I/O. A disconnect or
+      // fresh session can invalidate this request during that await; never
+      // send an obsolete status request using the next session's nonce.
+      if (_disposed ||
+          _isDisconnecting ||
+          !_syncFence.accepts(syncGeneration)) {
+        return;
+      }
       final url = Uri.parse(
           '${AppConfig.hivemindApiPublic}/session/status?device_id=$deviceId');
       final response = await HivemindService.authenticatedGet(url);
@@ -249,7 +261,10 @@ class SessionTimer extends ChangeNotifier {
   }
 
   void _resumeTicking() {
-    if (_disposed) return;
+    if (_disposed ||
+        _isDisconnecting ||
+        _stopBarrier.isStopping ||
+        vpnConnection.status != VpnStatus.connected) return;
     _syncFence.invalidate();
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), _tick);

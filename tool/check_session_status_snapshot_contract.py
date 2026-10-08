@@ -67,6 +67,7 @@ for test in (
     "new session can poll while old HTTP request remains unresolved",
     "old HTTP completion never releases new session request slot",
     "two invalidations retire every earlier HTTP generation",
+    "old identity preflight cannot dispatch status for a new session",
 ):
     assert test in fence_tests, f"Missing stale-status regression: {test}"
 
@@ -83,7 +84,12 @@ assert "_notifyIfAlive();" in timer
 assert "if (!_disposed) notifyListeners();" in timer
 assert "_disposed = true;" in timer.split("void dispose() {", 1)[1]
 assert "_syncFence.invalidate();" in timer.split("void dispose() {", 1)[1]
-assert sync.index("await HivemindService.authenticatedGet(url);") < sync.index("if (_disposed || _isDisconnecting || !_syncFence.accepts(syncGeneration))") < sync.index("if (response.statusCode == 200) {")
+preflight_check = "if (_disposed ||\\n          _isDisconnecting ||\\n          !_syncFence.accepts(syncGeneration)) {".replace("\\n", "\n")
+response_check = "if (_disposed || _isDisconnecting || !_syncFence.accepts(syncGeneration))"
+assert preflight_check in sync
+assert response_check in sync
+assert sync.index("await CryptoService.getDeviceId();") < sync.index(preflight_check) < sync.index("await HivemindService.authenticatedGet(url);")
+assert sync.index("await HivemindService.authenticatedGet(url);") < sync.index(response_check) < sync.index("if (response.statusCode == 200) {")
 
 for token in (
     "Future<void>? _pending;",
@@ -110,7 +116,15 @@ for test in (
 
 assert stop_barrier.index("_pending = future;") < stop_barrier.index("Future<void>.sync(stop)")
 assert "final SessionStopBarrier _stopBarrier = SessionStopBarrier();" in timer
-assert "if (_disposed || _stopBarrier.isStopping) return;" in timer
+session_start = timer.split("Future<void> start() async {", 1)[1].split("void _tick(", 1)[0]
+assert "_stopBarrier.isStopping ||" in session_start
+assert "vpnConnection.status != VpnStatus.connected) return;" in session_start
+restore = timer.split("void _onVpnConnectionChanged() {", 1)[1].split("Future<void> start()", 1)[0]
+assert "!_stopBarrier.isStopping &&" in restore
+assert "!_isDisconnecting &&" in restore
+resume = timer.split("void _resumeTicking() {", 1)[1].split("void _notifyIfAlive()", 1)[0]
+assert "_stopBarrier.isStopping ||" in resume
+assert "vpnConnection.status != VpnStatus.connected) return;" in resume
 stop = timer.split("Future<void> _doDisconnect(String reason)", 1)[1].split("Future<void> _syncWithHivemind()", 1)[0]
 assert "_stopBarrier.run(() async" in stop
 assert "await vpnConnection.disconnect();" in stop
