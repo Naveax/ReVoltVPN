@@ -74,7 +74,25 @@ class VpnStartGuard {
     }
   }
 
-  /// If the original native operation completes after our wait timed out,
+  /// A rejected native start may have already published a partial OS VPN.
+  /// Clean it before another admission. The cleanup itself holds the restart
+  /// barrier, and an error permanently denies restart in this process.
+  Future<bool> cleanupFailedStart(Future<void> Function() stop) async {
+    if (_lateCleanup != null || _lateCleanupFailed) return false;
+    final cleanup = Future<void>.sync(stop);
+    _lateCleanup = cleanup;
+    try {
+      await cleanup;
+      return true;
+    } catch (_) {
+      blockUnsafeRestart();
+      return false;
+    } finally {
+      if (identical(_lateCleanup, cleanup)) _lateCleanup = null;
+    }
+  }
+
+  /// If the original native operation completes after our wait timed out;
   /// schedule one further native stop. Never claim that it succeeded early.
   void stopAfterLateStart(Future<void> Function() stop) {
     final operation = _starting;

@@ -24,6 +24,14 @@ required = [
     (guard, "void authorizeConnected()"),
     (guard, "void invalidateConnected()"),
     (guard, "void blockUnsafeRestart()"),
+    (guard, "Future<bool> cleanupFailedStart(Future<void> Function() stop)"),
+    (vpn, "var nativeStartAttempted = false;"),
+    (vpn, "if (nativeStartAttempted) {"),
+    (vpn, "await _startGuard.cleanupFailedStart("),
+    (tests, "rejected native start stops partial VPN before retry"),
+    (tests, "failed partial-start cleanup locks down all future admissions"),
+    (tests, "partial-start cleanup holds restart barrier until native stop settles"),
+    (tests, "synchronous native stop failure is also fail closed"),
     (vpn, "if (!_startGuard.mayReportConnected) return;"),
     (vpn, "final probe = ownedNonce == null"),
     (vpn, "await HivemindService.probeCurrentSession();"),
@@ -48,11 +56,44 @@ for source, token in required:
 connect = vpn.split("Future<bool> _connectInner(", 1)[1].split("Future<void> disconnect()", 1)[0]
 assert connect.count("_vless.startVless(") == 1
 assert "_startGuard.start(() => _vless.startVless(" in connect
+assert connect.index("nativeStartAttempted = true;") < connect.index("_startGuard.start(() => _vless.startVless(")
+failed_start = connect.split("if (nativeStartAttempted) {", 1)[1].split("if (_cancelled) return false;", 1)[0]
+assert "await _startGuard.cleanupFailedStart(" in failed_start
+assert "() => _vless.stopVless().timeout(const Duration(seconds: 5))" in failed_start
+assert "if (!cleaned) {" in failed_start
 assert connect.index("if (!started || _cancelled) return false;") < connect.index("_startGuard.authorizeConnected();") < connect.index("_setStatus(VpnStatus.connected, 'Secured');")
 
 restore = vpn.split("final delay = await _vless.getConnectedServerDelay();", 1)[1].split("void _mapStatus(", 1)[0]
 assert restore.index("await HivemindService.probeCurrentSession();") < restore.index("final stopPending = await CryptoService.isSessionStopPending();") < restore.index("_startGuard.authorizeConnected();") < restore.index("_setStatus(VpnStatus.connected, 'Secured');")
 assert restore.index("await _vless.stopVless().timeout(") < restore.index("_startGuard.blockUnsafeRestart();")
+
+# Native disconnect and disconnecting events must own server revocation even
+# if no SessionTimer/UI observer is registered at the moment the event fires.
+for state, next_state in (
+    ("disconnected", "connecting"),
+    ("disconnecting", "unknown"),
+):
+    branch = vpn.split(f"case VlessConnectionState.{state}:", 1)[1].split(
+        f"case VlessConnectionState.{next_state}:", 1
+    )[0]
+    assert "_revokeUnexpectedNativeDrop();" in branch, state
+    assert "_setStatus(VpnStatus.disconnected" not in branch, state
+
+unexpected_drop = vpn.split("void _revokeUnexpectedNativeDrop() {", 1)[1].split("// ── Connect", 1)[0]
+assert "unawaited(disconnect().catchError(" in unexpected_drop
+assert "_startGuard.blockUnsafeRestart();" in unexpected_drop
+assert "_setStatus(VpnStatus.error, 'Revocation failed');" in unexpected_drop
+
+# Closing a UI notifier is not a session stop. Unawaited native stop from
+# dispose previously bypassed the durable intent and server revoke entirely.
+dispose = vpn.split("void dispose() {", 1)[1]
+assert "_vless.stopVless()" not in dispose
+assert "_disposed = true;" in dispose
+startup_init = vpn.split("Future<void> _init() async {", 1)[1].split("Future<void> _startEngine() async {", 1)[0]
+assert "if (!kIsWeb && !_disposed)" in startup_init
+assert "if (_disposed) return;" in vpn.split("void _mapStatus(VlessStatus status)", 1)[1].split("switch (status.connectionState)", 1)[0]
+assert "if (_disposed) return;" in vpn.split("void _setStatus(VpnStatus s, String msg)", 1)[1].split("Future<void> _checkHealth()", 1)[0]
+assert "if (!_disposed) notifyListeners();" in vpn.split("Future<void> _checkHealth()", 1)[1].split("void dispose()", 1)[0]
 
 native_connected = vpn.split("case VlessConnectionState.connected:", 1)[1].split("case VlessConnectionState.disconnected:", 1)[0]
 assert native_connected.index("if (!_startGuard.mayReportConnected) return;") < native_connected.index("_setStatus(VpnStatus.connected, 'Secured');")

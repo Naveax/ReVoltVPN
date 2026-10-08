@@ -4,6 +4,61 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:revoltvpn/logic/vpn_start_guard.dart';
 
 void main() {
+  test('rejected native start stops partial VPN before retry', () async {
+    final guard = VpnStartGuard();
+    guard.reset();
+    final rejectedStart = guard
+        .start(() => Future<void>.error(StateError('partial TUN failure')));
+    await expectLater(rejectedStart, throwsStateError);
+    var stopCalls = 0;
+    expect(
+        await guard.cleanupFailedStart(() async {
+          stopCalls++;
+        }),
+        true);
+    expect(stopCalls, 1);
+    expect(guard.cannotRestart, false);
+    guard.reset();
+    expect(await guard.start(() async {}), true);
+  });
+
+  test('failed partial-start cleanup locks down all future admissions',
+      () async {
+    final guard = VpnStartGuard();
+    expect(
+        await guard.cleanupFailedStart(
+            () => Future<void>.error(StateError('native stop failed'))),
+        false);
+    expect(guard.cannotRestart, true);
+    expect(guard.mayReportConnected, false);
+    expect(guard.reset, throwsStateError);
+    expect(await guard.cleanupFailedStart(() async {}), false);
+  });
+
+  test('partial-start cleanup holds restart barrier until native stop settles',
+      () async {
+    final guard = VpnStartGuard();
+    final stop = Completer<void>();
+    final clean = guard.cleanupFailedStart(() => stop.future);
+    expect(guard.cannotRestart, true);
+    expect(guard.reset, throwsStateError);
+    expect(await guard.cleanupFailedStart(() async {}), false);
+    stop.complete();
+    expect(await clean, true);
+    expect(guard.cannotRestart, false);
+  });
+
+  test('synchronous native stop failure is also fail closed', () async {
+    final guard = VpnStartGuard();
+    expect(
+        await guard.cleanupFailedStart(() {
+          throw StateError('synchronous platform channel failure');
+        }),
+        false);
+    expect(guard.cannotRestart, true);
+    expect(guard.authorizeConnected, throwsStateError);
+  });
+
   test('failed explicit native disconnect permanently denies reconnect',
       () async {
     final guard = VpnStartGuard();

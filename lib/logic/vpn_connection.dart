@@ -16,6 +16,7 @@ enum VpnStatus {
 class VpnConnection extends ChangeNotifier {
   bool _cancelled = false;
   bool _connectInFlight = false;
+  bool _disposed = false;
   final VpnStartGuard _startGuard = VpnStartGuard();
   VpnStatus _status = VpnStatus.disconnected;
   VpnStatus get status => _status;
@@ -53,7 +54,7 @@ class VpnConnection extends ChangeNotifier {
       // ownership gate and native restoration checks have fully settled.
       // Earlier scheduling raced the initial pending-stop decision and could
       // consume the marker before native teardown was checked.
-      if (!kIsWeb) {
+      if (!kIsWeb && !_disposed) {
         _healthTimer ??=
             Timer.periodic(const Duration(seconds: 30), (_) => _checkHealth());
         unawaited(_checkHealth());
@@ -170,6 +171,7 @@ class VpnConnection extends ChangeNotifier {
   }
 
   void _mapStatus(VlessStatus status) {
+    if (_disposed) return;
     // Late native events must not resurrect a tunnel after user disconnect.
     if (_cancelled || _status == VpnStatus.disconnecting) return;
     switch (status.connectionState) {
@@ -181,9 +183,7 @@ class VpnConnection extends ChangeNotifier {
         break;
       case VlessConnectionState.disconnected:
         if (!_startGuard.mayReportConnected) return;
-        _startGuard.invalidateConnected();
-        _isStartupRestoration = false;
-        _setStatus(VpnStatus.disconnected, 'Tap to connect');
+        _revokeUnexpectedNativeDrop();
         break;
       case VlessConnectionState.connecting:
         if (_status != VpnStatus.connecting) return;
@@ -191,11 +191,7 @@ class VpnConnection extends ChangeNotifier {
         break;
       case VlessConnectionState.disconnecting:
         if (!_startGuard.mayReportConnected) return;
-        _startGuard.invalidateConnected();
-        _isStartupRestoration = false;
-        // The session timer will perform explicit revocation. Do not become
-        // stuck in disconnecting after the early native-event filter fires.
-        _setStatus(VpnStatus.disconnected, 'Tunnel dropped');
+        _revokeUnexpectedNativeDrop();
         break;
       case VlessConnectionState.unknown:
         if (_status != VpnStatus.connected &&
@@ -204,6 +200,21 @@ class VpnConnection extends ChangeNotifier {
         }
         break;
     }
+  }
+
+  /// A native tunnel loss does not authenticate terminal server teardown.
+  /// Invoke the same persisted, explicit revoke path as user disconnect;
+  /// disconnect synchronously cancels this native generation before its first
+  /// storage await. Do not rely on SessionTimer having a live UI listener.
+  void _revokeUnexpectedNativeDrop() {
+    unawaited(disconnect().catchError((Object error, StackTrace trace) {
+      _startGuard.blockUnsafeRestart();
+      _isStartupRestoration = false;
+      _errorMessage =
+          'Native tunnel dropped and server revocation could not be confirmed.';
+      _setStatus(VpnStatus.error, 'Revocation failed');
+      debugPrint('[VPN] Unexpected native drop cleanup failed: $error');
+    }));
   }
 
   // ── Connect ────────────────────────────────────────────────────────
@@ -300,9 +311,11 @@ class VpnConnection extends ChangeNotifier {
 
     _setStatus(VpnStatus.connecting, 'Securing connection…');
 
+    var nativeStartAttempted = false;
     try {
       final parsed = FlutterVless.parse(realUrl);
 
+      nativeStartAttempted = true;
       final started = await _startGuard.start(() => _vless.startVless(
             remark: parsed.remark.isNotEmpty ? parsed.remark : 'Revolt VPN',
             config: parsed.getFullConfiguration(),
@@ -316,8 +329,22 @@ class VpnConnection extends ChangeNotifier {
           ));
       if (!started || _cancelled) return false;
     } catch (e) {
+      // A rejected native start may still have established part of a TUN.
+      // The user's concurrent disconnect owns cleanup if already cancelled.
       if (_cancelled) return false;
       debugPrint('[VPN] Tunnel start error: $e');
+      if (nativeStartAttempted) {
+        final cleaned = await _startGuard.cleanupFailedStart(
+          () => _vless.stopVless().timeout(const Duration(seconds: 5)),
+        );
+        if (!cleaned) {
+          _errorMessage =
+              'VPN shutdown could not be confirmed. Restart the app.';
+          _setStatus(VpnStatus.error, 'Shutdown failed');
+          return false;
+        }
+      }
+      if (_cancelled) return false;
       _errorMessage = 'Tunnel failed to start.\nTry reconnecting.';
       _setStatus(VpnStatus.error, 'Connection failed');
       return false;
@@ -403,14 +430,19 @@ class VpnConnection extends ChangeNotifier {
   }
 
   void _setStatus(VpnStatus s, String msg) {
+    if (_disposed) return;
     _status = s;
     _statusMessage = msg;
     notifyListeners();
   }
 
   Future<void> _checkHealth() async {
-    _serverReachable = await HivemindService.checkHealth();
+    if (_disposed) return;
+    final reachable = await HivemindService.checkHealth();
+    if (_disposed) return;
+    _serverReachable = reachable;
     if (_serverReachable && await CryptoService.isSessionStopPending()) {
+      if (_disposed) return;
       final resolved = await HivemindService.retryPendingSessionStop();
       if (resolved && _status == VpnStatus.disconnected) {
         _errorMessage = null;
@@ -418,17 +450,16 @@ class VpnConnection extends ChangeNotifier {
         return;
       }
     }
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   @override
   void dispose() {
+    _disposed = true;
     _healthTimer?.cancel();
-    if (_status == VpnStatus.connected || _status == VpnStatus.connecting) {
-      try {
-        _vless.stopVless();
-      } catch (_) {}
-    }
+    // UI provider disposal is not an authenticated session stop. Do not fire
+    // an unawaited native stop that can strand a live server credential.
+    // Explicit disconnect and native drop own durable revoke + local cleanup.
     super.dispose();
   }
 }
